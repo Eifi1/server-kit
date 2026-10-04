@@ -107,7 +107,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.1.0/eifi1_server_kit-0.1.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.2.0/eifi1_server_kit-0.2.0-py3-none-any.whl"
 ```
 
 With the image guard, name the extra: `"eifi1-server-kit[images] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.
@@ -161,7 +161,7 @@ then, per app:
 - **Kurvenschmiede**: its own key string (no `jpeg`), `stamp_identity`, `limiter.hit()`
   in place of `take()` (`None` instead of `0.0` when allowed), and
   `require_utf8_text=True` on `check_upload` / `sniffed_type` / `is_plain_text` to keep its
-  UTF-8 rule for text (the kit's default since 0.1.1 is keksdose's: declared `text/plain`
+  UTF-8 rule for text (the kit's default since 0.2.0 is keksdose's: declared `text/plain`
   without NUL, any encoding).
 
 ### The refusals
