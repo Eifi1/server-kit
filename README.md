@@ -13,6 +13,7 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
+  One optional extra, `images` (`pillow>=11`), for `uploads.ensure_decodable_image` only.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
 ## Layering
@@ -57,6 +58,14 @@ content-addressed key and hands the bytes to the app's `save`. Also `sniffed_typ
 `signature_type`, `inline_or_attachment`, `content_disposition`, `content_addressed_key`,
 `media_type_for_extension`.
 
+`ensure_decodable_image(data, media_type)` — the **`images` extra** — is keksdose's
+dev#510 guard: after `check_upload`, with the detected type, Pillow opens any `image/*` and
+`verify()`s it (no `load()`), refusing what it cannot parse as `NotAnImageError` (400) — a
+PNG with only its signature, a truncated PNG or WebP, a decompression bomb past Pillow's own
+`MAX_IMAGE_PIXELS`. A JPEG or GIF cut off mid-raster still passes (`verify()` does not
+decode). Other types and `UNDECODABLE_IMAGE_TYPES` (HEIC/HEIF) pass unparsed. Pillow is
+imported lazily; without the extra every call raises `ImportError` naming it.
+
 ### `eifi1_server_kit.limiter`
 
 `SlidingWindowRateLimiter(max_hits=, window_seconds=, clock=)` with `hit(key) -> float |
@@ -93,6 +102,8 @@ never on a path outside their repository (a build must not need anything beside 
 ```sh
 uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.1.0/eifi1_server_kit-0.1.0-py3-none-any.whl"
 ```
+
+With the image guard, name the extra: `"eifi1-server-kit[images] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.
 
 The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
 binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each
@@ -132,7 +143,9 @@ for name, value in plan.changes.items():
 
 - **keksdose** (the source): swap its rule code for the imports, keep its key
   (`SHA12_KEY_PATTERN`), take the three fixes (screenshot URL check, `\Z` anchors, rework
-  pictures purged on erasure) and keep its limiter order.
+  pictures purged on erasure) and keep its limiter order. Its dev#510 guard is the kit's
+  `ensure_decodable_image` (the `images` extra) — same behaviour, plus `UploadRejectedError`
+  instead of an `HTTPException`.
 - **kastlan**: `UUID32_SHA12_KEY_PATTERN`, `is_admin` from its maintainer role set,
   `FeedbackResponse` subclassed with `company_id` / `user_name`.
 - **Kurvenschmiede**: its own key string (no `jpeg`), `stamp_identity`, `limiter.hit()`

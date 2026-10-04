@@ -13,8 +13,8 @@ its signature; plain text has none, so it needs the declaration and no NUL byte 
 keksdose's policy, and the default (``require_utf8_text=True`` adds Kurvenschmiede's
 UTF-8 rule). No Pillow: a magic-number table is smaller than the dependency. What that gives up — a
 truncated PNG passes, because only the head is read — is the trade Kurvenschmiede made
-knowingly; keksdose's Pillow ``verify()`` (``upload_guards.py:136``) stays an app-side
-extra for an app that wants it.
+knowingly; keksdose's Pillow ``verify()`` (dev#510) is :func:`ensure_decodable_image`,
+behind the optional ``images`` extra, for an app that wants it after the check.
 
 Nothing here stores anything. :func:`check_upload` answers what the file is;
 :func:`store_attachment` runs the check, mints keksdose's content-addressed key and hands
@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from io import BytesIO
 from types import MappingProxyType
 from typing import Literal, Protocol
 from urllib.parse import quote
@@ -65,6 +66,13 @@ IMAGE_MEDIA_TYPES: frozenset[str] = frozenset({"image/png", "image/jpeg", "image
 
 #: The accepted types as an ``<input accept>`` / dialog list, in the contract's order.
 ACCEPT_LIST: tuple[str, ...] = tuple(ACCEPTED_MEDIA_TYPES)
+
+#: Picture types Pillow has no decoder for, which :func:`ensure_decodable_image` lets
+#: through unparsed (keksdose ``upload_guards.py:46`` ``UNDECODABLE_IMAGE_TYPES``): the
+#: guard exists to catch a RENAMED file and would refuse every real HEIC from a phone with
+#: the fakes. Not in :data:`ACCEPTED_MEDIA_TYPES`; it matters to an app's own wider policy
+#: (keksdose's receipt scans).
+UNDECODABLE_IMAGE_TYPES: frozenset[str] = frozenset({"image/heic", "image/heif"})
 
 Disposition = Literal["inline", "attachment"]
 
@@ -108,6 +116,13 @@ def _empty() -> EmptyUploadError:
 
 def _too_large(max_bytes: int) -> UploadTooLargeError:
     return UploadTooLargeError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
+
+
+def _not_an_image() -> NotAnImageError:
+    return NotAnImageError(
+        "That file says it is an image but can't be read as one. If you renamed it, "
+        "send it under its original name instead."
+    )
 
 
 # ── detection ───────────────────────────────────────────────────────────────
@@ -244,10 +259,7 @@ def check_upload(
     found = sniffed_type(data, declared, require_utf8_text=require_utf8_text)
     if found is None:
         if declared in IMAGE_MEDIA_TYPES:
-            raise NotAnImageError(
-                "That file says it is an image but can't be read as one. If you renamed it, "
-                "send it under its original name instead."
-            )
+            raise _not_an_image()
         raise UnsupportedUploadTypeError("Only images, PDF or text files are allowed.")
     return CheckedUpload(
         media_type=found,
@@ -255,6 +267,59 @@ def check_upload(
         disposition=inline_or_attachment(found),
         size=len(data),
     )
+
+
+# ── decoding (the ``images`` extra) ─────────────────────────────────────────
+
+
+def ensure_decodable_image(data: bytes, media_type: str | None) -> None:
+    """Refuse a picture whose bytes Pillow cannot parse (→ :class:`NotAnImageError`, 400).
+
+    keksdose's dev#510 guard (``upload_guards.py:147`` ``ensure_decodable_image``), lifted
+    as it is: :func:`check_upload` reads only the signature, so a PNG cut off after its
+    first bytes passes there — and is stored, attached, and shown to the person on the
+    other end as the browser's broken-image icon, which tells them nothing. Call it AFTER
+    :func:`check_upload`, with the DETECTED type (``checked.media_type``), as keksdose's
+    ``store_attachment_bytes`` does. The status is the contract's for "declared a picture,
+    and it is not one" — 400, the same class and sentence as :func:`check_upload`'s.
+
+    What it does, exactly keksdose's:
+
+    * any ``image/*`` type is opened with ``PIL.Image.open`` and ``verify()``-ed — no
+      ``load()``. ``verify()`` parses the container without decoding the raster, so it
+      costs almost nothing on a real screenshot. It catches anything Pillow cannot
+      identify, a truncated or corrupt PNG (chunk CRCs) and a truncated WebP; a JPEG or GIF
+      cut off mid-raster still passes, since only decoding would see that;
+    * every failure is the same answer (``except Exception``), a decompression bomb
+      included: the limit is Pillow's own, ``PIL.Image.MAX_IMAGE_PIXELS`` (≈ 89.5 M
+      pixels) — ``open`` RAISES over twice that, and only WARNS
+      (``DecompressionBombWarning``) between one and two times it, which passes unless the
+      app turns that warning into an error. The kit sets no limit of its own; an app may
+      lower Pillow's global;
+    * any other type returns at once — a PDF or a text file is served as a download and
+      never drawn — and so do :data:`UNDECODABLE_IMAGE_TYPES`, which Pillow cannot open.
+
+    Pillow is imported lazily, and without the ``images`` extra
+    (``eifi1-server-kit[images]``) EVERY call raises :class:`ImportError` saying so — a
+    text file included — so a missing extra shows on the first upload rather than the
+    first picture. (keksdose imported it inside the ``try``, where a missing Pillow would
+    have refused every picture as "not an image".)
+    """
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ImportError(
+            "ensure_decodable_image needs Pillow: install the kit with its images extra, "
+            "eifi1-server-kit[images]."
+        ) from exc
+    declared = bare_media_type(media_type)
+    if not declared.startswith("image/") or declared in UNDECODABLE_IMAGE_TYPES:
+        return
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.verify()
+    except Exception as exc:  # any decode failure is the same answer (keksdose :175)
+        raise _not_an_image() from exc
 
 
 # ── reading ─────────────────────────────────────────────────────────────────
