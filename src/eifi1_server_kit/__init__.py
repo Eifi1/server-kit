@@ -9,7 +9,8 @@ those stay in each app. Import from the submodules:
 * :mod:`eifi1_server_kit.uploads` — what an uploaded file is, by its bytes;
 * :mod:`eifi1_server_kit.limiter` — an in-process sliding-window limiter;
 * :mod:`eifi1_server_kit.cors` — narrow, credential-free CORS for extra origins;
-* :mod:`eifi1_server_kit.translation_review` — the review schemas, key scope and tokens.
+* :mod:`eifi1_server_kit.translation_review` — the review schemas, key scope and tokens;
+* :mod:`eifi1_server_kit.errors` — every kit refusal answered at its contract status.
 
 The contract is ``docs/feedback-harmonization.md`` in ``Eifi1/ui-kit``; the rules are
 keksdose's, lifted with a ``file:line`` citation on each.

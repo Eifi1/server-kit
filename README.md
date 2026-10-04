@@ -84,6 +84,13 @@ Add it **after** `CORSMiddleware` and call `assert_outside_cors_middleware(app)`
 `parse_extra_origins(raw, own_origin=)` reads the setting; `TRANSLATION_REVIEW_ROUTES` are
 the showcase's three paths.
 
+### `eifi1_server_kit.errors`
+
+`install_contract_error_handlers(app)` registers `contract_error_response` — `{"detail":
+str(exc)}` at the exception's `status_code` — for each of `CONTRACT_ERRORS`: `FeedbackError`,
+`UploadRejectedError` and the translation review's `TranslationLocaleError` (422),
+`TranslationAreaError` (422) and `TranslationAccessError` (403). See [the refusals](#the-refusals).
+
 ### `eifi1_server_kit.translation_review`
 
 The wire shapes (`TranslationReviewsResponse`, `TranslationReviewBatch`,
@@ -141,10 +148,13 @@ for name, value in plan.changes.items():
     setattr(row, name, value)
 ```
 
+Every app reads an upload with `read_capped_upload` and checks it with `check_upload`;
+then, per app:
+
 - **keksdose** (the source): swap its rule code for the imports, keep its key
   (`SHA12_KEY_PATTERN`), take the three fixes (screenshot URL check, `\Z` anchors, rework
   pictures purged on erasure) and keep its limiter order. Its dev#510 guard is the kit's
-  `ensure_decodable_image` (the `images` extra) — same behaviour, plus `UploadRejectedError`
+  `ensure_decodable_image` (the `images` extra) — the same check, raising `NotAnImageError`
   instead of an `HTTPException`.
 - **kastlan**: `UUID32_SHA12_KEY_PATTERN`, `is_admin` from its maintainer role set,
   `FeedbackResponse` subclassed with `company_id` / `user_name`.
@@ -153,6 +163,33 @@ for name, value in plan.changes.items():
   `require_utf8_text=True` on `check_upload` / `sniffed_type` / `is_plain_text` to keep its
   UTF-8 rule for text (the kit's default since 0.1.1 is keksdose's: declared `text/plain`
   without NUL, any encoding).
+
+### The refusals
+
+Every kit refusal is a plain exception carrying the contract's status as `status_code`,
+and most are `ValueError`s. keksdose (`main.py:166`) and Kurvenschmiede (`main.py:193`)
+answer every uncaught `ValueError` with a 400 — so a kit refusal that got past an
+endpoint's own `except` came out as 400 instead of 403, 415 or 422, and nothing said so.
+One call while building the app closes that:
+
+```python
+from eifi1_server_kit.errors import install_contract_error_handlers
+
+install_contract_error_handlers(app)  # FastAPI or Starlette; before, after or without a ValueError handler
+```
+
+Starlette picks a handler along the exception's MRO, so `FeedbackForbiddenError` reaches
+the `FeedbackError` handler before the `ValueError` one, whichever was registered first;
+an endpoint's own `except` still comes before both (Kurvenschmiede's 404 for a foreign row
+stays its own).
+
+- **keksdose**: call it in `create_app` beside `_value_error_to_400`; the routers'
+  `except FeedbackError` / `except UploadRejectedError` mappings become optional.
+- **Kurvenschmiede**: the same, beside its `_value_error_to_400`; keep `_refused` where an
+  endpoint answers differently from the contract.
+- **kastlan**: maps its refusals through `DomainError` (`main.py:112`) and may keep doing
+  so for the kit's; it has no `ValueError` handler, so a kit refusal nobody caught is a 500
+  there — the installer turns that into the contract's status too.
 
 ## Developing
 

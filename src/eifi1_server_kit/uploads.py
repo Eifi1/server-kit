@@ -309,8 +309,7 @@ def ensure_decodable_image(data: bytes, media_type: str | None) -> None:
         from PIL import Image
     except ImportError as exc:
         raise ImportError(
-            "ensure_decodable_image needs Pillow: install the kit with its images extra, "
-            "eifi1-server-kit[images]."
+            "ensure_decodable_image needs Pillow: install the kit with its images extra, eifi1-server-kit[images]."
         ) from exc
     declared = bare_media_type(media_type)
     if not declared.startswith("image/") or declared in UNDECODABLE_IMAGE_TYPES:

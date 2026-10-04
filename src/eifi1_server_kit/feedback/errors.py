@@ -10,6 +10,10 @@ Typical mapping::
 
     except FeedbackError as exc:
         raise HTTPException(exc.status_code, str(exc)) from exc
+
+and, for whatever no endpoint caught,
+:func:`eifi1_server_kit.errors.install_contract_error_handlers` — without it an app-wide
+``ValueError`` handler answers these with its own status.
 """
 
 from __future__ import annotations

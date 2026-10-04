@@ -20,16 +20,27 @@ KIT_KEY_PREFIX = "kit."
 KIT_AREA = "kit"
 
 
+# The statuses are keksdose's (``translations_router.py:70`` ``_refuse``,
+# ``admin_router.py:841``), carried as ``status_code`` like every kit refusal, so
+# :func:`eifi1_server_kit.errors.install_contract_error_handlers` answers them too.
+
+
 class TranslationLocaleError(ValueError):
     """A locale code the app does not ship (→ 422)."""
+
+    status_code: int = 422
 
 
 class TranslationAreaError(ValueError):
     """An area name outside the app's vocabulary (→ 422)."""
 
+    status_code: int = 422
+
 
 class TranslationAccessError(PermissionError):
     """A locale, an area or a key the caller has not been granted (→ 403)."""
+
+    status_code: int = 403
 
 
 class ReviewerProfile(Protocol):
