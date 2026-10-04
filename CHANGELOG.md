@@ -8,7 +8,14 @@ name or change a rule's behaviour, and says so under **⚠ BREAKING CHANGES**; a
 hash lands in their `uv.lock`), so nothing reaches an app until it asks for it. Write the
 entry in the Conventional Commit; this file is assembled from them at release.
 
-## [0.1.0] (unreleased — published by tagging `v0.1.0`)
+## [Unreleased]
+
+- Docs: `decide_crash`'s candidate is the newest row with the fingerprint whose status is
+  NOT terminal — the app's query filters `TERMINAL_STATUSES` (keksdose
+  `feedback_service.py:312-318`); the newest row of any status filed a duplicate when an
+  older row was re-opened after a newer one was settled (kastlan's finding).
+
+## [0.1.0] (2026-10-04)
 
 Layer 1: the cross-app contracts as code (`docs/feedback-harmonization.md` §3 in
 `Eifi1/ui-kit`), lifted from keksdose's backend with a `file:line` citation on every rule.

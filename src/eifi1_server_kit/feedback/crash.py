@@ -195,10 +195,17 @@ class CrashDecision(enum.Enum):
 
 
 def decide_crash(candidate_status: FeedbackStatus | str | None) -> CrashDecision:
-    """Fold into the newest row with the same fingerprint while it is still open; file a new
-    one when there is none, or when it is DONE / WONT_DO — a fixed crash coming back is news,
-    and hiding it inside a resolved entry is how a regression goes unnoticed (keksdose
-    ``record_crash``, ``:291-320``). Any non-terminal status folds, IN_EVALUATION included.
+    """Fold into the open row, or file a new one.
+
+    ``candidate_status`` is the status of the row the APP'S QUERY found: the newest row with
+    the same fingerprint whose status is NOT terminal — keksdose ``record_crash``
+    (``feedback_service.py:312-318``) filters ``status NOT IN TERMINAL_STATUSES`` in the
+    query itself, so an older re-opened row is counted even when a newer one with the same
+    fingerprint was settled. Passing the newest row of ANY status instead files a duplicate
+    in exactly that case (kastlan's finding). With keksdose's query the candidate always
+    folds; ``None`` (no open row) files a new one — a fixed crash coming back is news, and
+    hiding it inside a resolved entry is how a regression goes unnoticed. Any non-terminal
+    status folds, IN_EVALUATION included.
     """
     if candidate_status is None or FeedbackStatus(candidate_status) in TERMINAL_STATUSES:
         return CrashDecision.FILE
