@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Any
 
 import pytest
+from starlette.datastructures import UploadFile
 from starlette.responses import Response
 
 from eifi1_server_kit.uploads import (
@@ -25,6 +27,7 @@ from eifi1_server_kit.uploads import (
     inline_or_attachment,
     is_plain_text,
     media_type_for_extension,
+    read_capped_upload,
     signature_type,
     sniffed_type,
     store_attachment,
@@ -247,3 +250,43 @@ def test_the_refusal_statuses_map_without_a_table() -> None:
         400,
         415,
     ]
+
+
+class _CountingFile:
+    """A file that records how much it was asked for."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.asked: list[int] = []
+
+    async def read(self, size: int = -1) -> bytes:
+        self.asked.append(size)
+        return self.data if size < 0 else self.data[:size]
+
+
+async def test_a_capped_read_stops_one_byte_past_the_cap() -> None:
+    """keksdose ``upload_guards.py:254``: one byte past the cap is enough to know."""
+    huge = _CountingFile(b"%PDF-" + b"x" * (3 * 1024 * 1024))
+    with pytest.raises(UploadTooLargeError, match="larger than 1 MB") as over:
+        await read_capped_upload(huge, 1024 * 1024)
+    assert over.value.status_code == 413
+    assert huge.asked == [1024 * 1024 + 1]
+
+    with pytest.raises(EmptyUploadError) as empty:
+        await read_capped_upload(_CountingFile(b""), 1024 * 1024)
+    assert empty.value.status_code == 400 and str(empty.value) == "The file is empty."
+
+    # Exactly at the cap is the whole file; the default cap is the contract's 10 MB.
+    exact = _CountingFile(b"y" * 1024 * 1024)
+    assert await read_capped_upload(exact, 1024 * 1024) == exact.data
+    default = _CountingFile(PNG)
+    assert await read_capped_upload(default) == PNG and default.asked == [MAX_ATTACHMENT_BYTES + 1]
+
+
+async def test_a_capped_read_takes_starlettes_upload_file() -> None:
+    """The type an app actually hands it — FastAPI's ``UploadFile`` is this class."""
+    upload = UploadFile(BytesIO(PNG), filename="shot.png")
+    data = await read_capped_upload(upload)
+    assert check_upload(data, upload.content_type).media_type == "image/png"
+    with pytest.raises(UploadTooLargeError):
+        await read_capped_upload(UploadFile(BytesIO(b"x" * 11)), 10)

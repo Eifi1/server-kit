@@ -27,7 +27,7 @@ import hashlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, Protocol
 from urllib.parse import quote
 
 #: Per-file ceiling (contract §3.5; keksdose ``upload_guards.py:197`` ``ATTACHMENT_MAX_BYTES``).
@@ -100,6 +100,14 @@ class UnsupportedUploadTypeError(UploadRejectedError):
     """Not one of the accepted types, whatever it is called (→ 415)."""
 
     status_code = 415
+
+
+def _empty() -> EmptyUploadError:
+    return EmptyUploadError("The file is empty.")
+
+
+def _too_large(max_bytes: int) -> UploadTooLargeError:
+    return UploadTooLargeError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
 
 
 # ── detection ───────────────────────────────────────────────────────────────
@@ -215,7 +223,8 @@ def check_upload(
 
     1. no bytes → :class:`EmptyUploadError` (400);
     2. over ``max_bytes`` → :class:`UploadTooLargeError` (413) — read the upload with
-       ``await file.read(max_bytes + 1)`` and one byte past the cap is enough to know;
+       :func:`read_capped_upload`, which reads one byte past the cap and no more, and
+       refuses these two before the whole of a huge upload is ever in memory;
     3. :func:`sniffed_type` names it → accepted, as the DETECTED type (a PNG declared
        ``image/jpeg`` is stored and served as a PNG); declared ``text/plain`` without a NUL
        byte is text in any encoding, unless ``require_utf8_text=True`` (Kurvenschmiede)
@@ -228,9 +237,9 @@ def check_upload(
     test (``test_feedback_attachments.py:125``) call a type outside the list a 415.
     """
     if not data:
-        raise EmptyUploadError("The file is empty.")
+        raise _empty()
     if len(data) > max_bytes:
-        raise UploadTooLargeError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
+        raise _too_large(max_bytes)
     declared = bare_media_type(declared_type)
     found = sniffed_type(data, declared, require_utf8_text=require_utf8_text)
     if found is None:
@@ -246,6 +255,35 @@ def check_upload(
         disposition=inline_or_attachment(found),
         size=len(data),
     )
+
+
+# ── reading ─────────────────────────────────────────────────────────────────
+
+
+class UploadSource(Protocol):
+    """What :func:`read_capped_upload` reads: Starlette's ``UploadFile`` (FastAPI's is the
+    same class), or anything with its ``read``."""
+
+    async def read(self, size: int = -1) -> bytes: ...
+
+
+async def read_capped_upload(file: UploadSource, max_bytes: int = MAX_ATTACHMENT_BYTES) -> bytes:
+    """The bytes of an upload, read no further than one byte past ``max_bytes``.
+
+    ``await file.read(max_bytes + 1)``: one byte past the cap is enough to know the file is
+    over it, so a 2 GB upload is never read whole to be refused (keksdose
+    ``upload_guards.py:254``, Kurvenschmiede ``feedback_router.py:73``, kastlan
+    ``feedback_router.py:111`` — the same line in each). Over the cap →
+    :class:`UploadTooLargeError` (413), no bytes → :class:`EmptyUploadError` (400), with
+    :func:`check_upload`'s wording. Then hand the bytes to :func:`check_upload` or
+    :func:`store_attachment` with the same ``max_bytes``.
+    """
+    data = await file.read(max_bytes + 1)
+    if not data:
+        raise _empty()
+    if len(data) > max_bytes:
+        raise _too_large(max_bytes)
+    return data
 
 
 # ── keys and storing ────────────────────────────────────────────────────────

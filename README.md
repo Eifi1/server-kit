@@ -50,6 +50,8 @@ size)`, deciding by the bytes (PNG, JPEG, GIF, WebP, `%PDF-`; text = declared `t
 without a NUL byte, in any encoding — keksdose's policy, since text is only ever served as
 an `attachment`; `require_utf8_text=True` adds Kurvenschmiede's UTF-8 rule); refusals `EmptyUploadError` (400),
 `UploadTooLargeError` (413), `NotAnImageError` (400), `UnsupportedUploadTypeError` (415).
+`await read_capped_upload(file, max_bytes)` reads a Starlette `UploadFile` one byte past
+the cap and no further, refusing over it (413) or empty (400) — read every upload with it.
 `store_attachment(data, declared_type, save=…, mint_key=…)` adds keksdose's
 content-addressed key and hands the bytes to the app's `save`. Also `sniffed_type`,
 `signature_type`, `inline_or_attachment`, `content_disposition`, `content_addressed_key`,
