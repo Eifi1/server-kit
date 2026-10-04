@@ -1,0 +1,84 @@
+[project]
+name = "eifi1-server-kit"
+version = "0.1.0"
+description = "The backend sibling of @eifi1/ui-kit: the cross-app contracts (feedback, uploads, limiter, CORS, translation review) as pure, framework-light code."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Marcel Eifert" }]
+requires-python = ">=3.14"
+# Layer 1 is pure functions, Pydantic models and one Starlette middleware — no FastAPI,
+# no SQLAlchemy, no Pillow. Every app already has these two through FastAPI; the floors
+# are the apps' own floors, and there are deliberately NO ceilings: keksdose holds
+# FastAPI below 0.137 (its http.route metric label), and a ceiling here could only ever
+# fight that pin, never help it.
+dependencies = [
+    "pydantic>=2.10.0",
+    "starlette>=0.40.0",
+]
+
+[project.urls]
+Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"
+
+[dependency-groups]
+dev = [
+    # The tests drive the CORS middleware through a real FastAPI app beside Starlette's
+    # CORSMiddleware, the same way keksdose's own test does. Held to keksdose's range
+    # (<0.137) so the kit is tested against what the strictest app can install.
+    "fastapi>=0.115.0,<0.137",
+    "httpx>=0.28.0",
+    "mypy>=1.18.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.22,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Kurvenschmiede's rule: a deprecation is the one notice a dependency gives before it
+# breaks us, so it is an error here rather than ignored.
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["eifi1_server_kit"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 97
+show_missing = true
+# Anchored, as keksdose learnt the hard way: a bare "pass" excluded every line that
+# CONTAINED it, block headers included.
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "^\\s*pass$", "^\\s*\\.\\.\\.$", "class .*\\(Protocol\\):"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+
+[tool.ruff.lint]
+# keksdose's set (E F I N W UP), plus the families Kurvenschmiede runs that a new
+# codebase can start clean on.
+select = ["B", "C4", "E", "F", "I", "N", "RUF", "SIM", "UP", "W"]
+# UP042: the enums subclass ``(str, enum.Enum)`` on purpose — they are DB columns and
+# JSON-contract types in all three apps, and StrEnum changes str()/format().
+# RUF001-003: the prose is typeset ("…", "–", "×"), as in Kurvenschmiede.
+ignore = ["E501", "UP042", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N802", "N817"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = false
+warn_required_dynamic_aliases = true
