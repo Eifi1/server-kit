@@ -1,0 +1,49 @@
+name: Release
+
+# A tag v* builds the wheel and the sdist with the same gate as CI and attaches them to a
+# GitHub Release. Apps install the RELEASE WHEEL by URL, pinned by hash in uv.lock —
+# slim Docker images (python:3.14-slim) have no git, so a git+https source cannot be
+# installed there (keksdose's finding, 2026-10-04). workflow_dispatch rebuilds the
+# release of an existing tag.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The existing tag to (re)build the release for, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write # create the release and upload its assets
+
+jobs:
+  release:
+    name: Build and attach the wheel
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - name: The gate (ruff, mypy, pytest, build)
+        run: bash scripts/check.sh
+      - name: The version in pyproject.toml matches the tag
+        run: |
+          version=$(uv version --short)
+          test "v${version}" = "${TAG}" || { echo "pyproject says ${version}, tag is ${TAG}"; exit 1; }
+      - name: Create the release (or replace its assets)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/* --clobber
+          else
+            gh release create "${TAG}" dist/* --title "eifi1-server-kit ${TAG#v}" \
+              --notes "See CHANGELOG.md. Install: uv add \"eifi1-server-kit @ https://github.com/${{ github.repository }}/releases/download/${TAG}/eifi1_server_kit-${TAG#v}-py3-none-any.whl\""
+          fi

@@ -84,16 +84,19 @@ locales and areas (`review_grant`, `can_review_kit`, `assert_allowed`, `normaliz
 
 ## Installing it in an app
 
-Apps depend on a **published** version — a git tag whose commit hash `uv.lock` pins —
+Apps depend on a **published** version — the wheel attached to a tagged GitHub Release, whose hash `uv.lock` pins —
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ git+https://github.com/Eifi1/server-kit@v0.1.0"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.1.0/eifi1_server_kit-0.1.0-py3-none-any.whl"
 ```
 
-Publishing (creating the GitHub repository and tagging `v0.1.0`) is Marcel's step; until
-then there is nothing to adopt. To try it locally without touching an app's `pyproject.toml`
-or `uv.lock`, run its suite with the kit overlaid: `uv run --with ../server-kit pytest`.
+The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
+binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each
+tag `v*` runs `.github/workflows/release.yml`, which builds the wheel with the full gate and
+attaches it to the GitHub Release; uv.lock pins its hash. To try a change locally without
+touching an app's `pyproject.toml` or `uv.lock`, run its suite with the kit overlaid:
+`uv run --with ../server-kit pytest`.
 
 ## Adopting layer 1
 
