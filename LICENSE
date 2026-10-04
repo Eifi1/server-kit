@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-THIRD-PARTY NOTICES
-
-src/components/chart.tsx is adapted from the shadcn/ui chart kit
-(https://ui.shadcn.com), Copyright (c) 2023 shadcn, MIT licensed. The structure
-— config-driven series colours injected as CSS custom properties, the muted
-axis/grid treatment, and the tooltip/legend content components — is retained;
-it has been ported to Recharts 3 and re-skinned onto this package's own tokens
-rather than shadcn's.
