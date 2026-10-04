@@ -191,6 +191,21 @@ stays its own).
   so for the kit's; it has no `ValueError` handler, so a kit refusal nobody caught is a 500
   there — the installer turns that into the contract's status too.
 
+### Behaviour changes on switching over
+
+Two caps are Kurvenschmiede's, now everyone's, and keksdose had neither:
+
+- **`body` ≤ 50 000 characters** (`MAX_BODY_LENGTH`) on create AND on update. A rework
+  PATCH sends the whole body with the round appended, so a rework on an already long report
+  now answers 422 where it used to be stored. An app that needs more re-declares `body` on
+  its `FeedbackCreate` / `FeedbackUpdate` subclass.
+- **`context` ≤ 8 KB of JSON** (`MAX_CONTEXT_SIZE`, measured by `context_size`) on create.
+  The ten keys fit in a fraction of it, but `url` carries the whole address, so a page with a
+  huge query string could have its report refused with a 422. The ui-kit will cap the
+  context URL client-side; until an app runs that version, `max_context_size = None` on its
+  subclass lifts the cap. The crash payload is unaffected — `CrashReportCreate` truncates
+  every field, it never refuses.
+
 ## Developing
 
 ```sh
