@@ -65,15 +65,37 @@ def test_the_signature_table(data: bytes, expected: str | None) -> None:
     assert signature_type(data) == expected
 
 
-def test_text_needs_the_declaration_and_clean_utf8() -> None:
-    """Kurvenschmiede ``feedback_router.py:81-116``: plain text has no signature."""
+def test_text_needs_the_declaration_and_no_nul() -> None:
+    """Plain text has no signature: the declaration names it, and a NUL byte refuses it."""
     assert sniffed_type(TEXT, "text/plain; charset=utf-8") == "text/plain"
     assert sniffed_type(TEXT, "application/octet-stream") is None
     assert sniffed_type(b"a\x00b", "text/plain") is None
-    assert sniffed_type(b"\xff\xfe broken", "text/plain") is None
+    # UTF-16 carries a NUL beside every ASCII character.
+    assert sniffed_type("log".encode("utf-16"), "text/plain") is None
     assert is_plain_text(b"") and not is_plain_text(b"\x00")
     # A signature wins over any declaration.
     assert sniffed_type(PDF, "text/plain") == "application/pdf"
+
+
+def test_text_in_any_encoding_is_text_unless_utf8_is_required() -> None:
+    """keksdose's policy is the default: it accepted any declared ``text/plain``, and its
+    support chat shares the policy, so a Windows-1252 export is a text file. Text is only
+    ever served as an ``attachment``, so its encoding is no security property.
+    Kurvenschmiede keeps its UTF-8 rule (``feedback_router.py:81-116``) with the flag."""
+    export = "Grüsse – März 2026\r\n".encode("cp1252")
+    assert is_plain_text(export) and not is_plain_text(export, require_utf8_text=True)
+    assert is_plain_text(TEXT, require_utf8_text=True)
+    assert sniffed_type(export, "text/plain") == "text/plain"
+    assert sniffed_type(export, "text/plain", require_utf8_text=True) is None
+    assert sniffed_type(b"\xff\xfe broken", "text/plain", require_utf8_text=True) is None
+    assert check_upload(export, "text/plain") == CheckedUpload("text/plain", "txt", "attachment", len(export))
+    with pytest.raises(UnsupportedUploadTypeError) as strict:
+        check_upload(export, "text/plain", require_utf8_text=True)
+    assert strict.value.status_code == 415
+    # The NUL check holds either way, and the flag changes nothing for a signature.
+    with pytest.raises(UnsupportedUploadTypeError):
+        check_upload(b"MZ\x90\x00\x03", "text/plain")
+    assert check_upload(PNG, "text/plain", require_utf8_text=True).media_type == "image/png"
 
 
 def test_each_accepted_type_passes_as_what_it_is() -> None:
@@ -200,6 +222,13 @@ async def test_storing_checks_mints_and_hands_the_bytes_to_the_app() -> None:
     with pytest.raises(NotAnImageError):
         await store_attachment(b"nope", "image/png", save=save)
     assert len(saved) == 2
+
+    # The text policy is passed through: any encoding by default, UTF-8 on request.
+    latin = "Grüsse".encode("latin-1")
+    assert (await store_attachment(latin, "text/plain", save=save)).extension == "txt"
+    with pytest.raises(UnsupportedUploadTypeError):
+        await store_attachment(latin, "text/plain", save=save, require_utf8_text=True)
+    assert len(saved) == 3
 
 
 def test_the_refusal_statuses_map_without_a_table() -> None:

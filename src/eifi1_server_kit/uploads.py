@@ -9,8 +9,9 @@ anything else a 415. Images are served ``inline``, everything else as ``attachme
 ``kurvenschmiede/adapters/api/feedback_router.py:54-116``: the declared type is the
 client's word for it, and a file labelled ``image/png`` containing a script would be a
 stored cross-site script against the admin who opens it. A picture or a PDF is named by
-its signature; plain text has none, so it needs the declaration AND UTF-8 without NUL.
-No Pillow: a magic-number table is smaller than the dependency. What that gives up — a
+its signature; plain text has none, so it needs the declaration and no NUL byte —
+keksdose's policy, and the default (``require_utf8_text=True`` adds Kurvenschmiede's
+UTF-8 rule). No Pillow: a magic-number table is smaller than the dependency. What that gives up — a
 truncated PNG passes, because only the head is read — is the trade Kurvenschmiede made
 knowingly; keksdose's Pillow ``verify()`` (``upload_guards.py:136``) stays an app-side
 extra for an app that wants it.
@@ -137,10 +138,25 @@ def signature_type(data: bytes) -> str | None:
     return None
 
 
-def is_plain_text(data: bytes) -> bool:
-    """UTF-8 with no NUL in it (Kurvenschmiede ``feedback_router.py:81`` ``_is_text``)."""
+def is_plain_text(data: bytes, *, require_utf8_text: bool = False) -> bool:
+    """No NUL byte in it — and, with ``require_utf8_text``, valid UTF-8 as well.
+
+    The default is keksdose's policy, the canon: it accepted any file declared
+    ``text/plain`` (``upload_guards.py`` before 0.1.0), and its support chat shares that
+    policy, so a Windows-1252 bank export or a Latin-1 log is a text file like any other.
+    The encoding is not a security property here — text is only ever served as an
+    ``attachment`` (:func:`inline_or_attachment`), never rendered in the app's origin, so
+    a browser saves the bytes as they are whatever ``charset`` the response names. The
+    NUL check stays: a text file has none, a binary renamed ``.txt`` almost always does.
+    (So does UTF-16, beside every ASCII character — such an export is refused too.)
+
+    ``require_utf8_text=True`` is Kurvenschmiede's stricter rule
+    (``feedback_router.py:81`` ``_is_text``), kept for the app that wants it.
+    """
     if b"\x00" in data:
         return False
+    if not require_utf8_text:
+        return True
     try:
         data.decode("utf-8")
     except UnicodeDecodeError:
@@ -148,17 +164,18 @@ def is_plain_text(data: bytes) -> bool:
     return True
 
 
-def sniffed_type(data: bytes, declared: str = "") -> str | None:
+def sniffed_type(data: bytes, declared: str = "", *, require_utf8_text: bool = False) -> str | None:
     """What a file IS, or ``None`` for anything this feature is not for.
 
     Kurvenschmiede ``feedback_router.py:91`` ``sniffed_type``: the signature first, and
-    only when there is none, ``text/plain`` — if it was declared so and reads as UTF-8
-    without NUL. ``declared`` may carry parameters; they are dropped.
+    only when there is none, ``text/plain`` — if it was declared so and
+    :func:`is_plain_text` holds (no NUL; UTF-8 too with ``require_utf8_text``).
+    ``declared`` may carry parameters; they are dropped.
     """
     found = signature_type(data)
     if found is not None:
         return found
-    if bare_media_type(declared) == "text/plain" and is_plain_text(data):
+    if bare_media_type(declared) == "text/plain" and is_plain_text(data, require_utf8_text=require_utf8_text):
         return "text/plain"
     return None
 
@@ -189,6 +206,7 @@ def check_upload(
     declared_type: str | None,
     *,
     max_bytes: int = MAX_ATTACHMENT_BYTES,
+    require_utf8_text: bool = False,
 ) -> CheckedUpload:
     """Accept or refuse one uploaded file, by its bytes.
 
@@ -199,7 +217,9 @@ def check_upload(
     2. over ``max_bytes`` → :class:`UploadTooLargeError` (413) — read the upload with
        ``await file.read(max_bytes + 1)`` and one byte past the cap is enough to know;
     3. :func:`sniffed_type` names it → accepted, as the DETECTED type (a PNG declared
-       ``image/jpeg`` is stored and served as a PNG);
+       ``image/jpeg`` is stored and served as a PNG); declared ``text/plain`` without a NUL
+       byte is text in any encoding, unless ``require_utf8_text=True`` (Kurvenschmiede)
+       asks for UTF-8 as well;
     4. otherwise, declared as one of the accepted pictures → :class:`NotAnImageError`
        (400: "renamed to .png"); anything else → :class:`UnsupportedUploadTypeError` (415).
 
@@ -212,7 +232,7 @@ def check_upload(
     if len(data) > max_bytes:
         raise UploadTooLargeError(f"The file is larger than {max_bytes // (1024 * 1024)} MB.")
     declared = bare_media_type(declared_type)
-    found = sniffed_type(data, declared)
+    found = sniffed_type(data, declared, require_utf8_text=require_utf8_text)
     if found is None:
         if declared in IMAGE_MEDIA_TYPES:
             raise NotAnImageError(
@@ -264,6 +284,7 @@ async def store_attachment(
     save: SaveFn,
     mint_key: MintKeyFn = content_addressed_key,
     max_bytes: int = MAX_ATTACHMENT_BYTES,
+    require_utf8_text: bool = False,
 ) -> StoredUpload:
     """The whole upload policy for one attachment, with the storing left to the app.
 
@@ -274,7 +295,7 @@ async def store_attachment(
     (charge it before or after this, see :mod:`eifi1_server_kit.limiter`), any per-user
     refusal (keksdose's demo account), and the URL it answers with.
     """
-    checked = check_upload(data, declared_type, max_bytes=max_bytes)
+    checked = check_upload(data, declared_type, max_bytes=max_bytes, require_utf8_text=require_utf8_text)
     key = mint_key(data, checked.extension)
     await save(key, data, checked.media_type)
     return StoredUpload(

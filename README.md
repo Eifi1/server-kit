@@ -47,7 +47,8 @@ Layer 1 never imports an app's `User`: the rules take plain values (`is_admin`,
 
 `check_upload(data, declared_type)` → `CheckedUpload(media_type, extension, disposition,
 size)`, deciding by the bytes (PNG, JPEG, GIF, WebP, `%PDF-`; text = declared `text/plain`
-and UTF-8 without NUL — no Pillow); refusals `EmptyUploadError` (400),
+without a NUL byte, in any encoding — keksdose's policy, since text is only ever served as
+an `attachment`; `require_utf8_text=True` adds Kurvenschmiede's UTF-8 rule); refusals `EmptyUploadError` (400),
 `UploadTooLargeError` (413), `NotAnImageError` (400), `UnsupportedUploadTypeError` (415).
 `store_attachment(data, declared_type, save=…, mint_key=…)` adds keksdose's
 content-addressed key and hands the bytes to the app's `save`. Also `sniffed_type`,
@@ -133,7 +134,10 @@ for name, value in plan.changes.items():
 - **kastlan**: `UUID32_SHA12_KEY_PATTERN`, `is_admin` from its maintainer role set,
   `FeedbackResponse` subclassed with `company_id` / `user_name`.
 - **Kurvenschmiede**: its own key string (no `jpeg`), `stamp_identity`, `limiter.hit()`
-  in place of `take()` (`None` instead of `0.0` when allowed).
+  in place of `take()` (`None` instead of `0.0` when allowed), and
+  `require_utf8_text=True` on `check_upload` / `sniffed_type` / `is_plain_text` to keep its
+  UTF-8 rule for text (the kit's default since 0.1.1 is keksdose's: declared `text/plain`
+  without NUL, any encoding).
 
 ## Developing
 
