@@ -4,10 +4,11 @@ keksdose ``backend/keksdose/infrastructure/extra_origin_cors.py`` (its showcase 
 Marcel 2026-10-03), with the paths and the per-path methods / headers as parameters.
 
 An app's own origin is served by Starlette's ``CORSMiddleware`` with
-``allow_credentials=True`` — the SPA's refresh cookie rides on it. That middleware has ONE
-policy for every origin it allows, so adding another origin there would hand that origin
-the cookie too (and ``https://eifi1.github.io`` is every GitHub Pages site of the account).
-So the extra origins get their own, smaller answer:
+``allow_credentials=True``. No app sends a cookie today (the refresh token travels in the
+JSON body), but that middleware has ONE policy for every origin it allows, so adding
+another origin there would hand that origin credentialed requests too (and
+``https://eifi1.github.io`` is every GitHub Pages site of the account). So the extra
+origins get their own, smaller answer:
 
 * **no credentials** — never ``Access-Control-Allow-Credentials``: they authenticate with
   a Bearer token (keksdose's review token) and nothing else;
