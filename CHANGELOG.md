@@ -10,6 +10,21 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.2.1] (2026-10-05)
+
+The legal harmonization's backend half (ui-kit 0.28.0). A patch: no name is added,
+removed or renamed.
+
+### Fixed
+
+* **translation_review:** `in_areas(key, areas)` also matches `kit.<area>.` — the kit's
+  wording for an area, flattened under `kit.` in every app. ui-kit 0.28 moves the legal
+  pages' shared sections into the kit, so a reviewer granted `["legal"]` was refused
+  `kit.legal.*` (hidden rows, 403 on a verdict) and the lawyer could not review the text
+  all three apps share. The same rule as the kit's `keyInArea`.
+* **cors:** the module docstring no longer speaks of the SPA's refresh cookie; no app has
+  one (the refresh token travels in the JSON body).
+
 ## [0.2.0] (2026-10-04)
 
 What keksdose asked for on switching to 0.1.0. Additive: no name is removed or renamed,
