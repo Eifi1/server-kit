@@ -75,9 +75,19 @@ def require_kit_keys(keys: Iterable[str]) -> None:
 
 
 def in_areas(key: str, areas: Sequence[str] | None) -> bool:
-    """Whether ``key`` lies in one of ``areas`` — the area itself or anything under ``<area>.``
-    (``None`` = every area; keksdose ``translation_review_service.py:91``)."""
-    return areas is None or any(key == area or key.startswith(f"{area}.") for area in areas)
+    """Whether ``key`` lies in one of ``areas`` — the area itself, anything under ``<area>.``,
+    or the kit's wording for it under ``kit.<area>.`` (``None`` = every area; keksdose
+    ``translation_review_service.py:91``).
+
+    The ``kit.<area>.`` arm is ui-kit 0.28's: the legal pages' shared sections are the kit's
+    words, flattened under ``kit.`` like all of them, so a reviewer granted ``["legal"]``
+    must reach ``kit.legal.*`` too — read and write — or the lawyer never sees the text all
+    three apps share (docs/legal-harmonization.md §7.5 in ui-kit). The kit's ``keyInArea``
+    applies the same rule on the page.
+    """
+    return areas is None or any(
+        key == area or key.startswith(f"{area}.") or key.startswith(f"{KIT_KEY_PREFIX}{area}.") for area in areas
+    )
 
 
 def normalize_locales(raw: Iterable[str], locale_codes: Sequence[str]) -> list[str]:

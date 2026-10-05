@@ -110,6 +110,13 @@ def test_areas() -> None:
     assert in_areas("legal.terms.title", ["legal"]) and in_areas("legal", ["legal"])
     assert not in_areas("legalese.x", ["legal"]) and not in_areas("common.save", ["legal"])
     assert in_areas("anything", None)
+
+
+def test_in_areas_reaches_the_kits_wording_for_an_area() -> None:
+    # ui-kit 0.28: the legal pages' shared sections are kit words under kit.legal.*
+    assert in_areas("kit.legal.sections.warranty.title", ["legal"])
+    assert not in_areas("kit.legalese.x", ["legal"]) and not in_areas("kit.legal", ["legal"])
+    assert not in_areas("kit.feedbackStatus.open", ["legal"])
     assert normalize_areas([" Legal "], AREAS) == ["legal"]
     assert normalize_areas([], AREAS) is None and normalize_areas(None, AREAS) is None
     with pytest.raises(TranslationAreaError, match="Unknown area"):
