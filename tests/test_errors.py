@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 
+from eifi1_server_kit.auth import AuthError, AuthErrorCode
 from eifi1_server_kit.errors import CONTRACT_ERRORS, contract_error_response, install_contract_error_handlers
 from eifi1_server_kit.feedback import (
     CrashCategoryNotAssignableError,
@@ -40,6 +41,14 @@ RAISED: dict[str, tuple[Exception, int]] = {
     "plain": (ValueError("an app's own invalid input"), 400),
 }
 
+#: The coded refusals answer ``{"detail", "code"}`` (§5.2).
+CODED: dict[str, tuple[AuthError, int]] = {
+    "credentials": (AuthError(AuthErrorCode.INVALID_CREDENTIALS), 401),
+    "closed": (AuthError(AuthErrorCode.REGISTRATION_CLOSED), 403),
+    "taken": (AuthError(AuthErrorCode.EMAIL_TAKEN, "That address has an account"), 409),
+    "token": (AuthError(AuthErrorCode.TOKEN_INVALID), 400),
+}
+
 
 def _app(*, value_error_first: bool) -> FastAPI:
     app = FastAPI()
@@ -56,6 +65,10 @@ def _app(*, value_error_first: bool) -> FastAPI:
     @app.get("/raise/{name}")
     async def raising(name: str) -> None:
         raise RAISED[name][0]
+
+    @app.get("/coded/{name}")
+    async def coded(name: str) -> None:
+        raise CODED[name][0]
 
     @app.get("/caught")
     async def caught() -> None:
@@ -76,6 +89,10 @@ async def test_every_kit_refusal_keeps_its_status_beside_a_value_error_handler(v
         for name, (exc, status_code) in RAISED.items():
             response = await client.get(f"/raise/{name}")
             assert (response.status_code, response.json()) == (status_code, {"detail": str(exc)}), name
+        for name, (auth_exc, status_code) in CODED.items():
+            response = await client.get(f"/coded/{name}")
+            expected = {"detail": str(auth_exc), "code": auth_exc.code.value}
+            assert (response.status_code, response.json()) == (status_code, expected), name
         # An endpoint's own mapping still comes first (Kurvenschmiede's foreign row is a 404).
         caught = await client.get("/caught")
         assert (caught.status_code, caught.json()) == (404, {"detail": "Feedback not found"})
@@ -100,6 +117,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         TranslationLocaleError,
         TranslationAreaError,
         TranslationAccessError,
+        AuthError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error
