@@ -90,6 +90,46 @@ def in_areas(key: str, areas: Sequence[str] | None) -> bool:
     )
 
 
+#: The escape character :func:`area_like_patterns` uses. Name it in the query
+#: (SQLAlchemy ``column.like(pattern, escape=LIKE_ESCAPE)``, SQL ``LIKE … ESCAPE '\'``):
+#: PostgreSQL defaults to it, SQLite has no default.
+LIKE_ESCAPE = "\\"
+
+
+def _like_literal(text: str) -> str:
+    """``text`` matched literally inside a ``LIKE`` pattern: ``%``, ``_`` and the escape escaped."""
+    return text.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2).replace("%", f"{LIKE_ESCAPE}%").replace("_", f"{LIKE_ESCAPE}_")
+
+
+def area_like_patterns(areas: Sequence[str] | None) -> list[str] | None:
+    """:func:`in_areas` as SQL ``LIKE`` patterns, for a listing that filters in the query.
+
+    Per area, the three arms of :func:`in_areas`: the key itself, ``<area>.%`` and the
+    kit's wording for it, ``kit.<area>.%`` — ``["legal"]`` gives ``["legal", "legal.%",
+    "kit.legal.%"]``. ``None`` (every area) is ``None``: no filter at all. An empty list
+    gives an empty list, and an ``OR`` of nothing matches nothing, as ``in_areas`` does.
+
+    Kurvenschmiede's finding after 0.2.1: a listing that narrows by area in SQL
+    (``key LIKE 'legal.%'``) never went through ``in_areas``, so the ``kit.<area>.`` arm
+    reached the write check and not the list. Build the filter from this, never by
+    hand, and the two cannot drift. ``%`` and ``_`` in an area are escaped with
+    :data:`LIKE_ESCAPE`; name it in the query. ``LIKE`` is case-sensitive in PostgreSQL,
+    as ``in_areas`` is; in SQLite only with ``PRAGMA case_sensitive_like = ON``::
+
+        patterns = area_like_patterns(grant.areas)
+        if patterns is not None:
+            query = query.where(or_(*(Row.key.like(p, escape=LIKE_ESCAPE) for p in patterns)))
+    """
+    if areas is None:
+        return None
+    kit = _like_literal(KIT_KEY_PREFIX)
+    patterns: list[str] = []
+    for area in areas:
+        literal = _like_literal(area)
+        patterns += [literal, f"{literal}.%", f"{kit}{literal}.%"]
+    return patterns
+
+
 def normalize_locales(raw: Iterable[str], locale_codes: Sequence[str]) -> list[str]:
     """``raw`` as shipped codes, de-duplicated, in ``locale_codes`` order (keksdose ``:61``).
 
