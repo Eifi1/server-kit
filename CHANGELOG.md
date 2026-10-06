@@ -10,6 +10,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.3.0] (2026-10-06)
+
 The account half of the sign-in and sign-up harmonisation (ui-kit 0.29.0,
 `docs/auth-harmonization.md` §8). Additive: no name is removed or renamed.
 
