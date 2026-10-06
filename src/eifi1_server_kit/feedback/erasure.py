@@ -122,7 +122,9 @@ def anonymise_feedback(
 ) -> AnonymisedFeedback:
     """One report with its author taken out (keksdose ``_anonymise_feedback`` row loop, ``:1201-1214``).
 
-    ``identifiers`` are the person's own strings — their email and display name. The body's
+    ``identifiers`` are the person's own strings — build them with
+    :func:`eifi1_server_kit.auth.erasure_identifiers` (the email, the old display name, the
+    full name in every order, longest first; never a bare first or last name). The body's
     ``[screenshot] <url>`` lines are stripped (the fix this module documents) BEFORE the
     scrub, and every URL the row named is returned in ``urls`` for
     :func:`attachment_keys_to_purge`. ``changes`` sets ``user_id``, ``crash_fingerprint``,

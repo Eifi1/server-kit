@@ -80,6 +80,30 @@ def test_reset_clears_windows() -> None:
     assert limiter.hit("ip") is None
 
 
+def test_count_reads_the_live_window_without_charging_it() -> None:
+    clock = _Clock()
+    limiter = SlidingWindowRateLimiter(max_hits=2, window_seconds=60, clock=clock)
+    assert limiter.count("ip") == 0 and "ip" not in limiter._hits
+    limiter.hit("ip")
+    clock.t += 30
+    limiter.hit("ip")
+    limiter.hit("ip")  # blocked, not recorded
+    assert limiter.count("ip") == 2
+    clock.t += 31  # the first has aged out
+    assert limiter.count("ip") == 1
+    assert limiter.count("ip") == 1, "counting charged a hit"
+
+
+def test_forget_drops_one_key_only() -> None:
+    limiter = SlidingWindowRateLimiter(max_hits=1, window_seconds=60, clock=_Clock())
+    limiter.hit("a")
+    limiter.hit("b")
+    limiter.forget("a")
+    limiter.forget("never-seen")
+    assert limiter.hit("a") is None
+    assert limiter.hit("b") is not None
+
+
 def test_a_key_that_has_aged_out_stops_costing_memory() -> None:
     """keksdose ``:78``: the keys are client-supplied, so the map must come back down."""
     clock = _Clock()

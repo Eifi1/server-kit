@@ -6,26 +6,31 @@ is written once instead of three times.
 
 The kit owns every visible word and every client part; this package owns the server side
 of the same contracts. The source of every rule is keksdose's backend (the canon), cited
-`file:line` in the docstrings; the contract is
+`file:line` in the docstrings; the contracts are
 [`docs/feedback-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md)
-§3 in the ui-kit.
+§3 and [`docs/auth-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/auth-harmonization.md)
+§8 in the ui-kit.
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
-  One optional extra, `images` (`pillow>=11`), for `uploads.ensure_decodable_image` only.
+  Two optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
+  and `mail` (`httpx>=0.28`) for `mail.ResendClient` only. No JWT library: the kit builds
+  and checks claims, each app signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
 ## Layering
 
 | Layer | What | Status |
 |---|---|---|
-| **1 — contracts as code** | pure functions, Pydantic models, one Starlette middleware. **No** database models, migrations, auth, repositories or routes | **0.1.0** |
+| **1 — contracts as code** | pure functions, Pydantic models, small classes, one Starlette middleware. **No** database models, migrations, sessions, repositories or routes | **0.1.0** |
 | 2 — services behind ports | the feedback service written against a small repository / storage / clock port each app implements; router factories (`feedback_router(deps)`) with per-app hooks (`may_file(user)` for keksdose's demo sessions, the 404-vs-403 choice for a foreign row) | later |
 
 Layer 1 never imports an app's `User`: the rules take plain values (`is_admin`,
-`is_author`, the row's stored status and body), refusals are plain exceptions carrying a
-`status_code`, and the queries — RLS, kastlan's `company_id` — stay in the app.
+`is_author`, the row's stored status and body, `is_first_user`, a token's `iat` and the
+account's `sessions_invalid_before`), refusals are plain exceptions carrying a
+`status_code`, and the queries — RLS, kastlan's `company_id`, the invitation rows — stay in
+the app.
 
 ## What is in it
 
@@ -73,7 +78,9 @@ None` and `reset()`; `FeedbackLimiters` (20 uploads and 20 crashes per user per 
 `retry_after_header`. **Process-local**: each worker and each Cloud Run instance counts on
 its own. Build limiters per app (`app.state`), never as module globals. When to charge —
 before or after validation, before or after the crash dedupe — is the caller's choice;
-the module docstring records keksdose's order and the contract's recommendation.
+the module docstring records keksdose's order and the contract's recommendation. `count(key)` reads a key's live window without charging it,
+`forget(key)` drops one key's window. The sign-in budgets are
+[`auth.AuthLimiters`](#eifi1_server_kitauth).
 
 ### `eifi1_server_kit.cors`
 
@@ -87,9 +94,11 @@ the showcase's three paths.
 ### `eifi1_server_kit.errors`
 
 `install_contract_error_handlers(app)` registers `contract_error_response` — `{"detail":
-str(exc)}` at the exception's `status_code` — for each of `CONTRACT_ERRORS`: `FeedbackError`,
-`UploadRejectedError` and the translation review's `TranslationLocaleError` (422),
-`TranslationAreaError` (422) and `TranslationAccessError` (403). See [the refusals](#the-refusals).
+str(exc)}` at the exception's `status_code`, plus `"code"` for a refusal that has one — for
+each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translation review's
+`TranslationLocaleError` (422), `TranslationAreaError` (422) and `TranslationAccessError`
+(403), and `auth.AuthError` (`{"detail": "Invalid credentials", "code":
+"invalid_credentials"}` at 401, …). See [the refusals](#the-refusals).
 
 ### `eifi1_server_kit.translation_review`
 
@@ -101,16 +110,112 @@ locales and areas (`review_grant`, `can_review_kit`, `assert_allowed`, `normaliz
 = prefix + 43 URL-safe characters, `hash_review_token` = SHA-256, `tokens_to_retire`,
 `review_token_is_live`, `review_token_expiry`).
 
+**An app that filters a listing by area in SQL** builds the filter from
+`area_like_patterns(grant.areas)` — the three arms of `in_areas` per area (`["legal"]` →
+`["legal", "legal.%", "kit.legal.%"]`, `None` = no filter) — and never by hand:
+
+```python
+from eifi1_server_kit.translation_review import LIKE_ESCAPE, area_like_patterns
+
+patterns = area_like_patterns(grant.areas)
+if patterns is not None:
+    query = query.where(or_(*(Row.key.like(p, escape=LIKE_ESCAPE) for p in patterns)))
+```
+
+Kurvenschmiede found its listing narrowing with `key LIKE 'legal.%'` beside the kit's
+`in_areas`, so 0.2.1's `kit.<area>.` arm reached the verdict check and not the list. Name
+`LIKE_ESCAPE` in the query (SQLite has no default escape); `LIKE` is case-sensitive in
+PostgreSQL, as `in_areas` is.
+
+### `eifi1_server_kit.auth`
+
+Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the reference.
+
+| Area | Names |
+|---|---|
+| Addresses | `normalise_email` (trim + lower-case, never strips a `+tag`); `tagged_variant(email, tag)` (keksdose's `taggedEmail`: `None` when there is already a `+` or nothing to split); `invitation_accepts(invited, registered, tag)` (the exact address or the app's own tag on it); `verified_by_invitation(invited, registered)` (the exact address only — a tagged sign-up verifies by its own mail); `addresses_for_reset(email, tag)` (the submitted address, then its tagged variant) |
+| The gate | `registration_decision(is_first_user=, on_env_list=, has_valid_invitation=)` → `RegistrationDecision.FIRST_ADMIN` / `INVITED` / `CLOSED` (`.allowed`, `.first_admin`); `parse_env_list`, `env_list_match` (`None` = no list set) |
+| Names | `full_name(first, last, locale)` ("First Last"; hu "Last First"; zh "LastFirst" for a CJK name, a Latin one as written; a missing part leaves the other), `name_incomplete(first, last, is_demo=)`, `erasure_identifiers(email, first, last, old_display_name)` |
+| One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d |
+| Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
+| Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
+| Schemas | `RegisterRequest`, `LoginRequest`, `TokenResponse[UserT]`, `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook), `ProfileUpdate`; the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag` |
+| Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` 400), `AuthError(code, detail=None)` |
+
+**The kit signs no JWT.** Each app keeps its library and secret and hands the claim dicts
+to it: `jwt.encode(kit.access_claims(user.id, now=now, extra={"role": user.role}), …)`.
+On every request and on refresh: `if kit.token_is_revoked(claims.get("iat"),
+user.sessions_invalid_before): …401`. The comparison is exact, so a token minted after a
+cut-off in the same second survives.
+
+**One-time tokens are stored hashed** — reset, verification and invitation alike (keksdose
+kept its verification token in plaintext). Mail `raw`, store `digest`, look up by
+`hash_token(submitted)`, delete the row when it is redeemed, and delete the account's
+earlier rows when minting a new one.
+
+**Per IP a hard limit, per address only a delay** (§5.2). A lock per address would let
+anyone lock a known user out by failing on purpose, so `LoginFailureThrottle` counts
+failures per submitted address — known or not — and slows the answer down: five free,
+then 1 s doubling to 30 s, cleared by a success. Wait BEFORE the password check on every
+attempt, or a fast "right" answer tells a guesser that the slow ones were wrong:
+
+```python
+limiters = app.state.auth_limiters  # AuthLimiters(), built in create_app
+if (wait := limiters.login.hit(client_ip(request))) is not None:
+    raise HTTPException(429, headers={"Retry-After": retry_after_header(wait)})
+await asyncio.sleep(limiters.login_failures.delay(payload.email))
+user = await authenticate(session, payload.email, payload.password)  # dummy hash for unknown addresses
+if user is None:  # unknown, wrong password, deactivated — one answer
+    limiters.login_failures.record_failure(payload.email)
+    raise kit.AuthError(kit.AuthErrorCode.INVALID_CREDENTIALS)
+limiters.login_failures.clear(payload.email)
+```
+
+**The gate.** `registration_decision` makes the first account the admin and then lets in
+only a valid invitation — an allow-list entry is one (§2.12). The environment list does
+one job now: when it is set, the first account must be on it, so a stranger cannot claim a
+fresh deployment; after that it grants nothing. Pass `on_env_list=env_list_match(email,
+settings_list)`; `None` (no list) keeps keksdose's open first registration.
+
+**Erasure.** `anonymise_feedback(…, identifiers=kit.erasure_identifiers(user.email,
+user.first_name, user.last_name, old_display_name))`: the email, the old display name and
+the full name in every order `full_name` writes — never a bare first or last name, which
+would shred a report mentioning "Mai" or "Bank" — longest first, so `scrub_text` cannot
+leave half a name behind.
+
+**Subclass the schemas**: the app's fields (kastlan's company, keksdose's currency and its
+challenge's `encrypted`), its `role` enum, and `name_completion_exempt()` returning
+`self.is_demo` for keksdose's demo. `TokenResponse[MyUserResponse]` types the user.
+
+### `eifi1_server_kit.mail`
+
+The **`mail` extra** (`httpx`) for `ResendClient` only; the rest needs nothing.
+
+`MailText(subject, intro, body, cta, outro)` is one mail in one language — keep a table per
+mail, keyed by full tags (`de-CH`, `en`) or bare languages (`de`, `en`). `pick(locale,
+texts)` chooses the row: the exact tag, its language, then `de-CH` → `de` → `en`
+(`FALLBACK_LOCALES`); a table with none of them is a `KeyError`. `text.render(link=…, name=…, hours=…)`
+fills `{placeholders}` on the template only and lays the mail out with `render_message`,
+which HTML-escapes every part (a name with markup stays text) and requires an http(s) link,
+escaped in the `href` too. → `MailMessage(subject, text, html)`.
+
+`Mailer` is the protocol (`await mailer.send(to, message, kind="verification") -> bool`,
+never raises). `ResendClient(api_key=, from_address=, timeout=10, client=None)` posts to
+Resend, retrying once only on a transport error, `429` or `5xx`, under one
+`Idempotency-Key`, and never logs the recipient. `ConsoleMailer(level=logging.INFO)` logs
+the mail with its link — development only; kastlan passes `logging.WARNING`. Not yet:
+`List-Unsubscribe` and the rest a notification needs (the notifications round).
+
 ## Installing it in an app
 
 Apps depend on a **published** version — the wheel attached to a tagged GitHub Release, whose hash `uv.lock` pins —
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.2.1/eifi1_server_kit-0.2.1-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.3.0/eifi1_server_kit-0.3.0-py3-none-any.whl"
 ```
 
-With the image guard, name the extra: `"eifi1-server-kit[images] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.
+With the image guard or the Resend client, name the extra: `"eifi1-server-kit[images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.
 
 The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
 binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each

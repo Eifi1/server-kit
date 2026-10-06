@@ -190,7 +190,7 @@ wheels = [
 
 [[package]]
 name = "eifi1-server-kit"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -200,6 +200,9 @@ dependencies = [
 [package.optional-dependencies]
 images = [
     { name = "pillow" },
+]
+mail = [
+    { name = "httpx" },
 ]
 
 [package.dev-dependencies]
@@ -216,11 +219,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", marker = "extra == 'mail'", specifier = ">=0.28.0" },
     { name = "pillow", marker = "extra == 'images'", specifier = ">=11.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "starlette", specifier = ">=0.40.0" },
 ]
-provides-extras = ["images"]
+provides-extras = ["images", "mail"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -85,6 +85,22 @@ class SlidingWindowRateLimiter:
             hits.append(now)
             return None
 
+    def count(self, key: str) -> int:
+        """How many hits ``key`` has inside the window now, without recording one.
+
+        Never more than ``max_hits``, since a blocked hit is not recorded. A key never
+        hit answers ``0`` and is not added to the map.
+        """
+        cutoff = self._clock() - self._window
+        with self._lock:
+            return sum(1 for moment in self._hits.get(key, ()) if moment > cutoff)
+
+    def forget(self, key: str) -> None:
+        """Drop ``key``'s window, as if it had never been hit. A sign-in that succeeds
+        clears its address's failures this way (:class:`eifi1_server_kit.auth.LoginFailureThrottle`)."""
+        with self._lock:
+            self._hits.pop(key, None)
+
     def _sweep(self, now: float, cutoff: float) -> None:
         """Drop every key whose whole window has aged out. Caller holds the lock.
 

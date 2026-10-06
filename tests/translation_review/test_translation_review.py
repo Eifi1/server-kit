@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -14,6 +15,7 @@ from eifi1_server_kit.translation_review import (
     BATCH_MAX,
     KEKSDOSE_REVIEW_TOKEN_PREFIX,
     KIT_AREA,
+    LIKE_ESCAPE,
     MAX_LIVE_REVIEW_TOKENS,
     REVIEW_TOKEN_RANDOM_LENGTH,
     ReviewGrant,
@@ -27,6 +29,7 @@ from eifi1_server_kit.translation_review import (
     TranslationReviewTokenResponse,
     TranslationReviewWrite,
     TranslationVerdict,
+    area_like_patterns,
     assert_allowed,
     can_review_kit,
     hash_review_token,
@@ -121,6 +124,41 @@ def test_in_areas_reaches_the_kits_wording_for_an_area() -> None:
     assert normalize_areas([], AREAS) is None and normalize_areas(None, AREAS) is None
     with pytest.raises(TranslationAreaError, match="Unknown area"):
         normalize_areas(["marketing"], AREAS)
+
+
+def test_area_like_patterns_are_in_areas_in_sql(request: pytest.FixtureRequest) -> None:
+    """Kurvenschmiede's finding: a listing filtered in SQL must match exactly what
+    ``in_areas`` allows — run both over the same keys, through a real ``LIKE``."""
+    assert area_like_patterns(["legal"]) == ["legal", "legal.%", "kit.legal.%"]
+    assert area_like_patterns(None) is None and area_like_patterns([]) == []
+
+    db = sqlite3.connect(":memory:")
+    request.addfinalizer(db.close)
+    db.execute("PRAGMA case_sensitive_like = ON")  # PostgreSQL's LIKE, which in_areas mirrors
+
+    def sql_matches(key: str, patterns: list[str]) -> bool:
+        return any(db.execute("SELECT ? LIKE ? ESCAPE ?", (key, p, LIKE_ESCAPE)).fetchone()[0] for p in patterns)
+
+    keys = [
+        "legal",
+        "legal.terms.title",
+        "legalese.x",
+        "kit.legal.sections.warranty.title",
+        "kit.legal",
+        "kit.legalese.x",
+        "kit.feedbackStatus.open",
+        "Legal.terms",
+        "price_list.title",
+        "priceXlist.title",
+        "kit.price_list.a",
+        "100%.x",
+        "100x.x",
+    ]
+    for areas in (["legal"], ["legal", "price_list"], ["100%"], ["kit"], []):
+        patterns = area_like_patterns(areas)
+        assert patterns is not None
+        for key in keys:
+            assert sql_matches(key, patterns) == in_areas(key, areas), (key, areas)
 
 
 def test_locales_are_exact_but_case_insensitive() -> None:
