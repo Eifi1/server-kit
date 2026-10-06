@@ -10,6 +10,60 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+The account half of the sign-in and sign-up harmonisation (ui-kit 0.29.0,
+`docs/auth-harmonization.md` §8). Additive: no name is removed or renamed.
+
+### Added
+
+* **auth:** a new subpackage, Layer 1 like the rest — no database, no app `User`, no
+  routes, and no JWT signing (each app keeps its library).
+  * **accounts:** `normalise_email` (trim + lower-case, never strips a `+tag`);
+    `tagged_variant` (keksdose's `taggedEmail`); `invitation_accepts` (the exact address
+    or the app's own tag on it); `verified_by_invitation` (the exact address only — a
+    tagged sign-up verifies by its own mail); `addresses_for_reset` (the submitted address,
+    then its tagged variant); `registration_decision` → `RegistrationDecision`
+    (`FIRST_ADMIN` / `INVITED` / `CLOSED`) with `parse_env_list` / `env_list_match` — the
+    environment list only guards the bootstrap: when set, the first account must be on it,
+    and it grants nothing after; `full_name` ("First Last"; hu "Last First"; zh
+    "LastFirst"); `name_incomplete` (never for a demo); `erasure_identifiers` (the email,
+    the old display name, the full name in every order, longest first, never a bare first
+    or last name) for `feedback.anonymise_feedback`.
+  * **tokens:** `mint` → `MintedToken(raw, digest)`, `hash_token`, `is_expired`;
+    `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d. `access_claims`,
+    `refresh_claims`, `challenge_claims` (`ChallengeKind`) build `{sub, type, iat, exp}`
+    with a fractional `iat` and refuse an `extra` that overrides them or carries a name,
+    an email or a locale; `token_is_revoked(iat, sessions_invalid_before)` is keksdose's
+    exact, fail-closed check. `ACCESS_TOKEN_LIFETIME` 24 h and `REFRESH_TOKEN_LIFETIME`
+    30 d as the settings' defaults.
+  * **limits:** `AuthLimiters` — login, the 2FA / set-password steps (per IP and per
+    challenge subject), registration, the reset request (10 / h per IP, 3 / h per address),
+    verification resends — each a `Budget` an app may replace; `LoginFailureThrottle` and
+    `login_failure_delay`: failures per address slow the answer down (five free, then 1 s
+    doubling to 30 s) and never lock it out, because a lock per address is a
+    denial-of-service lever.
+  * **schemas:** `RegisterRequest`, `LoginRequest`, `TokenResponse[UserT]`,
+    `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed, read-only
+    `display_name` and `name_incomplete`; the `name_completion_exempt()` hook),
+    `ProfileUpdate` (`extra="forbid"`, explicit nulls refused); the types `Email` (no
+    `email-validator` needed), `NewPassword` (8 characters, 72 bytes), `ExistingPassword`,
+    `PersonName` (1–120 after trimming), `LocaleTag`.
+  * **errors:** `AuthErrorCode` (`invalid_credentials`, `registration_closed`,
+    `email_taken`, `invitation_invalid`, `invitation_expired`, `token_invalid`) and
+    `AuthError(code, detail=None)` with `status_code` and `code`, in `CONTRACT_ERRORS`.
+* **mail:** a new module. `MailText`, `MailMessage`, `pick(locale, texts)` (the exact tag,
+  its language, then `de-CH` → `de` → `en`), `render_message` (keksdose's layout, every
+  part escaped, the link required http(s) and escaped in the `href`), the `Mailer`
+  protocol, `ConsoleMailer` and `ResendClient` — behind the new optional `mail` extra
+  (`httpx>=0.28`): injected key and sender, a timeout per attempt, one retry only on a
+  transport error, 429 or 5xx under one `Idempotency-Key`, never raises, never logs the
+  recipient. `List-Unsubscribe` waits for the notifications round.
+* **errors:** `contract_error_response` adds `"code"` to the body for a refusal that
+  carries one; every other refusal answers exactly as before.
+* **translation_review:** `area_like_patterns(areas)` and `LIKE_ESCAPE` — `in_areas` as
+  SQL `LIKE` patterns, for a listing that filters by area in the query (Kurvenschmiede's
+  finding: its SQL filter bypassed the `kit.<area>.` arm).
+* **limiter:** `SlidingWindowRateLimiter.count(key)` and `forget(key)`.
+
 ## [0.2.1] (2026-10-05)
 
 The legal harmonization's backend half (ui-kit 0.28.0). A patch: no name is added,
