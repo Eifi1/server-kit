@@ -190,13 +190,27 @@ def _language(locale: str | None) -> str:
     return (locale or "").strip().lower().replace("_", "-").split("-", 1)[0]
 
 
+_CJK = re.compile(
+    "^[\u1100-\u11ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff"
+    "\U00020000-\U0002fa1f\u00b7\u30fb]+$"
+)
+
+
+def _is_cjk(part: str) -> bool:
+    """Whether a name part is written in CJK script (Han, kana, hangul; a middle dot
+    allowed, as in transliterated names) — the only names zh writes family-first with no
+    space."""
+    return bool(_CJK.match(part))
+
+
 def full_name(first: str | None, last: str | None, locale: str | None) -> str:
     """A person's name in the order of ``locale``'s language (§3.2).
 
     "First Last" in de-CH, en, fr, it and es (and any language not listed); "Last First"
-    in hu; "LastFirst" with no space in zh. Both parts are trimmed; an empty part leaves
-    the other alone, so a migrated account whose ``last_name`` is still empty shows its
-    old display name as it was.
+    in hu; "LastFirst" with no space in zh — but only for a name written in CJK script in
+    both parts: a zh reader sees "Ada Lovelace" as written, never "LovelaceAda". Both
+    parts are trimmed; an empty part leaves the other alone, so a migrated account whose
+    ``last_name`` is still empty shows its old display name as it was.
 
     Whose language: the READER's on screen (the kit formats there; the API's
     ``display_name`` is a fallback), the RECIPIENT's in a mail or a push, the AUTHOR's in
@@ -207,7 +221,7 @@ def full_name(first: str | None, last: str | None, locale: str | None) -> str:
         return given or family
     language = _language(locale)
     if language in FAMILY_NAME_FIRST_NO_SPACE:
-        return f"{family}{given}"
+        return f"{family}{given}" if _is_cjk(family) and _is_cjk(given) else f"{given} {family}"
     if language in FAMILY_NAME_FIRST:
         return f"{family} {given}"
     return f"{given} {family}"

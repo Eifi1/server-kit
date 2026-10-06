@@ -151,7 +151,7 @@ def test_user_response_reads_an_orm_row_and_ignores_a_stale_display_name() -> No
         created_at = CREATED
 
     user = UserResponse.model_validate(Row())
-    assert user.display_name == "ExampleBob" and user.email_verified and user.totp_enabled
+    assert user.display_name == "Bob Example" and user.email_verified and user.totp_enabled
 
 
 def test_a_demo_session_is_never_incomplete() -> None:

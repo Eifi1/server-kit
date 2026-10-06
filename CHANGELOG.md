@@ -25,7 +25,7 @@ The account half of the sign-in and sign-up harmonisation (ui-kit 0.29.0,
     (`FIRST_ADMIN` / `INVITED` / `CLOSED`) with `parse_env_list` / `env_list_match` — the
     environment list only guards the bootstrap: when set, the first account must be on it,
     and it grants nothing after; `full_name` ("First Last"; hu "Last First"; zh
-    "LastFirst"); `name_incomplete` (never for a demo); `erasure_identifiers` (the email,
+    "LastFirst" for a name in CJK script, a Latin name as written); `name_incomplete` (never for a demo); `erasure_identifiers` (the email,
     the old display name, the full name in every order, longest first, never a bare first
     or last name) for `feedback.anonymise_feedback`.
   * **tokens:** `mint` → `MintedToken(raw, digest)`, `hash_token`, `is_expired`;

@@ -109,9 +109,10 @@ def test_the_gate() -> None:
         ("es", "Ada Example"),
         ("hu", "Example Ada"),
         ("hu-HU", "Example Ada"),
-        ("zh", "ExampleAda"),
-        ("zh_Hans", "ExampleAda"),
-        ("ZH-CN", "ExampleAda"),
+        # A Latin name stays as written in zh; only a CJK name is family-first, no space.
+        ("zh", "Ada Example"),
+        ("zh_Hans", "Ada Example"),
+        ("ZH-CN", "Ada Example"),
         ("xx", "Ada Example"),
         (None, "Ada Example"),
         ("", "Ada Example"),
@@ -119,6 +120,13 @@ def test_the_gate() -> None:
 )
 def test_full_name_follows_the_language(locale: str | None, expected: str) -> None:
     assert full_name(" Ada ", " Example ", locale) == expected
+
+
+def test_full_name_in_zh_runs_a_cjk_name_together_family_first() -> None:
+    assert full_name("小龙", "李", "zh") == "李小龙"
+    assert full_name("小龙", "李", "zh-CN") == "李小龙"
+    assert full_name("小龙", "李", "en") == "小龙 李", "outside zh the order is the reader's"
+    assert full_name("Ada", "李", "zh") == "Ada 李", "a mixed name stays as written"
 
 
 def test_full_name_with_a_part_missing_is_the_other_alone() -> None:
@@ -138,7 +146,9 @@ def test_name_incomplete() -> None:
 
 def test_erasure_identifiers_are_the_email_the_old_name_and_the_full_name_in_every_order() -> None:
     ids = erasure_identifiers("ada@example.com", "Ada", "Example", "Ada E.")
-    assert set(ids) == {"ada@example.com", "Ada E.", "Ada Example", "Example Ada", "ExampleAda"}
+    assert set(ids) == {"ada@example.com", "Ada E.", "Ada Example", "Example Ada"}
+    # A CJK name also gets zh's run-together form, the one its stamp holds.
+    assert "李小龙" in erasure_identifiers(None, "小龙", "李", None)
     assert "Ada" not in ids and "Example" not in ids, "never a bare first or last name"
     assert [len(i) for i in ids] == sorted((len(i) for i in ids), reverse=True), "longest first"
 
@@ -152,7 +162,6 @@ def test_erasure_identifiers_drop_empties_duplicates_and_half_names() -> None:
     assert erasure_identifiers("", "Ada", "Example", " ada example ") == [
         "ada example",
         "Example Ada",
-        "ExampleAda",
     ]
 
 
