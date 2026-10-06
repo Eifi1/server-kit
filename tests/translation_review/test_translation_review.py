@@ -126,13 +126,14 @@ def test_in_areas_reaches_the_kits_wording_for_an_area() -> None:
         normalize_areas(["marketing"], AREAS)
 
 
-def test_area_like_patterns_are_in_areas_in_sql() -> None:
+def test_area_like_patterns_are_in_areas_in_sql(request: pytest.FixtureRequest) -> None:
     """Kurvenschmiede's finding: a listing filtered in SQL must match exactly what
     ``in_areas`` allows — run both over the same keys, through a real ``LIKE``."""
     assert area_like_patterns(["legal"]) == ["legal", "legal.%", "kit.legal.%"]
     assert area_like_patterns(None) is None and area_like_patterns([]) == []
 
     db = sqlite3.connect(":memory:")
+    request.addfinalizer(db.close)
     db.execute("PRAGMA case_sensitive_like = ON")  # PostgreSQL's LIKE, which in_areas mirrors
 
     def sql_matches(key: str, patterns: list[str]) -> bool:
