@@ -23,7 +23,12 @@ def test_the_package_is_typed() -> None:
 
 
 def test_every_exported_name_exists() -> None:
-    for module_name in ("eifi1_server_kit.auth", "eifi1_server_kit.feedback", "eifi1_server_kit.translation_review"):
+    for module_name in (
+        "eifi1_server_kit.auth",
+        "eifi1_server_kit.feedback",
+        "eifi1_server_kit.mail",
+        "eifi1_server_kit.translation_review",
+    ):
         module = importlib.import_module(module_name)
         exported = module.__all__
         assert len(exported) == len(set(exported)), module_name
