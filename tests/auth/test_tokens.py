@@ -13,13 +13,17 @@ from eifi1_server_kit.auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     ACCESS_TOKEN_LIFETIME,
     CHALLENGE_LIFETIMES,
+    EMAIL_CHANGE_TOKEN_KIND,
+    EMAIL_CHANGE_TTL,
     INVITE_TTL,
+    ONE_TIME_TOKEN_TTLS,
     REFRESH_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_LIFETIME,
     RESET_TTL,
     VERIFY_TTL,
     ChallengeKind,
     MintedToken,
+    OneTimeTokenKind,
     access_claims,
     challenge_claims,
     hash_token,
@@ -40,6 +44,20 @@ def test_the_lifetimes_are_keksdoses() -> None:
         ChallengeKind.TWO_FACTOR: timedelta(minutes=5),
         ChallengeKind.PASSWORD_CHANGE: timedelta(minutes=10),
     } == CHALLENGE_LIFETIMES
+
+
+def test_every_one_time_token_kind_has_its_lifetime() -> None:
+    """The email change proves a mailbox, as verification does (user-admin §6.2); the kinds
+    are the mail kinds the Mailer logs."""
+    assert EMAIL_CHANGE_TTL == timedelta(hours=48) == VERIFY_TTL
+    assert set(ONE_TIME_TOKEN_TTLS) == set(OneTimeTokenKind)
+    assert ONE_TIME_TOKEN_TTLS[OneTimeTokenKind.PASSWORD_RESET] == RESET_TTL
+    assert ONE_TIME_TOKEN_TTLS[OneTimeTokenKind.INVITATION] == INVITE_TTL
+    assert EMAIL_CHANGE_TOKEN_KIND is OneTimeTokenKind.EMAIL_CHANGE and str(EMAIL_CHANGE_TOKEN_KIND) == "email_change"
+    assert [str(kind) for kind in OneTimeTokenKind] == ["password_reset", "verification", "invitation", "email_change"]
+    issued = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
+    assert not is_expired(issued, ONE_TIME_TOKEN_TTLS[EMAIL_CHANGE_TOKEN_KIND], issued + timedelta(hours=47))
+    assert is_expired(issued, ONE_TIME_TOKEN_TTLS[EMAIL_CHANGE_TOKEN_KIND], issued + timedelta(hours=48))
 
 
 def test_mint_gives_the_raw_token_once_and_its_digest() -> None:

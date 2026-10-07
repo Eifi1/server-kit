@@ -27,8 +27,14 @@ class AuthErrorCode(enum.StrEnum):
     INVITATION_INVALID = "invitation_invalid"
     #: The invitation has run out; "resend" mints a new one (§4.4).
     INVITATION_EXPIRED = "invitation_expired"
-    #: A reset or verification link that is unknown, spent or expired.
+    #: A one-time link (reset, verification, email change) that is unknown or spent — and
+    #: expired, for an app that does not tell expiry apart.
     TOKEN_INVALID = "token_invalid"
+    #: A one-time link that WAS valid and ran out: the page says "expired, ask for a new
+    #: one" instead of "invalid" (ui-kit 0.29.1; keksdose's verification and reset steps
+    #: tell the two apart). Only the link's holder can learn it existed, so it is no
+    #: oracle.
+    TOKEN_EXPIRED = "token_expired"
 
 
 #: Each code's status. The token codes are ``400`` as keksdose answers a bad reset or
@@ -40,6 +46,7 @@ AUTH_ERROR_STATUS: Mapping[AuthErrorCode, int] = {
     AuthErrorCode.INVITATION_INVALID: 400,
     AuthErrorCode.INVITATION_EXPIRED: 400,
     AuthErrorCode.TOKEN_INVALID: 400,
+    AuthErrorCode.TOKEN_EXPIRED: 400,
 }
 
 #: The English ``detail`` of each code, keksdose's words where it had them. The pages
@@ -51,6 +58,7 @@ AUTH_ERROR_DETAIL: Mapping[AuthErrorCode, str] = {
     AuthErrorCode.INVITATION_INVALID: "This invitation is not valid",
     AuthErrorCode.INVITATION_EXPIRED: "This invitation has expired",
     AuthErrorCode.TOKEN_INVALID: "This link is invalid or has expired",
+    AuthErrorCode.TOKEN_EXPIRED: "This link has expired",
 }
 
 
