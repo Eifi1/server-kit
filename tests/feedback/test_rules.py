@@ -13,6 +13,7 @@ import pytest
 
 from eifi1_server_kit.feedback import (
     AUTHOR_EDITABLE_STATUSES,
+    AWAITING_STATUSES,
     REWORKABLE_STATUSES,
     TERMINAL_STATUSES,
     CrashCategoryNotAssignableError,
@@ -22,10 +23,12 @@ from eifi1_server_kit.feedback import (
     FeedbackUpdate,
     UpdatePlan,
     check_author_edit,
+    initial_status,
     plan_update,
     reject_manual_crash,
     reopens,
     resolved_at_change,
+    rework_status,
 )
 
 NOW = datetime(2026, 10, 4, 9, 12, tzinfo=UTC)
@@ -91,8 +94,9 @@ def test_the_stamp_defaults_to_now_in_utc() -> None:
 # ── the author's lane ───────────────────────────────────────────────────────
 
 
-def test_the_author_edits_title_body_and_category_while_open_or_in_progress() -> None:
-    """keksdose ``test_feedback_service.py:123`` and ``:141``."""
+def test_the_author_edits_title_body_and_category_while_open_ready_or_in_progress() -> None:
+    """keksdose ``test_feedback_service.py:123`` and ``:141``; READY joins the lane (§8.2)."""
+    assert {S.OPEN, S.READY, S.IN_PROGRESS} == AUTHOR_EDITABLE_STATUSES
     changes = {"title": "reworded", "body": "clarified", "category": FeedbackCategory.BUG}
     for status in AUTHOR_EDITABLE_STATUSES:
         plan = _author(status, changes)
@@ -101,7 +105,7 @@ def test_the_author_edits_title_body_and_category_while_open_or_in_progress() ->
 
 def test_the_author_cannot_edit_after_in_evaluation() -> None:
     """keksdose ``test_feedback_service.py:154``: from IN_EVALUATION on the body is frozen."""
-    with pytest.raises(FeedbackForbiddenError, match=r"Entry is in IN_EVALUATION; only OPEN / IN_PROGRESS"):
+    with pytest.raises(FeedbackForbiddenError, match=r"Entry is in IN_EVALUATION; only OPEN / READY / IN_PROGRESS"):
         _author(S.IN_EVALUATION, {"body": "too late"}, body="b - longer")
     with pytest.raises(FeedbackForbiddenError):
         _author(S.DONE, {"title": "renamed"})
@@ -144,6 +148,9 @@ def test_the_author_reworks_a_settled_entry_by_appending_to_it() -> None:
 
 
 def test_every_answered_status_reopens_on_a_rework() -> None:
+    assert {S.IN_EVALUATION, S.NEEDS_LIVE_TEST, S.POSTPONED, S.DONE, S.WONT_DO} == REWORKABLE_STATUSES, (
+        "the same five as before READY (§8.2)"
+    )
     for status in REWORKABLE_STATUSES:
         plan = _author(status, {"body": "b + more"})
         assert plan.changes["status"] is S.OPEN, status
@@ -162,10 +169,13 @@ def test_a_settled_entry_still_cannot_be_rewritten_by_its_author() -> None:
             _author(S.DONE, changes, body="original")
 
 
-def test_an_admins_rework_reopens_without_being_told_to() -> None:
-    """keksdose ``test_feedback.py:310`` (live #331): body alone, from an admin, on a parked entry."""
+def test_an_admins_rework_goes_back_to_ready_without_being_told_to() -> None:
+    """keksdose ``test_feedback.py:310`` (live #331): body alone, from an admin, on a parked
+    entry. An admin's rework is already triaged, so it is READY, not OPEN (§8.2)."""
     plan = _admin(S.NEEDS_LIVE_TEST, {"body": "original\n\n--- REWORK 2026-09-16 03:57 ---\nstill"}, body="original")
-    assert plan.changes["status"] is S.OPEN and plan.reopened
+    assert plan.changes["status"] is S.READY and plan.reopened
+    done = _admin(S.DONE, {"body": "original + more"}, body="original")
+    assert done.changes == {"body": "original + more", "status": S.READY, "resolved_at": None}
 
 
 def test_an_admin_can_still_annotate_without_re_queueing() -> None:
@@ -180,6 +190,36 @@ def test_reopens_alone() -> None:
     assert reopens("DONE", reworking=True)
     assert not reopens("DONE", reworking=False)
     assert not reopens("IN_PROGRESS", reworking=True)
+    assert not reopens("READY", reworking=True), "READY is not answered yet: nothing to send back"
+
+
+# ── READY: the triage step (contract §8.2, keksdose live #396) ──────────────
+
+
+def test_ready_sits_between_open_and_in_progress() -> None:
+    order = list(S)
+    assert order[:3] == [S.OPEN, S.READY, S.IN_PROGRESS] and len(order) == 8
+    assert S("READY") is S.READY and S.READY.value == "READY"
+    # OPEN waits on the triager now, READY on the implementer (kit FEEDBACK_AWAITING_STATUSES).
+    assert {S.OPEN, S.IN_EVALUATION, S.NEEDS_LIVE_TEST} == AWAITING_STATUSES
+
+
+def test_an_admins_own_report_is_filed_ready_and_everyone_elses_open() -> None:
+    assert initial_status(author_is_admin=True) is S.READY
+    assert initial_status(author_is_admin=False) is S.OPEN
+    # A crash: nobody has looked at it yet, whoever's session it came from.
+    assert initial_status(author_is_admin=True, crash=True) is S.OPEN
+    assert initial_status(author_is_admin=False, crash=True) is S.OPEN
+
+
+def test_a_rework_goes_back_to_ready_from_an_admin_and_to_open_otherwise() -> None:
+    assert rework_status(actor_is_admin=True) is S.READY
+    assert rework_status(actor_is_admin=False) is S.OPEN
+
+
+def test_the_author_may_edit_a_ready_row() -> None:
+    plan = _author(S.READY, {"title": "reworded", "body": "b + more"})
+    assert plan.changes == {"title": "reworded", "body": "b + more"} and not plan.reopened
 
 
 def test_the_sent_changes_are_not_mutated() -> None:

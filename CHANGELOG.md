@@ -10,6 +10,23 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### Changed
+
+* **feedback:** a rework sent by an admin goes back to `READY`, no longer to `OPEN`
+  (`plan_update` decides it from `is_admin`); anyone else's still goes to `OPEN`. The
+  author's lane is OPEN / READY / IN_PROGRESS, and the refusal says so.
+  `AWAITING_STATUSES` gains `OPEN`, as the kit's does.
+
+### Added
+
+* **feedback:** `FeedbackStatus.READY` (feedback contract §8.2, keksdose live #396), the
+  triage step between `OPEN` and `IN_PROGRESS`: OPEN is "filed, not yet triaged", READY
+  "released for implementation". `initial_status(author_is_admin=, crash=False)` → READY
+  for an admin's own report, OPEN otherwise and for every crash; `rework_status(
+  actor_is_admin=)`. `AUTHOR_EDITABLE_STATUSES` gains READY; the reworkable set is the
+  same five. An app with a database enum adds the label (`ALTER TYPE feedbackstatus ADD
+  VALUE 'READY' AFTER 'OPEN'`).
+
 ## [0.4.0] (2026-10-07)
 
 The user-administration half of the user-management round (ui-kit 0.30.0,

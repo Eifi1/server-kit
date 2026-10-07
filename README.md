@@ -39,9 +39,10 @@ the app.
 
 | Area | Names |
 |---|---|
-| Enums and sets | `FeedbackStatus` (7), `FeedbackCategory` (5, CRASH first), `PICKABLE_CATEGORIES`, `AUTHOR_EDITABLE_STATUSES`, `TERMINAL_STATUSES`, `REWORKABLE_STATUSES`, `AWAITING_STATUSES` |
+| Enums and sets | `FeedbackStatus` (8; `READY` between `OPEN` and `IN_PROGRESS`), `FeedbackCategory` (5, CRASH first), `PICKABLE_CATEGORIES`, `AUTHOR_EDITABLE_STATUSES`, `TERMINAL_STATUSES`, `REWORKABLE_STATUSES`, `AWAITING_STATUSES` |
 | Schemas | `FeedbackCreate`, `FeedbackUpdate`, `FeedbackResponse`, `FeedbackAttachmentResponse`, `CrashReportCreate`, `CrashReportResponse` — subclass them; the knobs are class variables (`attachment_url_policy`, `max_context_size`) |
 | Limits | `MAX_ATTACHMENT_URLS` (5), `MAX_ATTACHMENT_BYTES` (10 MB), `ACCEPTED_MEDIA_TYPES`, `MAX_TITLE_LENGTH` (255), `MAX_BODY_LENGTH` (50 000), `MAX_CONTEXT_SIZE` (8 KB), `NOT_NULLABLE_FIELDS` |
+| Statuses the server decides | `initial_status(author_is_admin=, crash=False)` (READY for an admin's own report, OPEN otherwise and for every crash); `rework_status(actor_is_admin=)` (a rework goes back to READY from an admin, to OPEN from anyone else) |
 | PATCH rules | `plan_update(status=, body=, changes=, is_admin=, is_author=)` → `UpdatePlan(changes, reworking, reopened)`; `reject_manual_crash`, `check_author_edit`, `reopens`, `resolved_at_change` |
 | Rework bodies | `append_rework`, `rework_count` (anchored on `^---\s*REWORK\b`), `is_rework_append`, `split_body_attachments`, `body_attachment_urls`, `rework_stamp` |
 | Crash filing | `crash_fingerprint(payload, user_id)` (byte-identical to keksdose's), `decide_crash(candidate_status)` → `CrashDecision.FOLD` / `FILE` (the candidate is the newest row with the fingerprint whose status is NOT in `TERMINAL_STATUSES` — filter that in the query, as keksdose does), `fold_crash_context`, `crash_title`, `crash_body`, `crash_context`, `crash_seen_at`, `crash_reference` |
@@ -49,6 +50,14 @@ the app.
 | Attachment URLs | `AttachmentUrlPolicy(key_pattern, prefix)`, `OPAQUE_KEY_PATTERN` (default), `SHA12_KEY_PATTERN` (keksdose), `UUID32_SHA12_KEY_PATTERN` (kastlan) |
 | Context | `stamp_identity` (the server writes `user_*` from the session), `context_size`, `CONTEXT_KEYS` |
 | Errors | `FeedbackError` → `FeedbackValidationError` (422: `CrashCategoryNotAssignableError`, `UnknownAttachmentUrlError`), `FeedbackForbiddenError` (403) — all `ValueError`s with a `status_code` |
+
+**READY, the triage step** (feedback contract §8.2): OPEN means "filed, not yet triaged",
+and an admin releases a row for implementation by setting READY. The server decides the
+first status at submit — `initial_status(author_is_admin=…)` — and the client never sends
+one with a new row. A rework sent by an admin goes back to READY, anyone else's to OPEN;
+`plan_update` does it from its `is_admin`. The author may edit while OPEN, READY or
+IN_PROGRESS. An app whose status column is a database enum adds the label first
+(`ALTER TYPE feedbackstatus ADD VALUE 'READY' AFTER 'OPEN'`); existing OPEN rows stay OPEN.
 
 ### `eifi1_server_kit.uploads`
 
