@@ -18,11 +18,15 @@ its maintainer roles", Kurvenschmiede ``role is ADMIN``)::
 The lanes:
 
 * **ADMIN** — any field, any status jump, any time.
-* **Author** — ``title`` / ``body`` / ``category`` only, and only while OPEN /
+* **Author** — ``title`` / ``body`` / ``category`` only, and only while OPEN / READY /
   IN_PROGRESS; anything else is a :class:`FeedbackForbiddenError` naming the reason.
 * **Rework** — a body-only PATCH that strictly extends the body (admin or author; anyone
-  else is refused before the append is looked at). On a row outside OPEN / IN_PROGRESS
-  the SERVER sets ``status = OPEN`` — the client never sends one (keksdose live #331).
+  else is refused before the append is looked at). On a row outside OPEN / READY /
+  IN_PROGRESS the SERVER sets the status — the client never sends one (keksdose live
+  #331): READY when an admin sends the rework, OPEN otherwise (:func:`rework_status`,
+  contract §8.2).
+* **The first status** — the server decides it at submit, from the author's role:
+  :func:`initial_status` (§8.2). The client never sends a status with a new row.
 * **resolved_at** — stamped on a real transition INTO DONE / WONT_DO, cleared on leaving
   them (keksdose feedback #96).
 * **CRASH** — never set by hand, by anyone; CRASH → BUG stays an ordinary update.
@@ -73,8 +77,8 @@ def check_author_edit(
     """The non-admin half of the lanes (keksdose ``feedback_service.py:152-161``), in its order.
 
     Raises :class:`FeedbackForbiddenError` with keksdose's wording: ``Not the author``;
-    ``Author cannot change: <fields>``; ``Entry is in <STATUS>; only OPEN / IN_PROGRESS
-    entries can be edited by the author`` (unless ``reworking``).
+    ``Author cannot change: <fields>``; ``Entry is in <STATUS>; only OPEN / READY /
+    IN_PROGRESS entries can be edited by the author`` (unless ``reworking``).
     """
     current = FeedbackStatus(status)
     if not is_author:
@@ -84,13 +88,35 @@ def check_author_edit(
         raise FeedbackForbiddenError(f"Author cannot change: {', '.join(sorted(forbidden))}")
     if current not in AUTHOR_EDITABLE_STATUSES and not reworking:
         raise FeedbackForbiddenError(
-            f"Entry is in {current.value}; only OPEN / IN_PROGRESS entries can be edited by the author"
+            f"Entry is in {current.value}; only OPEN / READY / IN_PROGRESS entries can be edited by the author"
         )
 
 
 def reopens(status: FeedbackStatus | str, *, reworking: bool) -> bool:
-    """Does a rework append re-open this row? Yes outside OPEN / IN_PROGRESS (keksdose ``:179``)."""
+    """Does a rework append send this row back to the queue? Yes outside OPEN / READY /
+    IN_PROGRESS (keksdose ``:179``); :func:`rework_status` says to which status."""
     return reworking and FeedbackStatus(status) not in AUTHOR_EDITABLE_STATUSES
+
+
+def initial_status(*, author_is_admin: bool, crash: bool = False) -> FeedbackStatus:
+    """The status a new row is filed in, decided by the server at submit (contract §8.2).
+
+    READY for an admin's own report: an admin filing it has triaged it by writing it, so it
+    is released for implementation at once (keksdose live #396, Marcel: "my (or admin
+    feedback) will be right away persisted with ready to implement"). OPEN for everyone
+    else's — filed, not yet triaged. A crash report is OPEN whoever's session it came
+    from: nobody has looked at it yet.
+    """
+    if crash:
+        return FeedbackStatus.OPEN
+    return FeedbackStatus.READY if author_is_admin else FeedbackStatus.OPEN
+
+
+def rework_status(*, actor_is_admin: bool) -> FeedbackStatus:
+    """Where a rework append sends a row back to (contract §3.4, §8.2): READY when an admin
+    sends it — an admin's rework is already triaged — and OPEN otherwise, because a user's
+    rework is new input for the triager to look at."""
+    return FeedbackStatus.READY if actor_is_admin else FeedbackStatus.OPEN
 
 
 def resolved_at_change(
@@ -116,7 +142,8 @@ def resolved_at_change(
 @dataclass(frozen=True, slots=True)
 class UpdatePlan:
     """What to write onto the row: ``changes`` is the sent fields, plus the server's own
-    ``status`` (a re-open) and ``resolved_at`` (a stamp or a clear) when they apply."""
+    ``status`` (a rework sent back to the queue — :func:`rework_status`; ``reopened``
+    says it happened) and ``resolved_at`` (a stamp or a clear) when they apply."""
 
     changes: dict[str, Any]
     reworking: bool
@@ -148,12 +175,13 @@ def plan_update(
         check_author_edit(current, changes, is_author=is_author, reworking=reworking)
 
     planned = dict(changes)
-    # The server re-opens, whoever sent the rework. An admin who means to annotate without
+    # The server re-queues, whoever sent the rework: to READY for an admin's (already
+    # triaged), to OPEN for anyone else's (§8.2). An admin who means to annotate without
     # re-queueing sends a status with the body — then this is not an append at all and the
     # status they sent wins by construction (keksdose test_feedback.py:351).
     reopened = reopens(current, reworking=reworking)
     if reopened:
-        planned["status"] = FeedbackStatus.OPEN
+        planned["status"] = rework_status(actor_is_admin=is_admin)
 
     change = resolved_at_change(current, planned.get("status"))
     if change == "stamp":

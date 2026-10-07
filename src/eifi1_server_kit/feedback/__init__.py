@@ -77,10 +77,12 @@ from eifi1_server_kit.feedback.rules import (
     AUTHOR_EDITABLE_FIELDS,
     UpdatePlan,
     check_author_edit,
+    initial_status,
     plan_update,
     reject_manual_crash,
     reopens,
     resolved_at_change,
+    rework_status,
 )
 from eifi1_server_kit.feedback.schemas import (
     MAX_ATTACHMENT_URLS,
@@ -161,6 +163,7 @@ __all__ = [
     "decide_crash",
     "feedback_attachment_urls",
     "fold_crash_context",
+    "initial_status",
     "is_rework_append",
     "normalise_crash_text",
     "opens_with_rework_rule",
@@ -170,6 +173,7 @@ __all__ = [
     "resolved_at_change",
     "rework_count",
     "rework_stamp",
+    "rework_status",
     "scrub_context",
     "scrub_text",
     "split_body_attachments",

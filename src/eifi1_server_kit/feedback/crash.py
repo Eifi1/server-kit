@@ -19,6 +19,9 @@ kit decides what to do with it::
         )
     return CrashReportResponse(stored=True, duplicate=..., feedback_id=..., reference=crash_reference(fingerprint))
 
+**A crash is filed OPEN** whoever's session it came from, an admin's included (contract
+§8.2, ``initial_status(author_is_admin=…, crash=True)``): nobody has looked at it yet.
+
 **The fingerprint is byte-identical to keksdose's** (pinned by golden vectors computed
 from keksdose's own code): any drift would mint a new fingerprint for every crash already
 open there, and the next occurrence of each would file a twin instead of folding.

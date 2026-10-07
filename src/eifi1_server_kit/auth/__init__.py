@@ -72,6 +72,7 @@ from eifi1_server_kit.auth.schemas import (
     TokenResponse,
     TwoFactorChallenge,
     UserResponse,
+    UtcDateTime,
 )
 from eifi1_server_kit.auth.tokens import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -163,6 +164,7 @@ __all__ = [
     "TokenResponse",
     "TwoFactorChallenge",
     "UserResponse",
+    "UtcDateTime",
     "access_claims",
     "addresses_for_reset",
     "challenge_claims",

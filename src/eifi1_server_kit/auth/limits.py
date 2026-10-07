@@ -15,9 +15,11 @@ So per address only FAILURES are counted, and the answer slows down instead:
 
 **The IP is a coarse signal.** ``X-Forwarded-For`` is client-supplied and Cloud Run
 appends to it rather than replacing it, so a client rotating that header gets a fresh IP
-window per request (keksdose ``auth_router.py:150``). That is why the 2FA and
-set-password steps also count per challenge SUBJECT — a key no header changes, and safe
-to count, because only someone who passed the password step can drive it.
+window per request wherever the LEFT-most entry is read (keksdose ``auth_router.py:150``).
+Key every IP window by :func:`~eifi1_server_kit.limiter.client_ip`, which counts from the
+right. Even then many people share an address and one person may hold many, which is why
+the 2FA and set-password steps also count per challenge SUBJECT — a key no header changes,
+and safe to count, because only someone who passed the password step can drive it.
 
 The numbers are keksdose's, except registration (Kurvenschmiede's; keksdose has none) and
 the reset windows, which kastlan runs too. Each is a :class:`Budget` an app may replace.

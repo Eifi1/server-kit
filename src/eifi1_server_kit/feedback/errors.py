@@ -43,8 +43,8 @@ class FeedbackForbiddenError(FeedbackError):
     """The actor may not make this change (→ 403; keksdose ``FeedbackUpdateForbiddenError``).
 
     Raised for: not the author and not an admin; an author changing a field outside
-    title / body / category; an author editing a row outside OPEN / IN_PROGRESS without
-    it being a rework append.
+    title / body / category; an author editing a row outside OPEN / READY / IN_PROGRESS
+    without it being a rework append.
     """
 
     status_code = 403

@@ -11,11 +11,13 @@ from pydantic import ValidationError
 
 from eifi1_server_kit.user_admin import (
     MAIL_BACKEND_CONSOLE,
+    SUMMARY_ACTIVE_ADMINS,
     ActionConfirmation,
     ActiveChange,
     AdminAction,
     AdminActionRow,
     AdminUserRow,
+    ConfirmationLevel,
     DeletionRequest,
     EmailChangeConfirm,
     EmailChangeRequest,
@@ -82,6 +84,18 @@ def test_the_list_answer_is_generic_over_the_apps_row() -> None:
     answer = UserListResponse[Row](users=[Row(**_user())], total=1, mail_backend="resend")
     assert answer.users[0].plan == "FREE" and answer.summary is None
     loose = UserListResponse.model_validate({"users": [_user()], "total": 1, "mail_backend": "console", "summary": {}})
+    assert loose.levels is None
+    leveled = UserListResponse.model_validate(
+        {
+            "users": [],
+            "total": 0,
+            "mail_backend": "resend",
+            "summary": {SUMMARY_ACTIVE_ADMINS: 2},
+            "levels": {"deactivate": "type_email", "role_change": "acknowledge"},
+        }
+    )
+    assert leveled.levels == {"deactivate": ConfirmationLevel.TYPE_EMAIL, "role_change": ConfirmationLevel.ACKNOWLEDGE}
+    assert leveled.model_dump(mode="json")["levels"]["deactivate"] == "type_email"
     assert isinstance(loose.users[0], AdminUserRow)
     with pytest.raises(ValidationError):
         UserListResponse(users=[], total=-1, mail_backend="console")

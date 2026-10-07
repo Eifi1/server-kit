@@ -31,6 +31,38 @@ from types import MappingProxyType
 from typing import Literal, Protocol
 from urllib.parse import quote
 
+__all__ = [
+    "ACCEPTED_MEDIA_TYPES",
+    "ACCEPT_LIST",
+    "EXTENSION_MEDIA_TYPES",
+    "IMAGE_MEDIA_TYPES",
+    "MAX_ATTACHMENT_BYTES",
+    "UNDECODABLE_IMAGE_TYPES",
+    "CheckedUpload",
+    "Disposition",
+    "EmptyUploadError",
+    "MintKeyFn",
+    "NotAnImageError",
+    "SaveFn",
+    "StoredUpload",
+    "UnsupportedUploadTypeError",
+    "UploadRejectedError",
+    "UploadSource",
+    "UploadTooLargeError",
+    "bare_media_type",
+    "check_upload",
+    "content_addressed_key",
+    "content_disposition",
+    "ensure_decodable_image",
+    "inline_or_attachment",
+    "is_plain_text",
+    "media_type_for_extension",
+    "read_capped_upload",
+    "signature_type",
+    "sniffed_type",
+    "store_attachment",
+]
+
 #: Per-file ceiling (contract §3.5; keksdose ``upload_guards.py:197`` ``ATTACHMENT_MAX_BYTES``).
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
