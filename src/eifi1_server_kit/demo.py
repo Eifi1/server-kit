@@ -189,7 +189,7 @@ DEMO_ERROR_DETAIL: Mapping[DemoErrorCode, str] = {
     DemoErrorCode.DEMO_CAPACITY: "The demo is full right now",
     DemoErrorCode.DEMO_NOT_READY: "The demo is not ready",
     DemoErrorCode.DEMO_READ_ONLY: "Not possible in the demo: it is read-only",
-    DemoErrorCode.DEMO_REFUSED: "Not possible in the demo",
+    DemoErrorCode.DEMO_REFUSED: "Not possible for a demo account",
 }
 
 
@@ -244,7 +244,9 @@ def refuse_demo(user_is_demo: bool, what: str) -> None:
     (a reset answers as usual), with :func:`is_demo_address`.
     """
     if user_is_demo:
-        raise DemoError(DemoErrorCode.DEMO_REFUSED, f"Not possible in the demo: {what}")
+        # "for a demo account", not "in the demo": it also refuses an admin acting ON a
+        # demo account (kastlan's 0.31 adoption), and reads right from either side.
+        raise DemoError(DemoErrorCode.DEMO_REFUSED, f"Not possible for a demo account: {what}")
 
 
 # --- §6.3: model R, read-only ------------------------------------------------------------

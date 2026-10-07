@@ -282,7 +282,7 @@ def test_refuse_demo_names_what_a_demo_never_may() -> None:
     with pytest.raises(DemoError) as caught:
         refuse_demo(True, "the account export")
     assert (caught.value.code, caught.value.status_code) == (DemoErrorCode.DEMO_REFUSED, 403)
-    assert str(caught.value) == "Not possible in the demo: the account export"
+    assert str(caught.value) == "Not possible for a demo account: the account export"
 
 
 # ── §6.3: model R, read-only ────────────────────────────────────────────────

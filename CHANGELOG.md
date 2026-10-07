@@ -10,6 +10,18 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.5.1] (2026-10-07)
+
+From kastlan's 0.31 adoption.
+
+### Fixed
+
+* **auth:** `Budget.limiter()` defaults its clock to `time.monotonic`, like every other
+  limiter in the kit, so a per-demo budget is one call.
+* **demo:** `refuse_demo` says "Not possible for a demo account: …" (and `DEMO_REFUSED`'s
+  default detail "Not possible for a demo account"). It also refuses an admin acting ON a
+  demo account, and "in the demo" read wrongly from that side. The code is unchanged.
+
 ## [0.5.0] (2026-10-07)
 
 The backend half of the settings round and of the landing and demo round (ui-kit 0.31,

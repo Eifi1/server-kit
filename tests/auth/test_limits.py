@@ -123,3 +123,9 @@ def test_an_app_keeps_its_own_numbers() -> None:
     limiters = AuthLimiters(login=Budget(10, 60), login_failures=throttle)
     assert (limiters.login.max_hits, limiters.login.window_seconds) == (10, 60)
     assert limiters.login_failures is throttle
+
+
+def test_a_budget_s_limiter_defaults_to_the_monotonic_clock() -> None:
+    # kastlan's 0.31 adoption: a per-demo PDF budget built without passing a clock.
+    limiter = Budget(2, 60).limiter()
+    assert limiter.hit("demo-1") is None
