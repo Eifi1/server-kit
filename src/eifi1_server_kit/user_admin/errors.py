@@ -45,10 +45,18 @@ class AccountErrorCode(enum.StrEnum):
     CONFIRMATION_REQUIRED = "confirmation_required"
     #: The typed address is not the target account's (§4.2).
     CONFIRMATION_MISMATCH = "confirmation_mismatch"
+    #: The CURRENT password is wrong on a signed-in route: an email change or a deletion
+    #: request (§6.2, §6.4). 400, not 401 — an app's client treats a 401 as an ended
+    #: session and signs the user out, which would be the wrong answer to a typo.
+    PASSWORD_INCORRECT = "password_incorrect"
 
 
-#: Each code's status: all ``409``, see the module docstring.
-ACCOUNT_ERROR_STATUS: Mapping[AccountErrorCode, int] = dict.fromkeys(AccountErrorCode, 409)
+#: Each code's status: ``409``, see the module docstring — except ``password_incorrect``,
+#: a ``400`` so no client reads it as an ended session.
+ACCOUNT_ERROR_STATUS: Mapping[AccountErrorCode, int] = {
+    **dict.fromkeys(AccountErrorCode, 409),
+    AccountErrorCode.PASSWORD_INCORRECT: 400,
+}
 
 #: The English ``detail`` of each code, for logs and API clients; the pages show the
 #: kit's own text for the code. None of them echoes an address.
@@ -59,6 +67,7 @@ ACCOUNT_ERROR_DETAIL: Mapping[AccountErrorCode, str] = {
     AccountErrorCode.HOUSEHOLD_HAS_MEMBERS: "The household still has other members",
     AccountErrorCode.CONFIRMATION_REQUIRED: "This action needs an explicit confirmation",
     AccountErrorCode.CONFIRMATION_MISMATCH: "The typed address does not match the account",
+    AccountErrorCode.PASSWORD_INCORRECT: "The current password is not correct",
 }
 
 #: Keys the error body sets itself; :attr:`AccountError.extra` may not override them.

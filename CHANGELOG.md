@@ -68,8 +68,10 @@ whole HTML document, and a Reply-To.
   * **sensitive:** `looks_secret_key`, `looks_secret_value` and `looks_secret`, the one
     heuristic the audit detail and the export share.
   * **errors:** `AccountErrorCode` (`last_admin`, `self_action`, `other_companies`,
-    `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409)
-    and `AccountError(code, detail=None, extra=None)`.
+    `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409;
+    `password_incorrect`, 400, for a wrong current password on a signed-in route, so a
+    client never reads it as an ended session) and `AccountError(code, detail=None,
+    extra=None)`.
 * **auth:** `AuthErrorCode.TOKEN_EXPIRED` (`token_expired`, 400), which the ui-kit has
   since 0.29.1. Also `EMAIL_CHANGE_TTL` (48 h), `OneTimeTokenKind` (`password_reset`,
   `verification`, `invitation`, `email_change`), `ONE_TIME_TOKEN_TTLS` and

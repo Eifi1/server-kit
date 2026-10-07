@@ -22,7 +22,7 @@ from eifi1_server_kit.user_admin import (
 NONE, ACKNOWLEDGE, TYPE_EMAIL = ConfirmationLevel.NONE, ConfirmationLevel.ACKNOWLEDGE, ConfirmationLevel.TYPE_EMAIL
 
 
-def test_the_codes_are_the_contracts_and_every_one_is_a_409() -> None:
+def test_the_codes_are_the_contracts_and_every_one_but_the_password_is_a_409() -> None:
     assert [str(code) for code in AccountErrorCode] == [
         "last_admin",
         "self_action",
@@ -30,8 +30,14 @@ def test_the_codes_are_the_contracts_and_every_one_is_a_409() -> None:
         "household_has_members",
         "confirmation_required",
         "confirmation_mismatch",
+        "password_incorrect",
     ]
-    assert set(ACCOUNT_ERROR_STATUS.values()) == {409} and set(ACCOUNT_ERROR_STATUS) == set(AccountErrorCode)
+    assert set(ACCOUNT_ERROR_STATUS) == set(AccountErrorCode)
+    # A wrong current password on a signed-in route is a 400: a 401 would sign the user out.
+    assert ACCOUNT_ERROR_STATUS[AccountErrorCode.PASSWORD_INCORRECT] == 400
+    assert {
+        status for code, status in ACCOUNT_ERROR_STATUS.items() if code is not AccountErrorCode.PASSWORD_INCORRECT
+    } == {409}
     assert set(ACCOUNT_ERROR_DETAIL) == set(AccountErrorCode)
     assert not any("@" in detail for detail in ACCOUNT_ERROR_DETAIL.values()), "no detail echoes an address"
 

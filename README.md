@@ -207,7 +207,7 @@ holds stay in the app.
 | Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `AdminActionRow`; `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
 | Export | `export_envelope(app, account, data, now)` (`"format": "eifi1-account-export"`, `"version": 1`), `export_filename`, `EXPORT_PER_USER` (once a minute), `NEVER_EXPORT`; `assert_no_secrets(obj, allow=)` / `secret_paths` → `ExportSecretError`; `looks_secret`, `looks_secret_key`, `looks_secret_value` |
-| Refusals | `AccountErrorCode` (`last_admin`, `self_action`, `other_companies`, `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409), `AccountError(code, detail=None, extra=None)` |
+| Refusals | `AccountErrorCode` (`last_admin`, `self_action`, `other_companies`, `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409; `password_incorrect` 400, so a wrong current password never reads as an ended session), `AccountError(code, detail=None, extra=None)` |
 
 **An admin action, in order**: the guards, the confirmation the server decided, the change,
 and its `admin_actions` row in the same transaction:
