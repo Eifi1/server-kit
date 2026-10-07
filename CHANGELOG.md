@@ -10,6 +10,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.4.0] (2026-10-07)
+
 The user-administration half of the user-management round (ui-kit 0.30.0,
 `docs/user-admin-harmonization.md` §7): the admin rules and their confirmation levels,
 the user list's query, the audit row, the wire shapes, the two-stage deletion, the
