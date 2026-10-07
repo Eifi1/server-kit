@@ -28,6 +28,7 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.feedback",
         "eifi1_server_kit.mail",
         "eifi1_server_kit.translation_review",
+        "eifi1_server_kit.user_admin",
     ):
         module = importlib.import_module(module_name)
         exported = module.__all__

@@ -8,8 +8,9 @@ The kit owns every visible word and every client part; this package owns the ser
 of the same contracts. The source of every rule is keksdose's backend (the canon), cited
 `file:line` in the docstrings; the contracts are
 [`docs/feedback-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md)
-§3 and [`docs/auth-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/auth-harmonization.md)
-§8 in the ui-kit.
+§3, [`docs/auth-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/auth-harmonization.md)
+§8 and [`docs/user-admin-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/user-admin-harmonization.md)
+§7 in the ui-kit.
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
@@ -97,8 +98,11 @@ the showcase's three paths.
 str(exc)}` at the exception's `status_code`, plus `"code"` for a refusal that has one — for
 each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translation review's
 `TranslationLocaleError` (422), `TranslationAreaError` (422) and `TranslationAccessError`
-(403), and `auth.AuthError` (`{"detail": "Invalid credentials", "code":
-"invalid_credentials"}` at 401, …). See [the refusals](#the-refusals).
+(403), `auth.AuthError` (`{"detail": "Invalid credentials", "code":
+"invalid_credentials"}` at 401, …), and user administration's `AccountError` (409) and
+`RosterQueryError` (422). An `AccountError`'s `extra` fields go beside `detail` and `code`,
+as in kastlan's `{"detail": …, "code": "last_admin", "companies": [...]}`. See
+[the refusals](#the-refusals).
 
 ### `eifi1_server_kit.translation_review`
 
@@ -136,11 +140,11 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | Addresses | `normalise_email` (trim + lower-case, never strips a `+tag`); `tagged_variant(email, tag)` (keksdose's `taggedEmail`: `None` when there is already a `+` or nothing to split); `invitation_accepts(invited, registered, tag)` (the exact address or the app's own tag on it); `verified_by_invitation(invited, registered)` (the exact address only — a tagged sign-up verifies by its own mail); `addresses_for_reset(email, tag)` (the submitted address, then its tagged variant) |
 | The gate | `registration_decision(is_first_user=, on_env_list=, has_valid_invitation=)` → `RegistrationDecision.FIRST_ADMIN` / `INVITED` / `CLOSED` (`.allowed`, `.first_admin`); `parse_env_list`, `env_list_match` (`None` = no list set) |
 | Names | `full_name(first, last, locale)` ("First Last"; hu "Last First"; zh "LastFirst" for a CJK name, a Latin one as written; a missing part leaves the other), `name_incomplete(first, last, is_demo=)`, `erasure_identifiers(email, first, last, old_display_name)` |
-| One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d |
+| One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
 | Schemas | `RegisterRequest`, `LoginRequest`, `TokenResponse[UserT]`, `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook), `ProfileUpdate`; the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag` |
-| Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` 400), `AuthError(code, detail=None)` |
+| Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400), `AuthError(code, detail=None)` |
 
 **The kit signs no JWT.** Each app keeps its library and secret and hands the claim dicts
 to it: `jwt.encode(kit.access_claims(user.id, now=now, extra={"role": user.role}), …)`.
@@ -187,6 +191,82 @@ leave half a name behind.
 challenge's `encrypted`), its `role` enum, and `name_completion_exempt()` returning
 `self.is_demo` for keksdose's demo. `TokenResponse[MyUserResponse]` types the user.
 
+### `eifi1_server_kit.user_admin`
+
+User administration and the account's own settings (user-admin contract §3–§7).
+keksdose and Kurvenschmiede are the reference. The tables (`admin_actions`, the token
+rows), the queries, RLS and company scoping, what an erasure deletes and what an export
+holds stay in the app.
+
+| Area | Names |
+|---|---|
+| Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` |
+| Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
+| User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, `RosterQueryError` (422), `LIKE_ESCAPE` |
+| Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, now=)` → the row's fields; `audit_detail` (ids, roles, flags and counts only), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
+| Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `AdminActionRow`; `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
+| Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
+| Export | `export_envelope(app, account, data, now)` (`"format": "eifi1-account-export"`, `"version": 1`), `export_filename`, `EXPORT_PER_USER` (once a minute), `NEVER_EXPORT`; `assert_no_secrets(obj, allow=)` / `secret_paths` → `ExportSecretError`; `looks_secret`, `looks_secret_key`, `looks_secret_value` |
+| Refusals | `AccountErrorCode` (`last_admin`, `self_action`, `other_companies`, `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409; `password_incorrect` 400, so a wrong current password never reads as an ended session), `AccountError(code, detail=None, extra=None)` |
+
+**An admin action, in order**: the guards, the confirmation the server decided, the change,
+and its `admin_actions` row in the same transaction:
+
+```python
+from eifi1_server_kit import user_admin as kit
+
+kit.refuse_self(actor.id, target.id)
+kit.refuse_last_admin(
+    target_is_admin=target.role is Role.ADMIN and target.is_active,
+    active_admins=await count_active_admins(session),  # kastlan: in this company
+    change_removes_admin=not body.active,
+)
+kit.require_confirmation(
+    kit.confirmation_level(kit.AdminAction.DEACTIVATE),
+    target_email=target.email,
+    acknowledged=body.acknowledged,
+    confirm_email=body.confirm_email,
+)
+target.is_active, target.sessions_invalid_before = False, now
+record = kit.admin_action_record(
+    kit.AdminAction.DEACTIVATE,
+    actor_id=actor.id,
+    target_user_id=target.id,
+    target_email=target.email,
+    detail={"sessions_ended": True},
+    now=now,
+)
+session.add(AdminActionModel(**record))  # the app's own model, in the same transaction
+```
+
+**The confirmation level is a floor.** `confirmation_level` answers the contract's level;
+`at_least=` raises it and never lowers it. keksdose raises the reset mail and the forced
+password change to `type_email` for an account whose key a password opens.
+
+**The detail never holds content.** Kurvenschmiede encrypts notes, titles and bodies at
+rest, and a plaintext copy in `detail` would carry them past the encryption, into a
+table every admin reads and past the erasure scrub. So `audit_detail` accepts only short
+tokens: a role, a locale, an ISO date. It refuses sentences, addresses, secrets and
+anything that is not JSON. A refusal is a bug in the app, and its tests catch it.
+
+**The user list** takes the contract's `-key` and DataTable's `key.desc` alike. An app
+narrows or widens the state vocabulary: Kurvenschmiede has no `invited` rows, and keksdose
+keeps `allowlisted`. It also adds its own sort keys. An unknown token is a 422, never an
+empty page.
+
+**The export check is a test.** Build the export of a fixture account with every table
+filled, then run `kit.assert_no_secrets(export)`. It flags keys named like a secret and
+values shaped like one: hashes, JWTs, digests, links with a token. It walks into
+containers, so `api_tokens: [{name, scopes}]` passes. `allow=` names a field it flags
+wrongly.
+
+**Deletion** is two-stage: deactivated at once, erased later. In `after_days` mode the
+erasure is a Cloud Scheduler → Cloud Run Job, one account per transaction, which
+re-checks `deletion_due(…, scheduled_at=row.deletion_scheduled_at)` on the locked row. In
+`operator` mode an operator erases from the platform. The email change's link lives
+`auth.EMAIL_CHANGE_TTL` (48 h) as a `OneTimeTokenKind.EMAIL_CHANGE` row holding the new
+address.
+
 ### `eifi1_server_kit.mail`
 
 The **`mail` extra** (`httpx`) for `ResendClient` only; the rest needs nothing.
@@ -194,15 +274,25 @@ The **`mail` extra** (`httpx`) for `ResendClient` only; the rest needs nothing.
 `MailText(subject, intro, body, cta, outro)` is one mail in one language — keep a table per
 mail, keyed by full tags (`de-CH`, `en`) or bare languages (`de`, `en`). `pick(locale,
 texts)` chooses the row: the exact tag, its language, then `de-CH` → `de` → `en`
-(`FALLBACK_LOCALES`); a table with none of them is a `KeyError`. `text.render(link=…, name=…, hours=…)`
-fills `{placeholders}` on the template only and lays the mail out with `render_message`,
-which HTML-escapes every part (a name with markup stays text) and requires an http(s) link,
-escaped in the `href` too. → `MailMessage(subject, text, html)`.
+(`FALLBACK_LOCALES`); a table with none of them is a `KeyError`. `pick_entry` also answers
+the key it chose. `render_mail(user.locale, texts, link=…, name=…, hours=…)` picks the row
+and renders it. It fills `{placeholders}` on the template only and lays the mail out with
+`render_message`, which HTML-escapes every part, the subject included, so a name with
+markup stays text. The link must be http(s) and is escaped in the `href` too. →
+`MailMessage(subject, text, html)`.
+
+The HTML is a **whole document**: `<!doctype html><html lang="…"><head><meta
+charset="utf-8"><title>{subject}</title></head><body>…</body></html>`. The `lang` is the
+row's own language, so a German fallback says `de-CH`. Outlook junked a fully
+authenticated Kurvenschmiede mail that was only a fragment.
 
 `Mailer` is the protocol (`await mailer.send(to, message, kind="verification") -> bool`,
-never raises). `ResendClient(api_key=, from_address=, timeout=10, client=None)` posts to
-Resend, retrying once only on a transport error, `429` or `5xx`, under one
-`Idempotency-Key`, and never logs the recipient. `ConsoleMailer(level=logging.INFO)` logs
+never raises). `ResendClient(api_key=, from_address=, timeout=10, client=None,
+reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
+under one `Idempotency-Key`, and never logs the recipient. **Set `reply_to`** from the
+app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address)`, i.e.
+`support@<the sender's domain>`. Cloudflare Email Routing forwards `support@` on all three
+domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` logs
 the mail with its link — development only; kastlan passes `logging.WARNING`. Not yet:
 `List-Unsubscribe` and the rest a notification needs (the notifications round).
 
@@ -212,7 +302,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.3.0/eifi1_server_kit-0.3.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.4.0/eifi1_server_kit-0.4.0-py3-none-any.whl"
 ```
 
 With the image guard or the Resend client, name the extra: `"eifi1-server-kit[images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.

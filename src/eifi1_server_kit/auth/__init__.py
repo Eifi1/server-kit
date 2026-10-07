@@ -8,7 +8,7 @@ the reference, cited ``file`` per rule.
 * :mod:`~eifi1_server_kit.auth.accounts` — the address and its tag, invitations, the
   registration gate, names, erasure identifiers;
 * :mod:`~eifi1_server_kit.auth.tokens` — one-time tokens (reset, verification,
-  invitation) and the session's claims;
+  invitation, email change) and the session's claims;
 * :mod:`~eifi1_server_kit.auth.limits` — :class:`AuthLimiters`, with the per-address
   delay that never locks out;
 * :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes;
@@ -78,8 +78,11 @@ from eifi1_server_kit.auth.tokens import (
     ACCESS_TOKEN_LIFETIME,
     ACCESS_TOKEN_TYPE,
     CHALLENGE_LIFETIMES,
+    EMAIL_CHANGE_TOKEN_KIND,
+    EMAIL_CHANGE_TTL,
     INVITE_TTL,
     ONE_TIME_TOKEN_BYTES,
+    ONE_TIME_TOKEN_TTLS,
     PROFILE_CLAIMS,
     REFRESH_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_LIFETIME,
@@ -89,6 +92,7 @@ from eifi1_server_kit.auth.tokens import (
     VERIFY_TTL,
     ChallengeKind,
     MintedToken,
+    OneTimeTokenKind,
     access_claims,
     challenge_claims,
     hash_token,
@@ -108,6 +112,8 @@ __all__ = [
     "CHALLENGE_PER_IP",
     "CHALLENGE_PER_SUBJECT",
     "DEFAULT_LOCALE",
+    "EMAIL_CHANGE_TOKEN_KIND",
+    "EMAIL_CHANGE_TTL",
     "FAMILY_NAME_FIRST",
     "FAMILY_NAME_FIRST_NO_SPACE",
     "INVITE_TTL",
@@ -122,6 +128,7 @@ __all__ = [
     "MAX_PASSWORD_BYTES",
     "MIN_PASSWORD_LENGTH",
     "ONE_TIME_TOKEN_BYTES",
+    "ONE_TIME_TOKEN_TTLS",
     "PROFILE_CLAIMS",
     "PROFILE_NOT_NULLABLE",
     "REFRESH_TOKEN_EXPIRE_MINUTES",
@@ -147,6 +154,7 @@ __all__ = [
     "LoginRequest",
     "MintedToken",
     "NewPassword",
+    "OneTimeTokenKind",
     "PasswordChangeChallenge",
     "PersonName",
     "ProfileUpdate",

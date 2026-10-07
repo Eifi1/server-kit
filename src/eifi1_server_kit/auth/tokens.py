@@ -17,7 +17,11 @@ the review tokens' (:mod:`eifi1_server_kit.translation_review.tokens`):
 * a lifetime per purpose: :data:`RESET_TTL` 1 h (the link is a credential, and the user
   is at their inbox waiting), :data:`VERIFY_TTL` 48 h (keksdose's
   ``email_verification_ttl_hours``), :data:`INVITE_TTL` 14 days (keksdose's budget-share
-  invite, ``budget_share_service.INVITE_TTL``).
+  invite, ``budget_share_service.INVITE_TTL``), :data:`EMAIL_CHANGE_TTL` 48 h
+  (``docs/user-admin-harmonization.md`` §6.2: it proves a mailbox, as verification does);
+* a :class:`OneTimeTokenKind` per purpose, for an app that keeps every one-time token in
+  one table with a ``kind`` column. The values are the mail ``kind`` the
+  :class:`~eifi1_server_kit.mail.Mailer` logs, so one word names the purpose everywhere.
 
 keksdose stored its verification token in plaintext; the kit stores every one-time token
 hashed. The table, the delete-on-redeem and the address check stay in the app.
@@ -53,6 +57,38 @@ RESET_TTL = timedelta(hours=1)
 VERIFY_TTL = timedelta(hours=48)
 #: An invitation (keksdose ``budget_share_service.INVITE_TTL``, §4.4).
 INVITE_TTL = timedelta(days=14)
+#: An email change's confirmation link, mailed to the NEW address (user-admin §6.2). As
+#: long as a verification link, because it proves the same thing — that the mailbox is
+#: theirs — and the address does not change until it is redeemed.
+EMAIL_CHANGE_TTL = timedelta(hours=48)
+
+
+class OneTimeTokenKind(enum.StrEnum):
+    """What a one-time token is FOR — the ``kind`` column of an app's token table, and the
+    ``kind`` its mail is logged under (:meth:`eifi1_server_kit.mail.Mailer.send`).
+
+    Every kind follows the same recipe (:func:`mint`, :func:`hash_token`,
+    :func:`is_expired`) at its own lifetime, :data:`ONE_TIME_TOKEN_TTLS`.
+    """
+
+    PASSWORD_RESET = "password_reset"
+    VERIFICATION = "verification"
+    INVITATION = "invitation"
+    #: ``POST /auth/me/email`` → ``POST /auth/me/email/confirm {token}`` (user-admin
+    #: §6.2). The row also holds the NEW address: the token proves that mailbox, and
+    #: the confirm switches the account to exactly the address the link was sent to.
+    EMAIL_CHANGE = "email_change"
+
+
+#: Each kind's lifetime.
+ONE_TIME_TOKEN_TTLS: Mapping[OneTimeTokenKind, timedelta] = {
+    OneTimeTokenKind.PASSWORD_RESET: RESET_TTL,
+    OneTimeTokenKind.VERIFICATION: VERIFY_TTL,
+    OneTimeTokenKind.INVITATION: INVITE_TTL,
+    OneTimeTokenKind.EMAIL_CHANGE: EMAIL_CHANGE_TTL,
+}
+#: The email change's kind, by the name the user-admin contract gives it (§7).
+EMAIL_CHANGE_TOKEN_KIND = OneTimeTokenKind.EMAIL_CHANGE
 
 #: Entropy of a one-time token's random part; ``token_urlsafe(32)`` is 43 characters.
 ONE_TIME_TOKEN_BYTES = 32

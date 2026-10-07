@@ -10,6 +10,82 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.4.0] (2026-10-07)
+
+The user-administration half of the user-management round (ui-kit 0.30.0,
+`docs/user-admin-harmonization.md` §7): the admin rules and their confirmation levels,
+the user list's query, the audit row, the wire shapes, the two-stage deletion, the
+account export and the email change's token. With it, Kurvenschmiede's mail findings: a
+whole HTML document, and a Reply-To.
+
+### ⚠ BREAKING CHANGES
+
+* **mail:** `render_message` takes `subject` and `lang` (keyword, required) and returns a
+  whole HTML document; `MailText.render` takes `lang` (required), the language its row is
+  written in. No app calls the kit's mail module yet. The one-call replacement for
+  `pick(locale, texts).render(link=…)` is `render_mail(locale, texts, link=…)`, which
+  passes the row's own language.
+
+### Added
+
+* **user_admin:** a new subpackage, Layer 1 like the rest.
+  * **rules:** `refuse_self(actor_id, target_id)` and `refuse_last_admin(target_is_admin=,
+    active_admins=, change_removes_admin=)` (Kurvenschmiede's rules; kastlan counts per
+    company); `confirm_email_matches` (normalised, caseless, a `+tag` kept);
+    `require_confirmation(level, target_email=, acknowledged=, confirm_email=)`:
+    acknowledge takes the checkbox or the typed address, type_email the address only.
+  * **actions:** `AdminAction`, the §4.3 vocabulary; `ConfirmationLevel` and
+    `CONFIRMATION_LEVELS`, the §4.2 table: `type_email` for deactivate, erase, transfer
+    and the user's own deletion request; `acknowledge` for a role or a forced password
+    change. `confirmation_level(action, at_least=)` treats the contract's level as a
+    floor, which an app may raise (keksdose's password-wrap rule) and never lower.
+  * **roster:** `parse_roster_query(…)` → `UserListQuery`, or `RosterQueryError` (422).
+    The sort keys are `SORT_KEYS`; the contract's `-key` and DataTable's `key.desc` both
+    work, each key once, and the default is newest first. The states are
+    `STATE_TOKENS`: §3.1's plus keksdose's `verified`, comma-separated or repeated, and
+    an app may narrow or widen them. Roles can be checked against the app's own; limit
+    1–200; `q` is trimmed, with `search_pattern` for `LIKE`.
+  * **audit:** `admin_action_record(action, actor_id=, target_user_id=, target_email=,
+    detail=, company_id=, now=)` returns the row's fields. `company_id` is included only
+    when given, and `now` is stored as given. `audit_detail` refuses whatever could carry
+    content or a secret (§9.6, Kurvenschmiede's encrypted columns): a string must be a
+    short token, keys may not be named like secrets nor values shaped like them, and the
+    rest is JSON scalars, lists and objects at most three deep and 2 KB.
+  * **schemas:** `AdminUserRow` (the `UserResponse` core plus `last_login_at`,
+    `password_change_required_at`, `deletion_requested_at`, `deletion_scheduled_at`, the
+    reviewer scope and `extra`) and `UserListResponse[RowT]`. `ActionConfirmation
+    {acknowledged, confirm_email?}` underlies `ActiveChange`, `RoleChange`, `RolesChange`
+    and `MailRequest` (`MailKind`). `MailResult` refuses a link unless mail goes to the
+    console. Also `InvitationCreate`, `InvitationRow`, `InvitationStatus`,
+    `invitation_status(…)`, `ReviewerUpdate`, `PersonRef`, `AdminActionRow`,
+    `EmailChangeRequest`, `EmailChangeConfirm` and `DeletionRequest`.
+  * **deletion:** `DeletionMode` (`after_days`, `operator`) and
+    `deletion_schedule(now, mode, days=30)`. `deletion_due(requested_at, days, now,
+    scheduled_at=)` never erases before the promised date.
+    `deletion_mail_retention_note(backup_days=7, log_days=30)` gives the mail's numbers.
+  * **export:** `export_envelope(app, account, data, now)` (`"eifi1-account-export"`,
+    version 1), `export_filename`, `EXPORT_PER_USER` and `NEVER_EXPORT`.
+    `assert_no_secrets` / `secret_paths` → `ExportSecretError`, for the app's test over a
+    full export; `allow=` covers a false positive.
+  * **sensitive:** `looks_secret_key`, `looks_secret_value` and `looks_secret`, the one
+    heuristic the audit detail and the export share.
+  * **errors:** `AccountErrorCode` (`last_admin`, `self_action`, `other_companies`,
+    `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409;
+    `password_incorrect`, 400, for a wrong current password on a signed-in route, so a
+    client never reads it as an ended session) and `AccountError(code, detail=None,
+    extra=None)`.
+* **auth:** `AuthErrorCode.TOKEN_EXPIRED` (`token_expired`, 400), which the ui-kit has
+  since 0.29.1. Also `EMAIL_CHANGE_TTL` (48 h), `OneTimeTokenKind` (`password_reset`,
+  `verification`, `invitation`, `email_change`), `ONE_TIME_TOKEN_TTLS` and
+  `EMAIL_CHANGE_TOKEN_KIND`.
+* **mail:** `render_mail(locale, texts, link=, **values)` and `pick_entry(locale, texts)`
+  → `(key, row)`. `ResendClient(reply_to=)` sends `"reply_to": [address]`.
+  `support_address(from_address)` gives `support@<domain>`, the default of each app's
+  `*_EMAIL_REPLY_TO` (Cloudflare Email Routing is live on all three domains).
+* **errors:** `AccountError` and `RosterQueryError` join `CONTRACT_ERRORS`.
+  `contract_error_response` writes a refusal's `extra` fields beside `detail` and `code`,
+  never in their place.
+
 ## [0.3.0] (2026-10-06)
 
 The account half of the sign-in and sign-up harmonisation (ui-kit 0.29.0,

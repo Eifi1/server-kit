@@ -222,6 +222,7 @@ def test_profile_update() -> None:
         (AuthErrorCode.INVITATION_INVALID, 400),
         (AuthErrorCode.INVITATION_EXPIRED, 400),
         (AuthErrorCode.TOKEN_INVALID, 400),
+        (AuthErrorCode.TOKEN_EXPIRED, 400),
     ],
 )
 def test_auth_errors_carry_their_code_and_status(code: AuthErrorCode, status_code: int) -> None:
