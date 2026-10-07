@@ -26,7 +26,7 @@ from eifi1_server_kit.uploads import (
     UploadRejectedError,
     UploadTooLargeError,
 )
-from eifi1_server_kit.user_admin import AccountError, AccountErrorCode
+from eifi1_server_kit.user_admin import AccountError, AccountErrorCode, RosterQueryError
 
 RAISED: dict[str, tuple[Exception, int]] = {
     "forbidden": (FeedbackForbiddenError("Not your report"), 403),
@@ -39,6 +39,7 @@ RAISED: dict[str, tuple[Exception, int]] = {
     "locale": (TranslationLocaleError("Unknown locale 'de'"), 422),
     "area": (TranslationAreaError("Unknown area 'x'"), 422),
     "access": (TranslationAccessError("Not granted for locale 'fr'"), 403),
+    "roster": (RosterQueryError("Unknown sort key 'plan'"), 422),
     "plain": (ValueError("an app's own invalid input"), 400),
 }
 
@@ -137,6 +138,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         TranslationAccessError,
         AuthError,
         AccountError,
+        RosterQueryError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error

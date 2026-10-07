@@ -4,7 +4,8 @@ Every refusal the kit raises is a plain exception carrying the contract's status
 ``status_code`` (:class:`~eifi1_server_kit.feedback.FeedbackError` 422 / 403,
 :class:`~eifi1_server_kit.uploads.UploadRejectedError` 400 / 413 / 415, the translation
 review's 422 / 403, :class:`~eifi1_server_kit.auth.AuthError` 400 / 401 / 403 / 409, and
-user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409).
+user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
+:class:`~eifi1_server_kit.user_admin.RosterQueryError` 422).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -45,6 +46,7 @@ from eifi1_server_kit.translation_review.scope import (
 )
 from eifi1_server_kit.uploads import UploadRejectedError
 from eifi1_server_kit.user_admin.errors import AccountError
+from eifi1_server_kit.user_admin.roster import RosterQueryError
 
 #: Every kit exception base that carries a ``status_code``; subclasses are covered by MRO.
 CONTRACT_ERRORS: tuple[type[Exception], ...] = (
@@ -55,6 +57,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     TranslationAccessError,
     AuthError,
     AccountError,
+    RosterQueryError,
 )
 
 
