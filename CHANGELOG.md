@@ -10,14 +10,64 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+The backend half of the settings round and of the landing and demo round (ui-kit 0.31,
+`docs/settings-harmonization.md` §7.2 and `docs/landing-demo-harmonization.md` §7.2), the
+feedback triage step READY (`docs/feedback-harmonization.md` §8.2), and the API export
+the ui-kit showcase's "Server kit" group is built from. Additive, apart from the rework
+status below: no public name is removed or renamed.
+
 ### Changed
 
 * **feedback:** a rework sent by an admin goes back to `READY`, no longer to `OPEN`
   (`plan_update` decides it from `is_admin`); anyone else's still goes to `OPEN`. The
   author's lane is OPEN / READY / IN_PROGRESS, and the refusal says so.
   `AWAITING_STATUSES` gains `OPEN`, as the kit's does.
+* **auth:** `TokenResponse`'s docstring no longer describes keksdose's 60-minute demo
+  token: a demo's token lives to the account's end (`expires_at`).
 
 ### Added
+
+* **settings:** a new module (settings §6).
+  * `apply_patch(obj, update, *, not_nullable, defaults=None)`: §6.1's rules 1–3 over a
+    body's `model_fields_set`, for PATCH and PUT bodies alike — an omitted field keeps its
+    value, a `null` clears (or resets to `defaults[name]`), a `null` on a `not_nullable`
+    field raises `PatchNullError` before anything is written. Writes onto an object or a
+    mapping; answers the fields written. A model without `extra="forbid"` and a guard name
+    that is no field are programming errors.
+  * `PatchNullError`: 422, `code: "not_nullable"`, `fields: [...]`; in `CONTRACT_ERRORS`.
+  * `canonical_locale(tag, offered)`: case and `_` normalised, an exact offered tag, else
+    the language's offered tag (`de`, `de-DE` → `de-CH`), else `None`.
+    `parse_accept_language(header, offered)`: the best offered locale by q-value.
+  * `profile_update_model(offered, name="ProfileUpdate")`, and the `offered_locales` knob
+    on `auth.ProfileUpdate` it sets: the locale goes through `canonical_locale` before the
+    pattern, and an unoffered language is a 422. Unset, nothing changes.
+* **demo:** a new module (landing-demo §5–§7).
+  * `DemoSettings` (`demo_session_enabled` False, `demo_user_max_age_hours` 24,
+    `demo_session_max_live` 500, `demo_session_rate_max` 5,
+    `demo_session_rate_window_seconds` 3600), for the app's settings to inherit.
+  * `DemoGate(settings, reap_limit=20).admit(ip, *, reap, count_live, is_ready, now=None)`
+    → `DemoAdmission(now, cutoff, reaped)`: §5.1's order around the app's async
+    callbacks (`DemoReaper`, `DemoCounter`), the cap counting live users only.
+  * `DemoErrorCode`, `DemoError(code, detail=None, *, retry_after=None)` with
+    `DEMO_ERROR_STATUS` and `DEMO_ERROR_DETAIL`; in `CONTRACT_ERRORS`.
+  * `demo_write_allowed(method, path, allow=frozenset())` (`READ_METHODS`; the allow-list
+    is the app's, `"METHOD /path"` with `{name}` for a segment) and
+    `refuse_demo(user_is_demo, what)`.
+  * `demo_address(domain)`, `is_demo_address(email, domain=None)`, `demo_password()`,
+    `DEMO_FIRST_NAME`, `demo_expires_at(created_at, settings)`, `stale_cutoff(now,
+    settings)`.
+* **limiter:** `client_ip(headers, peer, *, trusted_hops)`, counted from the right of
+  `X-Forwarded-For` (landing-demo §5.1) — the left-most entry is the client's to write.
+  `UNKNOWN_CLIENT`.
+* **auth:** `TokenResponse.expires_at` and `UserResponse.demo_expires_at`, optional, of the
+  new type `UtcDateTime` (ISO-8601 in UTC; a naive value is read as UTC).
+* **errors:** `contract_error_response` puts a refusal's `headers` on the answer
+  (`DemoError`'s `Retry-After`).
+* **docs:** `scripts/export_api.py` writes `dist/server-kit-api.json` (format
+  `eifi1-server-kit-api`, version 1: every module's members, signatures, docstrings,
+  fields, enum values and methods, its ui-kit contract, and sample mails in `en` and
+  `de-CH`); `check.sh` runs it after `uv build`, so every release attaches it.
+  `limiter`, `cors`, `uploads` and `errors` gain an `__all__`.
 
 * **feedback:** `FeedbackStatus.READY` (feedback contract §8.2, keksdose live #396), the
   triage step between `OPEN` and `IN_PROGRESS`: OPEN is "filed, not yet triaged", READY
