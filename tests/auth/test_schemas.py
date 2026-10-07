@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
 
 import pytest
@@ -180,6 +180,25 @@ def test_token_response_is_generic_over_the_apps_user() -> None:
     assert body["user"]["name_incomplete"] is True, "the sign-in answer carries it too (§3.3)"
     with pytest.raises(ValidationError):
         TokenResponse[UserResponse](access_token="a", user={"id": "x"})
+
+
+def test_a_demo_session_says_when_it_ends_in_utc() -> None:
+    """landing-demo §5.3: ``expires_at`` and ``demo_expires_at``, ISO-8601 in UTC, so the
+    client counts down to an instant and never reads a local time in its own zone."""
+    ends = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
+    session = TokenResponse[UserResponse](access_token="a", user=_user(demo_expires_at=ends), expires_at=ends)
+    body = session.model_dump(mode="json")
+    assert body["refresh_token"] is None and body["expires_at"] == "2026-10-08T09:00:00Z"
+    assert body["user"]["demo_expires_at"] == "2026-10-08T09:00:00Z"
+    # A naive value (SQLite, kastlan's columns) is read as UTC; another zone is converted.
+    naive = TokenResponse(access_token="a", user={}, expires_at=datetime(2026, 10, 8, 9, 0))
+    assert naive.model_dump(mode="json")["expires_at"] == "2026-10-08T09:00:00Z"
+    zurich = datetime(2026, 10, 8, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+    assert UserResponse(**_user(demo_expires_at=zurich)).demo_expires_at == ends
+    # A real session and a real account leave them out.
+    real = TokenResponse[UserResponse](access_token="a", refresh_token="r", user=_user())
+    assert real.expires_at is None and real.user.demo_expires_at is None
+    assert real.model_dump(mode="json")["user"]["demo_expires_at"] is None
 
 
 def test_the_challenges_are_discriminated_by_their_field_name() -> None:

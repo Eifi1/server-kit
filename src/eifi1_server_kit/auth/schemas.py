@@ -28,7 +28,7 @@ field.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
@@ -117,6 +117,18 @@ PersonName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=
 LocaleTag = Annotated[str, StringConstraints(strip_whitespace=True, pattern=LOCALE_PATTERN)]
 
 
+def _as_utc(value: datetime) -> datetime:
+    """Aware and in UTC: a naive value is read as UTC (SQLite, and kastlan's naive
+    columns), an aware one converted."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+#: An instant on the wire, always ISO-8601 in UTC (``2026-10-08T09:00:00Z``): the client
+#: counts down to it (landing-demo §5.3), so it must never be a local time without an
+#: offset, which a browser would read in ITS zone.
+UtcDateTime = Annotated[datetime, AfterValidator(_as_utc)]
+
+
 class RegisterRequest(BaseModel):
     """``POST /auth/register`` (§4.2; keksdose ``UserCreate``).
 
@@ -147,10 +159,13 @@ class LoginRequest(BaseModel):
 
 class TokenResponse[UserT = Any](BaseModel):
     """A session (§5.1; keksdose ``TokenResponse``): ``{access_token, refresh_token,
-    token_type, user}``.
+    token_type, user, expires_at}``.
 
-    ``refresh_token`` is ``None`` for a session that cannot be renewed (keksdose's demo:
-    60 minutes, no refresh). ``user`` is the app's :class:`UserResponse` subclass —
+    ``refresh_token`` is ``None`` for a session that cannot be renewed — the demo
+    (``docs/landing-demo-harmonization.md`` §5.3), whose access token lives to the demo
+    account's end. ``expires_at`` says when the access token ends; the demo MUST send it,
+    because the client's countdown and its end page run from it and the client never
+    decodes the JWT (§5.3). ``user`` is the app's :class:`UserResponse` subclass —
     ``TokenResponse[MyUserResponse]`` — and ``Any`` unparametrised. An app that boots
     offline reads the user from here, so it carries ``name_incomplete`` too (§3.3).
     """
@@ -159,6 +174,9 @@ class TokenResponse[UserT = Any](BaseModel):
     refresh_token: str | None = None
     token_type: str = "bearer"
     user: UserT
+    #: When the access token ends, ISO-8601 in UTC: set for a demo session
+    #: (:func:`~eifi1_server_kit.demo.demo_expires_at`); optional for any other.
+    expires_at: UtcDateTime | None = None
 
 
 class TwoFactorChallenge(BaseModel):
@@ -209,6 +227,11 @@ class UserResponse(BaseModel):
     email_verified: bool = False
     totp_enabled: bool = False
     created_at: datetime
+    #: When a demo account ends, ISO-8601 in UTC (landing-demo §5.3): ``created_at`` plus
+    #: the maximum age, :func:`~eifi1_server_kit.demo.demo_expires_at`. ``None`` for a real
+    #: account. The ORM row rarely has it, so the app passes it — a property on its model
+    #: read through ``from_attributes``, or ``model_copy(update=…)``.
+    demo_expires_at: UtcDateTime | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
