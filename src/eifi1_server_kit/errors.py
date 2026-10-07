@@ -3,9 +3,10 @@
 Every refusal the kit raises is a plain exception carrying the contract's status as
 ``status_code`` (:class:`~eifi1_server_kit.feedback.FeedbackError` 422 / 403,
 :class:`~eifi1_server_kit.uploads.UploadRejectedError` 400 / 413 / 415, the translation
-review's 422 / 403, :class:`~eifi1_server_kit.auth.AuthError` 400 / 401 / 403 / 409, and
+review's 422 / 403, :class:`~eifi1_server_kit.auth.AuthError` 400 / 401 / 403 / 409,
 user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
-:class:`~eifi1_server_kit.user_admin.RosterQueryError` 422).
+:class:`~eifi1_server_kit.user_admin.RosterQueryError` 422, and the settings rule's
+:class:`~eifi1_server_kit.settings.PatchNullError` 422).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -39,6 +40,7 @@ from starlette.responses import JSONResponse, Response
 
 from eifi1_server_kit.auth.errors import AuthError
 from eifi1_server_kit.feedback.errors import FeedbackError
+from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.translation_review.scope import (
     TranslationAccessError,
     TranslationAreaError,
@@ -58,6 +60,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     AuthError,
     AccountError,
     RosterQueryError,
+    PatchNullError,
 )
 
 
@@ -66,7 +69,8 @@ async def contract_error_response(_request: Request, exc: Exception) -> Response
     :func:`install_contract_error_handlers` registers, for an app that registers it itself.
 
     A refusal with a ``code`` (:class:`~eifi1_server_kit.auth.AuthError`,
-    :class:`~eifi1_server_kit.user_admin.AccountError`) adds it: ``{"detail": …, "code":
+    :class:`~eifi1_server_kit.user_admin.AccountError`,
+    :class:`~eifi1_server_kit.settings.PatchNullError`) adds it: ``{"detail": …, "code":
     …}``, and then its ``extra`` fields beside them — never in place of them. Those without
     a code answer exactly as before.
     """

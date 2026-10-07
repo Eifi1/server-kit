@@ -27,8 +27,9 @@ field.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
     AfterValidator,
@@ -38,10 +39,12 @@ from pydantic import (
     Field,
     StringConstraints,
     computed_field,
+    field_validator,
     model_validator,
 )
 
 from eifi1_server_kit.auth.accounts import full_name, name_incomplete, normalise_email
+from eifi1_server_kit.settings import canonical_locale
 
 #: bcrypt hashes at most 72 BYTES, and bcrypt 5 RAISES past it in both the hash and the
 #: check (keksdose ``infrastructure/security.py`` ``BCRYPT_MAX_PASSWORD_BYTES``).
@@ -238,13 +241,38 @@ class ProfileUpdate(BaseModel):
     or ``email``, and a schema that silently ignored it would read as having accepted it.
     An explicit ``null`` is refused too — a name cannot be cleared, and
     ``model_dump(exclude_unset=True)`` would otherwise carry it onto a NOT NULL column.
+    Write it with :func:`~eifi1_server_kit.settings.apply_patch` and
+    :data:`PROFILE_NOT_NULLABLE` (settings §6.1).
+
+    **The locale, from the app's languages** (settings §6.2): set :attr:`offered_locales`
+    in a subclass — or build the class with
+    :func:`~eifi1_server_kit.settings.profile_update_model` — and the locale goes through
+    :func:`~eifi1_server_kit.settings.canonical_locale`: ``de_ch`` is stored as ``de-CH``,
+    ``de`` as the offered German, and a language the app doesn't offer is a 422. Unset,
+    only the tag's shape is checked, as before.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    #: The app's languages in its menu's order (``("de-CH", "en", "fr", "it")``); ``None``
+    #: checks the tag's shape only (:data:`LOCALE_PATTERN`).
+    offered_locales: ClassVar[Sequence[str] | None] = None
+
     first_name: PersonName | None = None
     last_name: PersonName | None = None
     locale: LocaleTag | None = None
+
+    @field_validator("locale", mode="before")
+    @classmethod
+    def _offered_locale(cls, value: object) -> object:
+        """Canonical BEFORE the pattern runs, so ``de_ch`` is read as ``de-CH`` rather than
+        refused for its underscore."""
+        if cls.offered_locales is None or not isinstance(value, str):
+            return value
+        locale = canonical_locale(value, cls.offered_locales)
+        if locale is None:
+            raise ValueError(f"locale must be one of {', '.join(cls.offered_locales)}")
+        return locale
 
     @model_validator(mode="before")
     @classmethod
