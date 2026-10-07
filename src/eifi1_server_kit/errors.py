@@ -54,6 +54,12 @@ from eifi1_server_kit.uploads import UploadRejectedError
 from eifi1_server_kit.user_admin.errors import AccountError
 from eifi1_server_kit.user_admin.roster import RosterQueryError
 
+__all__ = [
+    "CONTRACT_ERRORS",
+    "contract_error_response",
+    "install_contract_error_handlers",
+]
+
 #: Every kit exception base that carries a ``status_code``; subclasses are covered by MRO.
 CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     FeedbackError,

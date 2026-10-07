@@ -414,10 +414,20 @@ Two caps are Kurvenschmiede's, now everyone's, and keksdose had neither:
 
 ```sh
 uv sync
-bash scripts/check.sh      # ruff, ruff format --check, mypy --strict, pytest + coverage, uv build
+bash scripts/check.sh      # ruff, ruff format --check, mypy --strict, pytest + coverage, uv build, the API export
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14. Commits follow
+CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14.
+
+**The API export.** The kit's documentation lives in the ui-kit showcase, as its "Server
+kit" group (Marcel, 2026-10-07). `scripts/export_api.py` reads the installed package —
+each module's `__all__`, the signatures and docstrings as written, the `#:` comments of
+constants and fields, enum values — and writes `dist/server-kit-api.json` (format
+`eifi1-server-kit-api`, version 1), with each module's ui-kit contract and the mail layout
+rendered over synthetic samples in `en` and `de-CH`. `check.sh` runs it right after `uv
+build`, so every release attaches it beside the wheel and the showcase pins it the same
+way. A new public module needs an `__all__` and a line in the exporter's `MODULES`; a test
+fails until it has both. Commits follow
 Conventional Commits; a release is a tag `v<version>` on `main` with `pyproject.toml`,
 `__version__` and `CHANGELOG.md` agreeing (a test pins it).
 

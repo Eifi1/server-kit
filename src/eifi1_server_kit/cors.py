@@ -44,6 +44,15 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+__all__ = [
+    "DEFAULT_MAX_AGE",
+    "TRANSLATION_REVIEW_ROUTES",
+    "ExtraOriginCorsMiddleware",
+    "ExtraOriginRoute",
+    "assert_outside_cors_middleware",
+    "parse_extra_origins",
+]
+
 #: Ten minutes (keksdose): a showcase calls the same few paths over and over.
 DEFAULT_MAX_AGE = 600
 

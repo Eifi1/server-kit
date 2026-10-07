@@ -25,11 +25,15 @@ def test_the_package_is_typed() -> None:
 def test_every_exported_name_exists() -> None:
     for module_name in (
         "eifi1_server_kit.auth",
+        "eifi1_server_kit.cors",
         "eifi1_server_kit.demo",
+        "eifi1_server_kit.errors",
         "eifi1_server_kit.feedback",
+        "eifi1_server_kit.limiter",
         "eifi1_server_kit.mail",
         "eifi1_server_kit.settings",
         "eifi1_server_kit.translation_review",
+        "eifi1_server_kit.uploads",
         "eifi1_server_kit.user_admin",
     ):
         module = importlib.import_module(module_name)

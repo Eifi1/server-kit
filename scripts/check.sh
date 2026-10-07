@@ -15,3 +15,6 @@ uv run pytest -q --cov --cov-report=term-missing
 # The artefact an app installs: build it, so a packaging mistake fails here and not in an app.
 rm -rf dist
 uv build --quiet
+# The API for the ui-kit showcase's "Server kit" group, beside the wheel: release.yml
+# uploads dist/*, so every release carries the api.json the showcase pins.
+uv run python scripts/export_api.py
