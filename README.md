@@ -288,7 +288,9 @@ empty page.
 filled, then run `kit.assert_no_secrets(export)`. It flags keys named like a secret and
 values shaped like one: hashes, JWTs, digests, links with a token. It walks into
 containers, so `api_tokens: [{name, scopes}]` passes. `allow=` names a field it flags
-wrongly.
+wrongly. A feedback file's storage `key` (a keyed digest) is flagged, and rightly left
+out rather than allowed: it is an address inside the app, not the user's data
+(Kurvenschmiede's 0.30 adoption; keksdose has the same field).
 
 **Deletion** is two-stage: deactivated at once, erased later. In `after_days` mode the
 erasure is a Cloud Scheduler → Cloud Run Job, one account per transaction, which
