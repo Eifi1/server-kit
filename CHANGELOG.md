@@ -29,6 +29,9 @@ status below: no public name is removed or renamed.
 
 ### Added
 
+* **user_admin:** `UserListResponse.levels` (action → `ConfirmationLevel`, so a roster
+  renders the right confirmation before its first request) and `SUMMARY_ACTIVE_ADMINS`,
+  the `summary` key the last-admin lock reads. kastlan's and Kurvenschmiede's list shape.
 * **settings:** a new module (settings §6).
   * `apply_patch(obj, update, *, not_nullable, defaults=None)`: §6.1's rules 1–3 over a
     body's `model_fields_set`, for PATCH and PUT bodies alike — an omitted field keeps its

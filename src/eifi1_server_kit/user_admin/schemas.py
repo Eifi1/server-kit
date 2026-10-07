@@ -40,7 +40,7 @@ from eifi1_server_kit.auth.schemas import (
     UserResponse,
 )
 from eifi1_server_kit.auth.tokens import _aware
-from eifi1_server_kit.user_admin.actions import AdminAction
+from eifi1_server_kit.user_admin.actions import AdminAction, ConfirmationLevel
 
 __all__ = [
     "MAIL_BACKEND_CONSOLE",
@@ -71,6 +71,9 @@ __all__ = [
 #: The mail backend whose answers may carry a link (§4.1, §5): nothing leaves the
 #: machine, so the admin is the only way the link reaches anyone.
 MAIL_BACKEND_CONSOLE = "console"
+#: The :class:`UserListResponse` ``summary`` key with the count of active admins — what
+#: the roster's last-admin lock reads (§4.1).
+SUMMARY_ACTIVE_ADMINS = "active_admins"
 #: A role value as an app writes it (``ADMIN``, ``PROPERTY_MANAGER``).
 MAX_ROLE_LENGTH = 64
 #: An invitation's note (kastlan's ``String(255)``).
@@ -124,18 +127,25 @@ class AdminUserRow(UserResponse):
 
 
 class UserListResponse[RowT = AdminUserRow](BaseModel):
-    """``GET /admin/users`` (§3.1): ``{users, total, mail_backend, summary?}``.
+    """``GET /admin/users`` (§3.1): ``{users, total, mail_backend, summary?, levels?}``.
 
     ``total`` counts the rows matching the filter across every page — what the pager
     counts against. ``summary`` (keksdose's) describes the whole install and does NOT
-    follow the filter. ``mail_backend`` says whether the mail actions really send
-    (:data:`MAIL_BACKEND_CONSOLE` = they log). ``UserListResponse[MyRow]`` types the rows.
+    follow the filter; its ``active_admins`` key (:data:`SUMMARY_ACTIVE_ADMINS`) is the
+    count every roster needs for the last-admin lock, sent by kastlan and Kurvenschmiede
+    alike. ``mail_backend`` says whether the mail actions really send
+    (:data:`MAIL_BACKEND_CONSOLE` = they log). ``levels`` maps an action (an
+    :class:`AdminAction` value, or the app's own) to the :class:`ConfirmationLevel` the
+    server will demand (§4.2), so the page renders the right confirmation before the
+    first request instead of learning it from a refusal (kastlan's and Kurvenschmiede's
+    shape, 2026-10-07). ``UserListResponse[MyRow]`` types the rows.
     """
 
     users: list[RowT]
     total: int = Field(ge=0)
     mail_backend: str
     summary: dict[str, Any] | None = None
+    levels: dict[str, ConfirmationLevel] | None = None
 
 
 # --- §4: admin actions ---------------------------------------------------------------
