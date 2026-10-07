@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import pytest
+from starlette.datastructures import Headers
+
 from eifi1_server_kit.limiter import (
     FEEDBACK_CRASHES_PER_HOUR,
     FEEDBACK_UPLOADS_PER_HOUR,
+    UNKNOWN_CLIENT,
     FeedbackLimiters,
     SlidingWindowRateLimiter,
+    client_ip,
     retry_after_header,
 )
 
@@ -162,3 +167,69 @@ def test_feedback_limiters_are_per_instance_with_the_contracts_budgets() -> None
     assert first.upload.hit("7") is None
     tight = FeedbackLimiters(uploads_per_hour=1, crashes_per_hour=1, clock=clock)
     assert tight.crash.hit("7") is None and tight.crash.hit("7") is not None
+
+
+# ── client_ip: counted from the right (landing-demo contract §5.1) ──────────
+
+
+def _xff(*lines: str) -> Headers:
+    return Headers(raw=[(b"x-forwarded-for", line.encode()) for line in lines])
+
+
+@pytest.mark.parametrize(
+    ("header", "hops", "expected"),
+    [
+        # Caddy alone appends the client's address: the right-most entry.
+        ("198.51.100.4", 1, "198.51.100.4"),
+        # A client-written entry sits LEFT of what the proxies append, and is never read.
+        ("203.0.113.7, 198.51.100.4", 1, "198.51.100.4"),
+        ("1.1.1.1, 2.2.2.2, 3.3.3.3, 198.51.100.4", 1, "198.51.100.4"),
+        # Two proxies (a front end, then Caddy): the second from the right.
+        ("203.0.113.7, 198.51.100.4, 10.0.0.2", 2, "198.51.100.4"),
+        ("198.51.100.4, 10.0.0.2", 2, "198.51.100.4"),
+        # Spaces and empty entries don't count.
+        (" 203.0.113.7 ,, 198.51.100.4 ,", 1, "198.51.100.4"),
+        ("2001:db8::7", 1, "2001:db8::7"),
+    ],
+)
+def test_client_ip_counts_from_the_right(header: str, hops: int, expected: str) -> None:
+    assert client_ip(_xff(header), "10.0.0.9", trusted_hops=hops) == expected
+
+
+def test_a_spoofed_left_most_entry_never_buys_a_fresh_window() -> None:
+    """keksdose's review of the contract: a random header per request must not re-key the
+    window, or 500 scripted demo starts would close the demo for a day."""
+    limiter = SlidingWindowRateLimiter(max_hits=5, window_seconds=3600, clock=_Clock())
+    answers = [
+        limiter.hit(client_ip(_xff(f"203.0.113.{n}, 198.51.100.4"), "10.0.0.9", trusted_hops=1)) for n in range(6)
+    ]
+    assert answers[:5] == [None] * 5 and answers[5] is not None
+
+
+def test_without_proxies_the_peer_answers_and_the_header_is_ignored() -> None:
+    assert client_ip(_xff("203.0.113.7"), "192.0.2.1", trusted_hops=0) == "192.0.2.1"
+    assert client_ip(_xff("203.0.113.7"), None, trusted_hops=0) == UNKNOWN_CLIENT == "unknown"
+
+
+def test_a_header_shorter_than_the_proxies_counted_is_not_believed() -> None:
+    """It did not pass every proxy, so nothing in it is vouched for: the peer, never the
+    left-most entry."""
+    assert client_ip(_xff("203.0.113.7"), "10.0.0.9", trusted_hops=2) == "10.0.0.9"
+    assert client_ip(Headers(), "10.0.0.9", trusted_hops=1) == "10.0.0.9"
+    assert client_ip(Headers(), None, trusted_hops=1) == "unknown"
+
+
+def test_repeated_header_lines_are_one_list_in_order() -> None:
+    """A client's own line comes first; the proxy's appended line last."""
+    assert client_ip(_xff("203.0.113.7", "198.51.100.4"), "10.0.0.9", trusted_hops=1) == "198.51.100.4"
+    assert client_ip(_xff("203.0.113.7", "198.51.100.4, 10.0.0.2"), "10.0.0.9", trusted_hops=3) == "203.0.113.7"
+
+
+def test_a_plain_mapping_is_matched_without_regard_to_case() -> None:
+    assert client_ip({"X-Forwarded-For": "203.0.113.7, 198.51.100.4"}, "10.0.0.9", trusted_hops=1) == "198.51.100.4"
+    assert client_ip({"accept": "*/*"}, "10.0.0.9", trusted_hops=1) == "10.0.0.9"
+
+
+def test_trusted_hops_counts_proxies() -> None:
+    with pytest.raises(ValueError, match="0 or more"):
+        client_ip(Headers(), "10.0.0.9", trusted_hops=-1)

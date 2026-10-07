@@ -16,6 +16,10 @@ loop — not a cross-instance total. ``hit()`` is the whole contract, so a share
 (Kurvenschmiede ``infrastructure/security.py:288`` ``AuthLimiters`` / ``FeedbackLimiters``).
 :class:`FeedbackLimiters` is that pair for the feedback routes.
 
+**Whose address a window counts** is :func:`client_ip`'s answer: counted from the RIGHT of
+``X-Forwarded-For``, as many hops as the app has proxies — never the left-most entry,
+which the client writes itself.
+
 **When to charge is the caller's choice.** Call ``hit()`` where a request should start
 costing a slot:
 
@@ -31,7 +35,9 @@ from __future__ import annotations
 import threading
 import time
 from collections import defaultdict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+
+from starlette.datastructures import Headers
 
 Clock = Callable[[], float]
 
@@ -127,6 +133,62 @@ def retry_after_header(wait_seconds: float) -> str:
     """The ``Retry-After`` value for a ``hit()`` answer: whole seconds, rounded up past it
     (keksdose ``upload_guards.py:82``: ``str(int(retry_after) + 1)``)."""
     return str(int(wait_seconds) + 1)
+
+
+#: What :func:`client_ip` answers when it has no address at all (keksdose ``client_ip``).
+UNKNOWN_CLIENT = "unknown"
+
+
+def client_ip(headers: Mapping[str, str], peer: str | None, *, trusted_hops: int) -> str:
+    """The caller's address for a per-IP window, counted from the RIGHT of
+    ``X-Forwarded-For`` (``docs/landing-demo-harmonization.md`` §5.1)::
+
+        ip = client_ip(request.headers, request.client.host if request.client else None,
+                       trusted_hops=settings.trusted_proxy_hops)
+
+    **Why from the right.** Every proxy APPENDS the address it was connected from, so the
+    right end of the header is written by the app's own proxies and the left end by the
+    client — who may send any ``X-Forwarded-For`` it likes. The left-most entry (what
+    keksdose's ``client_ip`` and Kurvenschmiede's ``caller_address`` read) is therefore the
+    client's own choice: a random header per request is a fresh window per request, so the
+    demo's five-an-hour per IP would not hold, and 500 scripted starts would fill the live
+    cap and close the demo for a day. Counted from the right, the answer is the address the
+    outermost trusted proxy saw, which the client cannot choose.
+
+    ``trusted_hops`` is the number of proxies in front of the app that each append to the
+    header (Caddy, a Cloud Run front end); it is the app's setting, per environment.
+    **Measure it once**: send a request with ``X-Forwarded-For: 203.0.113.7`` and log the
+    header that arrives — your own address sits ``trusted_hops`` entries from the right,
+    and the fake one left of it. Then:
+
+    * ``0`` — no proxy: the header is ignored and ``peer`` answers (local development, a
+      directly exposed process);
+    * ``N`` — the ``N``-th entry from the right;
+    * a header with fewer than ``N`` entries did not pass every proxy counted, so nothing
+      in it is vouched for, and ``peer`` answers — never the left-most entry. Every such
+      request shares the peer's window, which is the safe error: it limits too much,
+      never too little.
+
+    Repeated ``X-Forwarded-For`` lines count as one comma-joined list, in order, when
+    ``headers`` is Starlette's :class:`~starlette.datastructures.Headers` (a plain mapping
+    holds one value per name, matched without regard to case). Empty entries are skipped.
+    ``peer`` is the TCP peer (``request.client.host``); without one the answer is
+    :data:`UNKNOWN_CLIENT`. The entry is returned as written — a limiter key, not a parsed
+    address.
+    """
+    if trusted_hops < 0:
+        raise ValueError("trusted_hops counts proxies: 0 or more")
+    fallback = peer or UNKNOWN_CLIENT
+    if trusted_hops == 0:
+        return fallback
+    if isinstance(headers, Headers):
+        lines = headers.getlist("x-forwarded-for")
+    else:
+        lines = [value for name, value in headers.items() if name.lower() == "x-forwarded-for"]
+    entries = [entry.strip() for line in lines for entry in line.split(",") if entry.strip()]
+    if len(entries) < trusted_hops:
+        return fallback
+    return entries[-trusted_hops]
 
 
 #: The contract's budgets (§3.5, §3.6): 20 uploads and 20 crash reports per user per hour.
