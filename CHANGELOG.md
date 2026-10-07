@@ -10,6 +10,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.5.0] (2026-10-07)
+
 The backend half of the settings round and of the landing and demo round (ui-kit 0.31,
 `docs/settings-harmonization.md` §7.2 and `docs/landing-demo-harmonization.md` §7.2), the
 feedback triage step READY (`docs/feedback-harmonization.md` §8.2), and the API export
