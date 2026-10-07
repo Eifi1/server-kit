@@ -12,6 +12,14 @@ here; kastlan built its own on the same shape.
 * **One layout, escaped at the boundary** (:func:`render_message`): a greeting is built
   from a person's name, and a name is free text, so an account called
   ``<a href="…">Reset here</a>`` must not put that anchor into the app's own mail.
+* **A whole HTML document**, with the language and a title: Outlook junked a fully
+  authenticated Kurvenschmiede reset mail (SCL 5 — a new domain on shared sending IPs),
+  and a bare fragment with no ``<html lang>`` and no ``<title>`` is one more mark against
+  a mail. :func:`render_mail` picks the row AND its language in one call.
+* **A ``Reply-To``** (:class:`ResendClient`'s ``reply_to``): the mails come from a
+  ``noreply@`` address, and a reply must reach a person. Each app's ``*_EMAIL_REPLY_TO``
+  setting defaults to ``support@<its domain>`` (:func:`support_address`), which
+  Cloudflare Email Routing forwards on all three domains.
 * **Two transports behind one protocol** (:class:`Mailer`): :class:`ResendClient` for
   production — the ``mail`` extra (``eifi1-server-kit[mail]``, httpx) — and
   :class:`ConsoleMailer` for a fresh checkout, which logs the message, link and all.
@@ -27,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -39,6 +48,7 @@ if TYPE_CHECKING:
 __all__ = [
     "FALLBACK_LOCALES",
     "RESEND_ENDPOINT",
+    "SUPPORT_LOCAL_PART",
     "TIMEOUT_SECONDS",
     "ConsoleMailer",
     "MailMessage",
@@ -46,7 +56,10 @@ __all__ = [
     "Mailer",
     "ResendClient",
     "pick",
+    "pick_entry",
+    "render_mail",
     "render_message",
+    "support_address",
 ]
 
 logger = logging.getLogger("eifi1_server_kit.mail")
@@ -58,10 +71,37 @@ TIMEOUT_SECONDS = 10.0
 #: Where :func:`pick` goes when the recipient's language has no row: the UI's German —
 #: the apps' home language and the kit's fallback (i18n H7) — then English.
 FALLBACK_LOCALES: tuple[str, ...] = ("de-CH", "de", "en")
+#: The local part :func:`support_address` puts on the sender's domain.
+SUPPORT_LOCAL_PART = "support"
+
+#: A language tag as ``<html lang>`` takes it (BCP 47's shape: ``de-CH``, ``en``,
+#: ``zh-Hans``) — checked, because it is written into an attribute.
+_LANG_TAG = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 
 
 def _language(tag: str) -> str:
     return tag.split("-", 1)[0]
+
+
+def pick_entry[T](
+    locale: str | None, texts: Mapping[str, T], *, fallback: Sequence[str] = FALLBACK_LOCALES
+) -> tuple[str, T]:
+    """``(key, row)``: the row :func:`pick` chooses and the key it is under in ``texts``,
+    as written there — the language the mail is actually written in, which is not the
+    recipient's when the chain fell back. :func:`render_mail` puts it in ``<html lang>``."""
+    by_tag = {key.strip().lower().replace("_", "-"): (key, value) for key, value in texts.items()}
+    by_language: dict[str, tuple[str, T]] = {}
+    for tag, entry in by_tag.items():
+        by_language.setdefault(_language(tag), entry)
+    requested = (locale or "").strip().lower().replace("_", "-")
+    chain = [requested, _language(requested)] if requested else []
+    chain += [tag.lower() for tag in fallback]
+    for tag in chain:
+        if tag in by_tag:
+            return by_tag[tag]
+        if "-" not in tag and tag in by_language:
+            return by_language[tag]
+    raise KeyError(f"no text for {locale!r} nor any of {', '.join(fallback)}; have {', '.join(texts)}")
 
 
 def pick[T](locale: str | None, texts: Mapping[str, T], *, fallback: Sequence[str] = FALLBACK_LOCALES) -> T:
@@ -74,29 +114,34 @@ def pick[T](locale: str | None, texts: Mapping[str, T], *, fallback: Sequence[st
     ``fallback`` — ``de-CH`` → ``de`` → ``en`` — so an unknown or missing locale reads
     German, as it does on every other surface. A table with none of them is a
     :class:`KeyError`: a programming error a unit test that renders every row catches.
+    :func:`pick_entry` also answers the key it chose.
     """
-    by_tag = {key.strip().lower().replace("_", "-"): value for key, value in texts.items()}
-    by_language: dict[str, T] = {}
-    for key, value in by_tag.items():
-        by_language.setdefault(_language(key), value)
-    requested = (locale or "").strip().lower().replace("_", "-")
-    chain = [requested, _language(requested)] if requested else []
-    chain += [tag.lower() for tag in fallback]
-    for tag in chain:
-        if tag in by_tag:
-            return by_tag[tag]
-        if "-" not in tag and tag in by_language:
-            return by_language[tag]
-    raise KeyError(f"no text for {locale!r} nor any of {', '.join(fallback)}; have {', '.join(texts)}")
+    return pick_entry(locale, texts, fallback=fallback)[1]
 
 
-def render_message(*, intro: str, body: str, cta: str, link: str, outro: str) -> tuple[str, str]:
+def _lang_attribute(lang: str) -> str:
+    tag = lang.strip().replace("_", "-")
+    if not _LANG_TAG.match(tag):
+        raise ValueError(f"a mail's language is a tag like 'de-CH' or 'en': {lang[:20]!r}")
+    return tag
+
+
+def render_message(
+    *, subject: str, lang: str, intro: str, body: str, cta: str, link: str, outro: str
+) -> tuple[str, str]:
     """``(html, text)`` for a transactional mail: greeting, one paragraph, one link, footer
     (keksdose ``infrastructure/email.py:50``).
 
-    The one place a mail's layout is decided; the callers own the words. **Escaped here**,
-    not by each caller: ``intro`` is built from a name, and a name may hold markup. The
-    plain-text half is not markup and stays exactly as written.
+    The one place a mail's layout is decided; the callers own the words. ``html`` is a
+    WHOLE document — ``<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
+    <title>{subject}</title></head><body>…</body></html>`` — because a bare fragment is one
+    more mark against a mail with a spam filter (Kurvenschmiede's Outlook finding).
+    ``lang`` is the language the words are in (``de-CH``, ``en``; :func:`pick_entry`'s
+    key), ``subject`` the mail's subject.
+
+    **Escaped here**, not by each caller: ``intro`` is built from a name, and a name may
+    hold markup; the subject may hold one too. The plain-text half is not markup and stays
+    exactly as written.
 
     ``link`` must be ``http(s)``; it is server-built from the app's base URL and a token
     the server minted. Unlike keksdose it is escaped inside the ``href`` too: ``&amp;`` in
@@ -105,10 +150,15 @@ def render_message(*, intro: str, body: str, cta: str, link: str, outro: str) ->
     """
     if not link.startswith(("https://", "http://")):
         raise ValueError(f"a mail link is http(s): {link[:40]!r}")
-    html = (
+    content = (
         f"<p>{escape(intro)}</p><p>{escape(body)}</p>"
         f'<p><a href="{escape(link, quote=True)}">{escape(cta)}</a></p>'
         f'<p style="color:#64748b;font-size:12px">{escape(outro)}</p>'
+    )
+    html = (
+        f'<!doctype html><html lang="{escape(_lang_attribute(lang), quote=True)}">'
+        f'<head><meta charset="utf-8"><title>{escape(subject)}</title></head>'
+        f"<body>{content}</body></html>"
     )
     text = f"{intro}\n\n{body}\n\n{cta}: {link}\n\n{outro}"
     return html, text
@@ -127,8 +177,9 @@ class MailMessage:
 class MailText:
     """One mail's words in one language (Kurvenschmiede ``MailText``).
 
-    Keep a table per mail — ``{"de-CH": MailText(…), "en": MailText(…), …}`` — choose the
-    row with :func:`pick`, and render it with :meth:`render`. Any part may hold
+    Keep a table per mail — ``{"de-CH": MailText(…), "en": MailText(…), …}`` — and render
+    the recipient's row with :func:`render_mail`, which picks it and knows its language;
+    or choose it with :func:`pick_entry` and call :meth:`render`. Any part may hold
     ``{placeholders}`` (``{name}``, ``{hours}``), filled by :meth:`render`.
     """
 
@@ -138,8 +189,10 @@ class MailText:
     cta: str
     outro: str
 
-    def render(self, *, link: str, **values: object) -> MailMessage:
-        """The mail with ``values`` filled in and the layout of :func:`render_message`.
+    def render(self, *, link: str, lang: str, **values: object) -> MailMessage:
+        """The mail with ``values`` filled in and the layout of :func:`render_message`;
+        ``lang`` is the language this row is written in (its key in the table), so no
+        template may use a ``{lang}`` placeholder.
 
         ``str.format`` runs on the TEMPLATE only, so braces in a person's name are text,
         never a format field; the name is HTML-escaped by the layout. A literal brace in a
@@ -148,8 +201,25 @@ class MailText:
         subject, intro, body, cta, outro = (
             part.format_map(values) for part in (self.subject, self.intro, self.body, self.cta, self.outro)
         )
-        html, text = render_message(intro=intro, body=body, cta=cta, link=link, outro=outro)
+        html, text = render_message(subject=subject, lang=lang, intro=intro, body=body, cta=cta, link=link, outro=outro)
         return MailMessage(subject=subject, text=text, html=html)
+
+
+def render_mail(
+    locale: str | None,
+    texts: Mapping[str, MailText],
+    *,
+    link: str,
+    fallback: Sequence[str] = FALLBACK_LOCALES,
+    **values: object,
+) -> MailMessage:
+    """The recipient's mail from a table: :func:`pick_entry` for ``locale``, then
+    :meth:`MailText.render` with the row's own language in ``<html lang>``::
+
+        message = render_mail(user.locale, RESET_TEXTS, link=link, name=greeting, hours=1)
+    """
+    lang, text = pick_entry(locale, texts, fallback=fallback)
+    return text.render(link=link, lang=lang, **values)
 
 
 class Mailer(Protocol):
@@ -192,11 +262,29 @@ def _require_httpx() -> None:
         ) from exc
 
 
+def support_address(from_address: str, *, local: str = SUPPORT_LOCAL_PART) -> str:
+    """``support@<the sender's domain>``: the default of each app's ``*_EMAIL_REPLY_TO``
+    setting. ``"Kurvenschmiede <noreply@kurvenschmiede.app>"`` →
+    ``"support@kurvenschmiede.app"``. Cloudflare Email Routing forwards ``support@`` on all
+    three apps' domains (2026-10-07); the mails come from ``noreply@``, which nobody
+    reads."""
+    address = from_address.strip()
+    if address.endswith(">") and "<" in address:
+        address = address[address.rindex("<") + 1 : -1]
+    _, at, domain = address.rpartition("@")
+    domain = domain.strip().lower()
+    if not at or "." not in domain or any(char.isspace() for char in domain):
+        raise ValueError(f"no domain in the sender address {from_address!r}")
+    return f"{local}@{domain}"
+
+
 class ResendClient:
     """One POST to Resend's HTTP API per mail (keksdose, Kurvenschmiede ``send_email``).
 
     ``api_key`` and ``from_address`` are injected — the app's settings, never read here;
-    ``from_address`` must be on a domain verified with Resend. ``client`` is an
+    ``from_address`` must be on a domain verified with Resend. ``reply_to`` is where a
+    reply goes — the app's ``*_EMAIL_REPLY_TO`` setting, by default
+    ``support_address(from_address)``; ``None`` or empty sends none. ``client`` is an
     ``httpx.AsyncClient`` the app owns and closes (tests pass one with a
     ``MockTransport``); without it each send opens and closes its own.
 
@@ -218,6 +306,7 @@ class ResendClient:
         retry_delay: float = 0.5,
         endpoint: str = RESEND_ENDPOINT,
         client: httpx.AsyncClient | None = None,
+        reply_to: str | None = None,
     ) -> None:
         _require_httpx()
         if not api_key:
@@ -230,6 +319,7 @@ class ResendClient:
         self._retry_delay = retry_delay
         self._endpoint = endpoint
         self._client = client
+        self._reply_to = (reply_to or "").strip() or None
 
     def _payload(self, to: str, message: MailMessage) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -240,6 +330,8 @@ class ResendClient:
         }
         if message.html is not None:
             payload["html"] = message.html
+        if self._reply_to is not None:
+            payload["reply_to"] = [self._reply_to]
         return payload
 
     async def send(self, to: str, message: MailMessage, *, kind: str = "other") -> bool:

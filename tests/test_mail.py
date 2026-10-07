@@ -18,7 +18,10 @@ from eifi1_server_kit.mail import (
     MailText,
     ResendClient,
     pick,
+    pick_entry,
+    render_mail,
     render_message,
+    support_address,
 )
 
 LINK = "https://app.example/reset-password?token=abc&lang=en"
@@ -62,9 +65,41 @@ def test_pick_bare_languages_and_the_english_floor() -> None:
         pick("zh", {"fr": "Bonjour"})
 
 
+def test_pick_entry_answers_the_key_it_chose() -> None:
+    """The mail's language is the ROW's, not the recipient's, when the chain fell back."""
+    assert pick_entry("fr-CH", RESET)[0] == "fr"
+    assert pick_entry("it", RESET) == ("de-CH", RESET["de-CH"])
+    assert pick_entry("de", {"DE_ch": "Hallo"}) == ("DE_ch", "Hallo"), "as written in the table"
+    with pytest.raises(KeyError):
+        pick_entry("zh", {"fr": "Bonjour"})
+
+
+def test_render_message_is_a_whole_document() -> None:
+    """Kurvenschmiede's Outlook finding: a bare fragment, no ``<html lang>`` and no
+    ``<title>``, is one more mark against a mail."""
+    html, _ = render_message(
+        subject="Reset <your> password", lang="de-CH", intro="i", body="b", cta="c", link=LINK, outro="o"
+    )
+    assert html.startswith(
+        '<!doctype html><html lang="de-CH"><head><meta charset="utf-8">'
+        "<title>Reset &lt;your&gt; password</title></head><body><p>i</p>"
+    )
+    assert html.endswith("</p></body></html>")
+    zh, _ = render_message(subject="s", lang="zh_Hans", intro="i", body="b", cta="c", link=LINK, outro="o")
+    assert '<html lang="zh-Hans">' in zh
+
+
+@pytest.mark.parametrize("lang", ["", "d", 'de" onload="x', "de CH", "de-", "deutsch"])
+def test_render_message_refuses_a_language_that_is_not_a_tag(lang: str) -> None:
+    with pytest.raises(ValueError, match="language"):
+        render_message(subject="s", lang=lang, intro="i", body="b", cta="c", link=LINK, outro="o")
+
+
 def test_render_message_escapes_everything_but_the_text_half() -> None:
     """keksdose ``email.py:50``: a name like ``<a href=…>`` must not become a link in the app's own mail."""
     html, text = render_message(
+        subject="Reset",
+        lang="en",
         intro='Hi <a href="https://evil.example">Reset here</a>,',
         body="Body & more",
         cta="Choose <b>",
@@ -81,17 +116,29 @@ def test_render_message_escapes_everything_but_the_text_half() -> None:
 @pytest.mark.parametrize("link", ["javascript:alert(1)", "/relative", "", 'ftp://x"'])
 def test_render_message_refuses_a_link_that_is_not_http(link: str) -> None:
     with pytest.raises(ValueError, match="http"):
-        render_message(intro="i", body="b", cta="c", link=link, outro="o")
+        render_message(subject="s", lang="en", intro="i", body="b", cta="c", link=link, outro="o")
 
 
 def test_mail_text_fills_the_template_only() -> None:
     """Kurvenschmiede: ``str.format`` on the template, so braces in a name stay text."""
-    message = pick("en", RESET).render(link=LINK, name="Ada {hours} <Example>", hours=1)
+    message = pick("en", RESET).render(link=LINK, lang="en", name="Ada {hours} <Example>", hours=1)
     assert message.subject == "Reset your password"
     assert message.text.startswith("Hi Ada {hours} <Example>,\n\nThe link works for 1 hour.")
     assert message.html is not None and "Hi Ada {hours} &lt;Example&gt;," in message.html
+    assert "<title>Reset your password</title>" in message.html
     with pytest.raises(KeyError):
-        pick("en", RESET).render(link=LINK, name="Ada")
+        pick("en", RESET).render(link=LINK, lang="en", name="Ada")
+
+
+def test_render_mail_writes_the_rows_own_language() -> None:
+    """Italian falls back to the German row, and the document says ``de-CH``, not ``it``."""
+    message = render_mail("it-CH", RESET, link=LINK, name="Ada", hours=1)
+    assert message.subject == "Passwort zurücksetzen"
+    assert message.html is not None and message.html.startswith('<!doctype html><html lang="de-CH">')
+    french = render_mail("fr-CH", RESET, link=LINK, name="Ada", hours=1)
+    assert french.html is not None and '<html lang="fr">' in french.html
+    english = render_mail("hu", {"en": RESET["en"]}, link=LINK, fallback=("en",), name="Ada", hours=1)
+    assert english.subject == "Reset your password"
 
 
 async def test_the_console_mailer_logs_the_link(caplog: pytest.LogCaptureFixture) -> None:
@@ -143,6 +190,42 @@ async def test_resend_posts_one_mail() -> None:
         "text": "Confirm: https://app.example/v",
         "html": "<p>Confirm</p>",
     }
+
+
+async def test_resend_sets_reply_to() -> None:
+    """Kurvenschmiede: the mail comes from noreply@, a reply must reach a person."""
+    resend = _Resend(200, 200)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(resend))
+    client = ResendClient(
+        api_key="re_test",
+        from_address="App <noreply@app.example>",
+        client=http,
+        reply_to=support_address("App <noreply@app.example>"),
+    )
+    assert await client.send("ada@example.com", MESSAGE)
+    assert json.loads(resend.requests[0].content)["reply_to"] == ["support@app.example"]
+    blank = ResendClient(api_key="re_test", from_address="noreply@app.example", client=http, reply_to="  ")
+    assert await blank.send("ada@example.com", MESSAGE)
+    assert "reply_to" not in json.loads(resend.requests[1].content)
+
+
+@pytest.mark.parametrize(
+    ("sender", "support"),
+    [
+        ("noreply@kurvenschmiede.app", "support@kurvenschmiede.app"),
+        ("Kurvenschmiede <noreply@Kurvenschmiede.APP>", "support@kurvenschmiede.app"),
+        ("  keksdose <noreply@mail.keksdose.app>  ", "support@mail.keksdose.app"),
+    ],
+)
+def test_support_address_is_support_on_the_senders_domain(sender: str, support: str) -> None:
+    assert support_address(sender) == support
+    assert support_address(sender, local="help").startswith("help@")
+
+
+@pytest.mark.parametrize("sender", ["", "noreply", "noreply@localhost", "App <noreply@>", "a@b c.example"])
+def test_support_address_needs_a_domain(sender: str) -> None:
+    with pytest.raises(ValueError, match="no domain"):
+        support_address(sender)
 
 
 async def test_resend_sends_plain_text_without_html() -> None:
@@ -204,4 +287,4 @@ def test_without_the_extra_resend_says_what_is_missing(monkeypatch: pytest.Monke
     monkeypatch.setitem(sys.modules, "httpx", None)
     with pytest.raises(ImportError, match=r"eifi1-server-kit\[mail\]"):
         ResendClient(api_key="re_test", from_address="noreply@app.example")
-    assert pick("en", RESET).render(link=LINK, name="Ada", hours=1).subject == "Reset your password"
+    assert render_mail("en", RESET, link=LINK, name="Ada", hours=1).subject == "Reset your password"
