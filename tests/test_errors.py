@@ -11,6 +11,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from eifi1_server_kit.auth import AuthError, AuthErrorCode
+from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.errors import CONTRACT_ERRORS, contract_error_response, install_contract_error_handlers
 from eifi1_server_kit.feedback import (
     CrashCategoryNotAssignableError,
@@ -141,6 +142,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         AccountError,
         RosterQueryError,
         PatchNullError,
+        DemoError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error

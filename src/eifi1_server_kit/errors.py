@@ -5,8 +5,9 @@ Every refusal the kit raises is a plain exception carrying the contract's status
 :class:`~eifi1_server_kit.uploads.UploadRejectedError` 400 / 413 / 415, the translation
 review's 422 / 403, :class:`~eifi1_server_kit.auth.AuthError` 400 / 401 / 403 / 409,
 user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
-:class:`~eifi1_server_kit.user_admin.RosterQueryError` 422, and the settings rule's
-:class:`~eifi1_server_kit.settings.PatchNullError` 422).
+:class:`~eifi1_server_kit.user_admin.RosterQueryError` 422, the settings rule's
+:class:`~eifi1_server_kit.settings.PatchNullError` 422, and the demo's
+:class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -24,7 +25,9 @@ plus ``"code"`` for a refusal that carries one (:class:`~eifi1_server_kit.auth.A
 ``{"detail": "Invalid credentials", "code": "invalid_credentials"}``), which the kit's
 pages switch on instead of the English detail — and the refusal's ``extra`` fields, for
 one that names something (:class:`~eifi1_server_kit.user_admin.AccountError`: kastlan's
-``{"detail": …, "code": "last_admin", "companies": [...]}``).
+``{"detail": …, "code": "last_admin", "companies": [...]}``) — and the refusal's
+``headers``, for one that carries a ``Retry-After``
+(:class:`~eifi1_server_kit.demo.DemoError`'s ``demo_rate_limited``).
 
 kastlan routes its refusals through ``DomainError`` and may keep mapping kit errors
 there; the installer is the same answer without the mapping.
@@ -39,6 +42,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from eifi1_server_kit.auth.errors import AuthError
+from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.feedback.errors import FeedbackError
 from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.translation_review.scope import (
@@ -61,6 +65,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     AccountError,
     RosterQueryError,
     PatchNullError,
+    DemoError,
 )
 
 
@@ -72,7 +77,9 @@ async def contract_error_response(_request: Request, exc: Exception) -> Response
     :class:`~eifi1_server_kit.user_admin.AccountError`,
     :class:`~eifi1_server_kit.settings.PatchNullError`) adds it: ``{"detail": …, "code":
     …}``, and then its ``extra`` fields beside them — never in place of them. Those without
-    a code answer exactly as before.
+    a code answer exactly as before. A refusal's ``headers`` mapping goes on the answer
+    (:class:`~eifi1_server_kit.demo.DemoError`'s ``Retry-After``), as an ``HTTPException``'s
+    would.
     """
     body: dict[str, object] = {"detail": str(exc)}
     code = getattr(exc, "code", None)
@@ -81,7 +88,12 @@ async def contract_error_response(_request: Request, exc: Exception) -> Response
         extra = getattr(exc, "extra", None)
         if isinstance(extra, Mapping):
             body.update({key: value for key, value in extra.items() if key not in body})
-    return JSONResponse(body, status_code=getattr(exc, "status_code", 500))
+    headers = getattr(exc, "headers", None)
+    return JSONResponse(
+        body,
+        status_code=getattr(exc, "status_code", 500),
+        headers=dict(headers) if isinstance(headers, Mapping) and headers else None,
+    )
 
 
 def install_contract_error_handlers(app: Starlette) -> None:
