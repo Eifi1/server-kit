@@ -15,6 +15,7 @@ from eifi1_server_kit.billing import (
     BillingProvider,
     BillingSettings,
     DispatchOutcome,
+    DuplicateEventError,
     EventKind,
     EventStore,
     NormalisedEvent,
@@ -124,6 +125,35 @@ async def test_a_duplicate_is_answered_without_touching_anything() -> None:
     assert await _dispatch(_event(status=SubscriptionStatus.EXPIRED), store, payers) is DispatchOutcome.DUPLICATE
     assert payers.rows["user:1"].status is SubscriptionStatus.ACTIVE and len(payers.applied) == 1
     assert store.calls[-1] == "seen"
+
+
+@dataclass
+class _UniqueStore(_Store):
+    """A store the way SQLite's driver leaves it in a test: no savepoint, so ``seen`` can't
+    see the delivery racing this one, and ``record``'s insert hits the unique key and
+    raises :class:`DuplicateEventError`."""
+
+    async def seen(self, provider: BillingProvider, event_id: str) -> bool:
+        self.calls.append("seen")
+        return False
+
+    async def record(self, event: NormalisedEvent, *, received_at: datetime) -> None:
+        if (event.provider, event.event_id) in self.rows:
+            self.calls.append("duplicate")
+            raise DuplicateEventError(f"{event.provider} {event.event_id}")
+        await super().record(event, received_at=received_at)
+
+
+async def test_a_duplicate_found_by_the_insert_is_answered_the_same() -> None:
+    """keksdose's 0.32 report: the unique key catches the race ``seen`` can't, and the
+    store says so with :class:`DuplicateEventError` instead of a savepoint."""
+    store, payers = _UniqueStore(), _Payers({"user:1": _trial()})
+    assert await _dispatch(_event(), store, payers) is DispatchOutcome.APPLIED
+    raced = _event(status=SubscriptionStatus.EXPIRED, occurred_at=NOW + 1 * DAY)
+    assert await _dispatch(raced, store, payers) is DispatchOutcome.DUPLICATE
+    assert payers.rows["user:1"].status is SubscriptionStatus.ACTIVE and len(payers.applied) == 1
+    assert store.calls[-2:] == ["seen", "duplicate"]  # not loaded, applied or marked processed
+    assert webhook_answer(DuplicateEventError("paddle evt_1")) == WebhookAnswer(200, log=False)
 
 
 async def test_an_older_snapshot_does_not_overwrite_a_newer_one() -> None:

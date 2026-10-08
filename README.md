@@ -458,7 +458,7 @@ the daily notice job stay in the app; the kit sends no request.
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
-| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
+| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
 | Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
 | Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
 
@@ -576,7 +576,10 @@ cold start can eat five seconds; keksdose runs 60), Lemon Squeezy's `X-Signature
 HMAC-SHA256 of the raw body). The checkout carries
 `checkout_custom_data(payer_ref)`, which both providers send back with every subscription
 event, so `load` finds the row by `event.payer_ref`, else by the provider's ids. `dispatch`
-skips a duplicate; skips a snapshot older than `updated_from_event_at` (neither provider
+skips a duplicate — one `seen` finds, or one whose insert hits the unique key, which the
+store's `record` reports by raising `DuplicateEventError` (flush the insert there and undo
+it: a savepoint where the driver nests them, else a rollback, which also works on SQLite in
+tests); skips a snapshot older than `updated_from_event_at` (neither provider
 guarantees the order); skips a replaced subscription's late end; leaves a running grant's
 status, source and plan alone (writing only the link and dates — the provider's paid period
 counts once the grant ends); and otherwise hands `apply(event, row, changes)` the columns

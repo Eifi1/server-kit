@@ -113,6 +113,7 @@ from eifi1_server_kit.billing.standing import (
 )
 from eifi1_server_kit.billing.webhooks import (
     DispatchOutcome,
+    DuplicateEventError,
     EventStore,
     WebhookAnswer,
     dispatch,
@@ -149,6 +150,7 @@ __all__ = [
     "CheckoutRequest",
     "Currency",
     "DispatchOutcome",
+    "DuplicateEventError",
     "EventKind",
     "EventStore",
     "Interval",
