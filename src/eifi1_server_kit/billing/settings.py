@@ -12,13 +12,22 @@ read-only gate is off — everyone is in good standing
 (:meth:`BillingSettings.billing_standing`). **Switching on requires the secrets** (§10): a
 deployment with the switch on and a secret missing fails at start, not at its first
 webhook.
+
+**An empty ``<APP>_BILLING_*`` variable is an unset one**: an ``.env`` template lists the
+variables with nothing after ``=`` until billing goes on, and the defaults must hold for
+it (keksdose's 0.32 report). Read through pydantic-settings, an empty
+``BILLING_LAUNCH_AT=`` was no datetime, and an empty ``BILLING_PRICE_IDS=`` failed before
+any validator ran: pydantic-settings decodes a dict-typed variable as JSON first. The
+price ids therefore opt out of that decoding (its ``NoDecode`` marker) and are decoded
+here.
 """
 
 from __future__ import annotations
 
 import enum
+import json
 from datetime import datetime, timedelta
-from typing import Annotated, NamedTuple, Self
+from typing import Annotated, Any, NamedTuple, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr, StringConstraints, model_validator
 
@@ -74,6 +83,23 @@ _PriceId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
 _PriceIds = Annotated[list[_PriceId], BeforeValidator(_price_ids), Field(min_length=1)]
 
 
+def _no_json_decoding() -> object:
+    """pydantic-settings' ``NoDecode`` marker, so its sources hand the price ids over as
+    the variable's text, an empty one included; ``None`` — no marker — without
+    pydantic-settings, where no source decodes anything. The kit doesn't depend on
+    pydantic-settings; every app reads its settings through it."""
+    try:
+        from pydantic_settings import NoDecode
+    except ImportError:  # pragma: no cover - the kit's tests run with pydantic-settings
+        return None
+    return NoDecode
+
+
+def _json_text(value: object) -> object:
+    """The price ids as the environment holds them, JSON text, decoded; a mapping as it is."""
+    return json.loads(value) if isinstance(value, str | bytes) else value
+
+
 class BillingSettings(BaseModel):
     """Billing's settings (§4, §10), named for ``<APP>_BILLING_*``.
 
@@ -126,7 +152,11 @@ class BillingSettings(BaseModel):
     #: Squeezy signs no timestamp, so it ignores this.
     billing_signature_tolerance: float = Field(default=PADDLE_SIGNATURE_TOLERANCE, gt=0)
     #: Plan → currency → interval → price id(s); see the class docstring.
-    billing_price_ids: dict[PlanCode, dict[Currency, dict[Interval, _PriceIds]]] = Field(default_factory=dict)
+    billing_price_ids: Annotated[
+        dict[PlanCode, dict[Currency, dict[Interval, _PriceIds]]],
+        _no_json_decoding(),
+        BeforeValidator(_json_text),
+    ] = Field(default_factory=dict)
     #: When billing went on for this app (§2.4): the beta's 12 months run from it
     #: (:func:`~eifi1_server_kit.billing.beta_comped_until`), and an invitation created
     #: before it makes a beta payer (:func:`~eifi1_server_kit.billing.is_beta`). Unset until
@@ -135,6 +165,19 @@ class BillingSettings(BaseModel):
     #: (:func:`~eifi1_server_kit.billing.effective_comped_until`), so moving the date moves
     #: every such row's end with it.
     billing_launch_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _an_empty_variable_is_unset(cls, data: Any) -> Any:
+        """Drop a billing field given as blank text, so its default applies. Only the
+        mixin's own fields: what an app's own empty variable means is the app's call."""
+        if not isinstance(data, dict):
+            return data  # model_validate(settings, from_attributes=True): typed already
+        return {
+            name: value
+            for name, value in data.items()
+            if not (name in _OWN_FIELDS and isinstance(value, str) and not value.strip())
+        }
 
     @model_validator(mode="after")
     def _switching_on_needs_the_secrets(self) -> Self:
@@ -217,3 +260,7 @@ class BillingSettings(BaseModel):
         return not self.billing_enabled or in_good_standing(
             row, now, retry_grace=retry_grace, launch=self.billing_launch_at
         )
+
+
+#: The mixin's fields, the ones an empty variable leaves at their default.
+_OWN_FIELDS = frozenset(BillingSettings.model_fields)

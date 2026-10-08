@@ -476,6 +476,12 @@ class Settings(BaseSettings, DemoSettings, BillingSettings):
     # KEKSDOSE_BILLING_PRICE_IDS='{"pro": {"CHF": {"year": "pri_01…"}, "EUR": {"year": "pri_01…"}}}'
 ```
 
+**An empty billing variable is an unset one**: `KEKSDOSE_BILLING_LAUNCH_AT=` is no launch
+date and `KEKSDOSE_BILLING_PRICE_IDS=` no price ids, so an `.env` template can list every
+variable empty until billing goes on. The price ids skip pydantic-settings' own JSON
+decoding (its `NoDecode`), which refuses an empty value, and the mixin decodes them; only
+the mixin's fields are read this way, never the app's own.
+
 **A test that monkeypatches `billing_price_ids` passes the parsed shape**: lowercase plan
 codes, `CHF` / `EUR`, `month` / `year`, and a LIST of ids per combination, current first —
 `monkeypatch.setattr(settings, "billing_price_ids", {"pro": {"CHF": {"year": ["pri_test"]}}})`.
