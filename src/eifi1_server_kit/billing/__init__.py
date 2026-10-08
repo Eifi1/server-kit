@@ -18,6 +18,8 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 * :mod:`~eifi1_server_kit.billing.gate` — the read-only gate:
   :func:`billing_write_allowed` (the demo's shape, the standing as an input) and
   :func:`refuse_billing_read_only` for an app's own choke points;
+* :mod:`~eifi1_server_kit.billing.signatures` — each provider's webhook signature,
+  checked with ``hmac`` (no SDK);
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -50,6 +52,15 @@ from eifi1_server_kit.billing.plans import (
     plan_catalogue,
 )
 from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PriceRef
+from eifi1_server_kit.billing.signatures import (
+    LEMONSQUEEZY_SIGNATURE_HEADER,
+    PADDLE_SIGNATURE_HEADER,
+    PADDLE_SIGNATURE_TOLERANCE,
+    SIGNATURE_HEADERS,
+    verify_lemonsqueezy_signature,
+    verify_paddle_signature,
+    verify_webhook_signature,
+)
 from eifi1_server_kit.billing.standing import (
     BETA_FREE_MONTHS,
     TRIAL_LENGTH,
@@ -68,7 +79,11 @@ __all__ = [
     "BILLING_ERROR_DETAIL",
     "BILLING_ERROR_STATUS",
     "CURRENCY_EXPONENTS",
+    "LEMONSQUEEZY_SIGNATURE_HEADER",
+    "PADDLE_SIGNATURE_HEADER",
+    "PADDLE_SIGNATURE_TOLERANCE",
     "PLAN_LIMIT_CODE",
+    "SIGNATURE_HEADERS",
     "TRIAL_LENGTH",
     "BillingCurrency",
     "BillingError",
@@ -98,4 +113,7 @@ __all__ = [
     "plan_catalogue",
     "refuse_billing_read_only",
     "trial_ends_at",
+    "verify_lemonsqueezy_signature",
+    "verify_paddle_signature",
+    "verify_webhook_signature",
 ]
