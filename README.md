@@ -476,6 +476,17 @@ class Settings(BaseSettings, DemoSettings, BillingSettings):
     # KEKSDOSE_BILLING_PRICE_IDS='{"pro": {"CHF": {"year": "pri_01…"}, "EUR": {"year": "pri_01…"}}}'
 ```
 
+**A test that monkeypatches `billing_price_ids` passes the parsed shape**: lowercase plan
+codes, `CHF` / `EUR`, `month` / `year`, and a LIST of ids per combination, current first —
+`monkeypatch.setattr(settings, "billing_price_ids", {"pro": {"CHF": {"year": ["pri_test"]}}})`.
+The string → list step, the keys' normalisation and the one-id-one-combination check are
+the field's validation, which runs when the settings are built or validated, never on
+attribute assignment (`BillingSettings` doesn't set `validate_assignment`, pydantic's
+default). A bare `"pri_test"` slips through and is read character by character:
+`billing_price_id("pro", "CHF", "year")` answers `"p"`, and the webhook's `"pri_test"` finds
+no plan. To keep the environment's shape, validate it first:
+`BillingSettings(billing_price_ids={"pro": {"CHF": {"year": "pri_test"}}}).billing_price_ids`.
+
 **The catalogue lives in code**; the provider's price ids live in the settings, the names
 in the app's i18n. A limit gates creation only — a downgrade never deletes or hides
 anything — and comes after the read-only gate, so a lapsed payer creating gets

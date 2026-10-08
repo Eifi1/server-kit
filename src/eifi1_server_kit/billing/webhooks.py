@@ -114,6 +114,12 @@ def row_changes(
       period once the grant ends (§12.11).
 
     Datetimes are aware, in UTC: an app with naive columns (kastlan) strips the zone.
+    ``status``, ``source`` and ``provider`` are the kit's ``StrEnum`` members
+    (:class:`~eifi1_server_kit.billing.SubscriptionStatus`,
+    :class:`~eifi1_server_kit.billing.SubscriptionSource`,
+    :class:`~eifi1_server_kit.billing.BillingProvider`), not plain strings: a ``str``
+    subclass, so they compare equal to their string values and a string column stores
+    them as those values — an app that writes ``.value`` instead sees no difference.
     """
     changes: dict[str, object] = {"provider": event.provider}
     if event.customer_ref is not None:

@@ -85,6 +85,12 @@ class BillingSettings(BaseModel):
     A combination may hold a LIST instead: the current id first — what a new checkout uses
     — then retired ids whose subscriptions still run, so their webhooks still find the plan
     (``["pri_new", "pri_old"]``). An id may stand for one combination only.
+
+    The one id becoming a list, the keys' normalisation and that check are the field's
+    VALIDATION: they run when the settings are built or validated, not on assignment (no
+    ``validate_assignment``). A test that monkeypatches ``billing_price_ids`` passes the
+    parsed shape — ``{"pro": {"CHF": {"year": ["pri_test"]}}}`` — or a bare string is read
+    character by character (:meth:`billing_price_id` answers ``"p"``).
     """
 
     model_config = ConfigDict(from_attributes=True)
