@@ -1,0 +1,46 @@
+# Monthly dependency updates for eifi1-server-kit — the apps' convention (keksdose,
+# kastlan, Kurvenschmiede), so all five repos behave alike:
+#   - MONTHLY at 06:00 Zurich: every Dependabot PR and each rebase is a CI run.
+#   - uv at "/" (pyproject.toml + uv.lock) and the GitHub Actions.
+#   - Commit messages `build(deps): …` and `ci(deps): …`: the CHANGELOG is written by
+#     hand at release, and dependency bumps are not entries in it.
+#   - Minor and patch updates grouped into one PR per ecosystem.
+#   - NO major versions (Marcel, 2026-09-26, harmonised across the repos). The
+#     runtime floors (pydantic, starlette, httpx, pillow) are the apps' floors with no
+#     ceilings on purpose (see pyproject.toml), so updates here move the DEV lock only.
+# Security updates are unaffected by the ignores.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: monthly
+      time: "06:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      uv-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+      time: "06:00"
+      timezone: Europe/Zurich
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
