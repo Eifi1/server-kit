@@ -13,6 +13,7 @@ from eifi1_server_kit.user_admin import (
     DETAIL_MAX_BYTES,
     DETAIL_TOKEN_MAX_LENGTH,
     AdminAction,
+    AdminActionRow,
     AuditDetailError,
     admin_action_record,
     audit_detail,
@@ -89,9 +90,20 @@ def test_now_is_stored_as_given_for_a_naive_column() -> None:
     )
 
 
-def test_an_unknown_action_is_refused() -> None:
-    with pytest.raises(ValueError):
-        admin_action_record("delete", actor_id=1, target_user_id=2, target_email=None, now=NOW)
+def test_an_apps_own_action_is_kept_as_written() -> None:
+    """keksdose found it after 0.5.1: ``AdminActionRow`` read an app's own action back, but
+    the record refused to write one. ``"plan"`` is the kit's own since 0.6 (billing §6)."""
+    plan = admin_action_record("plan", actor_id=1, target_user_id=2, target_email=None, now=NOW)
+    assert plan["action"] == "plan" and type(plan["action"]) is str
+    own = admin_action_record("reseed_demo", actor_id=1, target_user_id=None, target_email=None, now=NOW)
+    assert own["action"] == "reseed_demo" and type(own["action"]) is str
+    assert AdminActionRow.model_validate({"id": 1, **own}).action == "reseed_demo"
+
+
+@pytest.mark.parametrize("action", ["", "   ", None])
+def test_an_empty_action_is_refused(action: str | None) -> None:
+    with pytest.raises(ValueError, match="non-empty string"):
+        admin_action_record(action, actor_id=1, target_user_id=2, target_email=None, now=NOW)  # type: ignore[arg-type]
 
 
 def test_the_detail_holds_ids_roles_flags_counts_and_dates() -> None:

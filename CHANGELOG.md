@@ -10,6 +10,13 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### Fixed
+
+* **user_admin:** `admin_action_record` keeps an app's own action as written
+  (`"reseed_demo"`), as `AdminActionRow` reads it back since 0.5.1; it used to raise
+  `'…' is not a valid AdminAction`. A known value is still stored as the enum's value, and
+  an empty or blank action is still a `ValueError`. Found by keksdose after adopting 0.5.1.
+
 ## [0.5.1] (2026-10-07)
 
 From the apps' 0.31 adoptions (kastlan, keksdose).
