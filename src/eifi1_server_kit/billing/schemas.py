@@ -31,7 +31,12 @@ from eifi1_server_kit.billing.plans import (
     dimensions_over_limit,
     normalize_plan,
 )
-from eifi1_server_kit.billing.standing import SubscriptionRow, SubscriptionSource, SubscriptionStatus
+from eifi1_server_kit.billing.standing import (
+    SubscriptionRow,
+    SubscriptionSource,
+    SubscriptionStatus,
+    effective_comped_until,
+)
 from eifi1_server_kit.billing.standing import in_good_standing as _in_good_standing
 
 __all__ = [
@@ -71,6 +76,9 @@ class BillingOverview(BaseModel):
     #: :func:`~eifi1_server_kit.billing.in_good_standing` now: false = read-only (§3.3).
     in_good_standing: bool
     trial_ends_at: UtcDateTime | None = None
+    #: When the free grant ends (:func:`~eifi1_server_kit.billing.effective_comped_until`):
+    #: a beta row stored without an end shows the launch plus 12 months, the banner's
+    #: "free until …" (§3.2); ``None`` is no end.
     comped_until: UtcDateTime | None = None
     current_period_end: UtcDateTime | None = None
     cancel_at_period_end: bool = False
@@ -92,19 +100,24 @@ class BillingOverview(BaseModel):
         currency: BillingCurrency | str,
         now: datetime,
         retry_grace: timedelta | None = None,
+        launch: datetime | None = None,
     ) -> Self:
         """The overview of ``row``, whose plan is ``plan`` (the catalogue's entry for
         ``row.plan_code`` — another plan is a :class:`ValueError`), with the payer's
-        ``usage`` and ``currency``, its standing as of ``now``."""
+        ``usage`` and ``currency``, its standing as of ``now``.
+
+        Pass ``launch=settings.billing_launch_at``: a beta row stored before the launch
+        date was known has no ``comped_until``, and both the standing and the
+        ``comped_until`` shown read it as the launch plus 12 months (§3.2)."""
         if normalize_plan(row.plan_code) != plan.code:
             raise ValueError(f"the row's plan is {row.plan_code!r}, not {plan.code!r}")
         return cls(
             plan=plan.code,
             status=SubscriptionStatus(row.status),
             source=SubscriptionSource(row.source),
-            in_good_standing=_in_good_standing(row, now, retry_grace=retry_grace),
+            in_good_standing=_in_good_standing(row, now, retry_grace=retry_grace, launch=launch),
             trial_ends_at=row.trial_ends_at,
-            comped_until=row.comped_until,
+            comped_until=effective_comped_until(row, launch),
             current_period_end=row.current_period_end,
             cancel_at_period_end=bool(row.cancel_at_period_end),
             limits=dict(plan.limits),

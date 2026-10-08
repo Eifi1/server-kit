@@ -11,7 +11,8 @@ route is the app's; what it does in between is this::
         try:
             event = parse_webhook_event("paddle", raw)
             result = None if event is None else await dispatch(
-                event, EventTable(session), apply, load=find_payer_row, plan_for_price=settings.billing_plan_for_price
+                event, EventTable(session), apply, load=find_payer_row,
+                plan_for_price=settings.billing_plan_for_price, launch=settings.billing_launch_at,
             )
             await session.commit()                               # recorded and applied in ONE transaction
         except Exception as exc:
@@ -155,6 +156,7 @@ async def dispatch[RowT: SubscriptionRow](
     load: Callable[[NormalisedEvent], Awaitable[RowT | None]],
     plan_for_price: Callable[[str], str | None],
     now: datetime | None = None,
+    launch: datetime | None = None,
 ) -> DispatchOutcome:
     """Record ``event`` and apply it to the payer's row, through the app's ports (§5).
 
@@ -172,7 +174,10 @@ async def dispatch[RowT: SubscriptionRow](
        :attr:`~DispatchOutcome.OTHER_SUBSCRIPTION`; one that would (the payer subscribed
        again) takes the row's link;
     6. **a free grant** (§12.11, :func:`~eifi1_server_kit.billing.grant_holds`) → apply only
-       the link and the dates, :attr:`~DispatchOutcome.GRANT_HOLDS`;
+       the link and the dates, :attr:`~DispatchOutcome.GRANT_HOLDS`. Pass ``launch`` — the
+       settings' ``billing_launch_at`` — so a beta row stored without an end stops
+       holding at the launch plus 12 months (§3.2); without it such a row holds for good,
+       as in 0.6.0;
     7. otherwise **apply** :func:`row_changes`, with the plan from ``plan_for_price``
        (:meth:`~eifi1_server_kit.billing.BillingSettings.billing_plan_for_price`). A price
        the settings don't know is 503 ``billing_not_configured``: nothing is kept, and the
@@ -200,7 +205,7 @@ async def dispatch[RowT: SubscriptionRow](
     elif _foreign(event, row):
         outcome = DispatchOutcome.OTHER_SUBSCRIPTION
     else:
-        holds = event.is_snapshot and grant_holds(row, moment)
+        holds = event.is_snapshot and grant_holds(row, moment, launch=launch)
         plan_code: str | None = None
         if event.is_snapshot and not holds and event.plan_price_id is not None:
             plan_code = plan_for_price(event.plan_price_id)

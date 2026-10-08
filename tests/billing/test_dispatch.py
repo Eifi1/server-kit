@@ -221,6 +221,31 @@ async def test_a_running_grant_keeps_its_status_but_takes_the_link() -> None:
     assert (beta.status, beta.source) == (SubscriptionStatus.ACTIVE, SubscriptionSource.PROVIDER)
 
 
+async def test_a_beta_rows_grant_ends_a_year_after_the_launch_date() -> None:
+    """§3.2: a beta row stored without an end holds until the launch + 12 months, given the
+    launch date; provider events apply again from then on."""
+    beta = Row(status=SubscriptionStatus.COMPED, source=SubscriptionSource.BETA, plan_code="pro")
+    store, payers = _Store(), _Payers({"user:1": beta})
+    launch, end = datetime(2026, 11, 1, tzinfo=UTC), datetime(2027, 11, 1, tzinfo=UTC)
+    port: EventStore = store
+
+    async def at(event: NormalisedEvent, now: datetime) -> DispatchOutcome:
+        return await dispatch(
+            event,
+            port,
+            payers.apply,
+            load=payers.load,
+            plan_for_price=SETTINGS.billing_plan_for_price,
+            now=now,
+            launch=launch,
+        )
+
+    assert await at(_event(occurred_at=end - DAY), end - DAY) is DispatchOutcome.GRANT_HOLDS
+    assert beta.status is SubscriptionStatus.COMPED
+    assert await at(_event(event_id="evt_2", occurred_at=end), end) is DispatchOutcome.APPLIED
+    assert (beta.status, beta.source) == (SubscriptionStatus.ACTIVE, SubscriptionSource.PROVIDER)
+
+
 async def test_a_grant_without_an_end_always_holds() -> None:
     """§12.8: the operator's admin accounts — comped, manual, no end."""
     admin = Row(status=SubscriptionStatus.COMPED, source=SubscriptionSource.MANUAL)

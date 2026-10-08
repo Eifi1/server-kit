@@ -454,11 +454,11 @@ the daily notice job stay in the app; the kit sends no request.
 
 | Area | Names |
 |---|---|
-| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` |
+| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch) |
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
-| Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None)`, `grant_holds(row, now)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
+| Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
-| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port, `dispatch(event, store, apply, *, load, plan_for_price, now=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
+| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
 | Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `PlanOut` (`.from_spec(plan)`), `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
 | Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
 
@@ -513,7 +513,14 @@ a `SyncRefusal` beside the updates. Scheduled jobs skip a lapsed payer's data th
 row waits with it empty until their first owned item); a beta payer — existing at launch,
 or invited before it (`is_beta`) — is `comped` until `beta_comped_until(launch)`; an
 operator's grant is `comped`, `manual`, with or without an end (`AdminAction.PLAN`,
-`acknowledge`; `PlanChangeRequest` / `PlanChangeResponse`).
+`acknowledge`; `PlanChangeRequest` / `PlanChangeResponse`). A beta row written before the
+launch date is known (the beta migration, a registration before launch) stores no
+`comped_until`, and the kit reads it as `beta_comped_until(settings.billing_launch_at)` at
+read time, so a moved launch date needs no data change: `effective_comped_until(row,
+launch)` for a banner's "free until …", and pass `launch=settings.billing_launch_at` to
+`in_good_standing`, `grant_holds`, `dispatch` and `BillingOverview.from_row`
+(`settings.billing_standing` passes it itself). Without a launch date such a row has no
+end — and switching billing on does not require one.
 
 **The webhook**, one per provider, `POST /webhooks/<provider>`, in one transaction:
 
@@ -529,7 +536,12 @@ async def paddle_webhook(request: Request, session=Depends(system_session)) -> R
             None
             if event is None
             else await dispatch(
-                event, EventTable(session), apply, load=find_payer_row, plan_for_price=settings.billing_plan_for_price
+                event,
+                EventTable(session),
+                apply,
+                load=find_payer_row,
+                plan_for_price=settings.billing_plan_for_price,
+                launch=settings.billing_launch_at,
             )
         )
         await session.commit()

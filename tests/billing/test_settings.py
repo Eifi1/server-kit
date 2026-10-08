@@ -3,7 +3,7 @@ secrets, the price ids both ways, and the standing behind the switch."""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -17,6 +17,7 @@ from eifi1_server_kit.billing import (
     BillingProvider,
     BillingSettings,
     PriceRef,
+    SubscriptionSource,
     SubscriptionStatus,
 )
 from tests.billing._rows import NOW, Row
@@ -132,3 +133,13 @@ def test_the_standing_is_everyones_while_billing_is_off() -> None:
     late = Row(status=SubscriptionStatus.PAST_DUE, current_period_end=NOW - timedelta(days=20))
     assert on.billing_standing(late, NOW)
     assert not on.billing_standing(late, NOW, retry_grace=timedelta(days=14))
+
+
+def test_the_standing_reads_a_beta_rows_end_from_the_launch_date() -> None:
+    """§3.2: a beta row stored without an end runs to the settings' launch + 12 months."""
+    beta = Row(status=SubscriptionStatus.COMPED, source=SubscriptionSource.BETA)
+    on = BillingSettings(billing_enabled=True, **SECRETS)
+    assert on.billing_standing(beta, NOW + 9999 * timedelta(days=1))  # no launch date yet
+    launched = BillingSettings(billing_enabled=True, billing_launch_at=datetime(2026, 11, 1), **SECRETS)
+    assert launched.billing_standing(beta, datetime(2027, 10, 31, tzinfo=UTC))
+    assert not launched.billing_standing(beta, datetime(2027, 11, 1, tzinfo=UTC))

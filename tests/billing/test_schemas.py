@@ -71,6 +71,21 @@ def test_the_overview_is_built_from_the_row() -> None:
         BillingOverview.from_row(Row(), plan=PRO, usage={}, currency="CHF", now=NOW)
 
 
+def test_the_overview_shows_a_beta_rows_end_from_the_launch_date() -> None:
+    """§3.2: a beta row stored without an end shows — and is in good standing until — the
+    launch plus 12 months; without a launch date it shows no end."""
+    beta = Row(plan_code="pro", status="comped", source="beta")
+    launch = datetime(2026, 11, 1, tzinfo=UTC)
+    shown = BillingOverview.from_row(beta, plan=PRO, usage={}, currency="CHF", now=NOW, launch=launch)
+    assert shown.comped_until == datetime(2027, 11, 1, tzinfo=UTC) and shown.in_good_standing
+    ended = BillingOverview.from_row(
+        beta, plan=PRO, usage={}, currency="CHF", now=datetime(2027, 11, 1, tzinfo=UTC), launch=launch
+    )
+    assert not ended.in_good_standing
+    unknown = BillingOverview.from_row(beta, plan=PRO, usage={}, currency="CHF", now=NOW + 9999 * DAY)
+    assert unknown.comped_until is None and unknown.in_good_standing
+
+
 def test_the_overview_reads_the_rows_vocabulary() -> None:
     row = Row(plan_code="pro", status="comped", source="beta", comped_until=NOW + DAY)
     overview = BillingOverview.from_row(row, plan=PRO, usage={"budgets": 9}, currency="CHF", now=NOW)

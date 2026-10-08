@@ -14,7 +14,8 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 * :mod:`~eifi1_server_kit.billing.plans` — :class:`PlanSpec`, the catalogue, the limits
   (:func:`check_limit`), currencies, intervals and minor units;
 * :mod:`~eifi1_server_kit.billing.standing` — the row's statuses and sources,
-  :func:`in_good_standing`, and the trial's and the beta's dates;
+  :func:`in_good_standing`, and the trial's and the beta's dates
+  (:func:`effective_comped_until` for a beta row stored before the launch date was known);
 * :mod:`~eifi1_server_kit.billing.gate` — the read-only gate:
   :func:`billing_write_allowed` (the demo's shape, the standing as an input) and
   :func:`refuse_billing_read_only` for an app's own choke points;
@@ -102,6 +103,7 @@ from eifi1_server_kit.billing.standing import (
     SubscriptionSource,
     SubscriptionStatus,
     beta_comped_until,
+    effective_comped_until,
     grant_holds,
     in_good_standing,
     is_beta,
@@ -169,6 +171,7 @@ __all__ = [
     "checkout_custom_data",
     "dimensions_over_limit",
     "dispatch",
+    "effective_comped_until",
     "grant_holds",
     "in_good_standing",
     "is_beta",

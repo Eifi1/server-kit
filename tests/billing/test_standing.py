@@ -12,6 +12,7 @@ from eifi1_server_kit.billing import (
     SubscriptionSource,
     SubscriptionStatus,
     beta_comped_until,
+    effective_comped_until,
     grant_holds,
     in_good_standing,
     is_beta,
@@ -94,6 +95,53 @@ def test_past_due_counts_while_the_provider_retries() -> None:
     assert in_good_standing(late, NOW, retry_grace=grace)
     assert not in_good_standing(late, NOW + 4 * DAY, retry_grace=grace)
     assert in_good_standing(Row(status=PAST_DUE, current_period_end=None), NOW, retry_grace=grace)
+
+
+def test_a_beta_row_stored_before_the_launch_date_ends_a_year_after_it() -> None:
+    """§3.2 (Kurvenschmiede's 0.32 report): the beta migration and registrations before the
+    launch date is known store no end; the kit reads launch + 12 months at read time."""
+    launch = datetime(2026, 11, 1, tzinfo=UTC)
+    end = datetime(2027, 11, 1, tzinfo=UTC)
+    beta = Row(status=COMPED, source=SubscriptionSource.BETA)
+    assert effective_comped_until(beta, launch) == end
+    assert grant_holds(beta, end - DAY, launch=launch) and in_good_standing(beta, end - DAY, launch=launch)
+    assert not grant_holds(beta, end, launch=launch) and not in_good_standing(beta, end, launch=launch)
+    # Subscribed during the beta: the provider's paid period counts from the beta's end on.
+    paid = Row(status=COMPED, source="beta", current_period_end=end + 300 * DAY)
+    assert not grant_holds(paid, end, launch=launch) and in_good_standing(paid, end, launch=launch)
+    # A moved launch date moves the end with it, without a data change.
+    assert effective_comped_until(beta, datetime(2027, 1, 15)) == datetime(2028, 1, 15)
+    assert grant_holds(beta, end, launch=launch + 30 * DAY)
+
+
+def test_a_beta_row_without_a_launch_date_keeps_its_grant() -> None:
+    """No launch date yet (billing switches on without one): no end, as in 0.6.0."""
+    beta = Row(status=COMPED, source=SubscriptionSource.BETA)
+    assert effective_comped_until(beta, None) is None
+    assert grant_holds(beta, NOW + 9999 * DAY) and in_good_standing(beta, NOW + 9999 * DAY)
+
+
+def test_an_operators_grant_without_an_end_has_none_whatever_the_launch() -> None:
+    """§12.8: comped, manual, no end — the launch date is the beta's, not the operator's."""
+    launch = datetime(2026, 11, 1, tzinfo=UTC)
+    admin = Row(status=COMPED, source=SubscriptionSource.MANUAL)
+    assert effective_comped_until(admin, launch) is None
+    assert grant_holds(admin, NOW + 9999 * DAY, launch=launch)
+    assert in_good_standing(admin, NOW + 9999 * DAY, launch=launch)
+
+
+def test_an_explicit_end_wins_over_the_launch() -> None:
+    """A beta row that has its date (written once the launch was known, or set by an
+    operator) keeps it, earlier or later than the launch's."""
+    launch = datetime(2026, 11, 1, tzinfo=UTC)
+    early = Row(status=COMPED, source=SubscriptionSource.BETA, comped_until=NOW + DAY)
+    assert effective_comped_until(early, launch) == NOW + DAY
+    assert not grant_holds(early, NOW + DAY, launch=launch)
+    late = Row(status=COMPED, source=SubscriptionSource.BETA, comped_until=datetime(2028, 6, 1))
+    assert effective_comped_until(late, launch) == datetime(2028, 6, 1)
+    assert in_good_standing(late, datetime(2028, 5, 31, tzinfo=UTC), launch=launch)
+    # Not comped: no grant, whatever the dates say.
+    assert not grant_holds(Row(status=ACTIVE, source=SubscriptionSource.BETA), NOW, launch=launch)
 
 
 @pytest.mark.parametrize("status", [CANCELED, EXPIRED, "canceled", "expired"])

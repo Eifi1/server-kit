@@ -106,7 +106,10 @@ class BillingSettings(BaseModel):
     #: When billing went on for this app (§2.4): the beta's 12 months run from it
     #: (:func:`~eifi1_server_kit.billing.beta_comped_until`), and an invitation created
     #: before it makes a beta payer (:func:`~eifi1_server_kit.billing.is_beta`). Unset until
-    #: Marcel names the date.
+    #: Marcel names the date, and NOT required to switch on: a beta row stored without an
+    #: end reads as no end until it is set, then as this date plus 12 months
+    #: (:func:`~eifi1_server_kit.billing.effective_comped_until`), so moving the date moves
+    #: every such row's end with it.
     billing_launch_at: datetime | None = None
 
     @model_validator(mode="after")
@@ -184,5 +187,9 @@ class BillingSettings(BaseModel):
     ) -> bool:
         """:func:`~eifi1_server_kit.billing.in_good_standing`, behind the switch: with
         billing off everyone is in good standing (§4). The standing the read-only gate
-        takes (:func:`~eifi1_server_kit.billing.billing_write_allowed`)."""
-        return not self.billing_enabled or in_good_standing(row, now, retry_grace=retry_grace)
+        takes (:func:`~eifi1_server_kit.billing.billing_write_allowed`). A beta row stored
+        without an end ends at :attr:`billing_launch_at` plus 12 months, once that is set
+        (§3.2)."""
+        return not self.billing_enabled or in_good_standing(
+            row, now, retry_grace=retry_grace, launch=self.billing_launch_at
+        )
