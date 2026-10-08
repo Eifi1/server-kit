@@ -10,7 +10,10 @@ from pydantic import ValidationError
 
 from eifi1_server_kit.auth import (
     AUTH_ERROR_STATUS,
+    CONTRAST_MODES,
     MAX_NAME_LENGTH,
+    PROFILE_NOT_NULLABLE,
+    TEXT_SIZES,
     AuthError,
     AuthErrorCode,
     LoginRequest,
@@ -230,6 +233,41 @@ def test_profile_update() -> None:
         ProfileUpdate.model_validate({"first_name": "  "})
     with pytest.raises(ValidationError, match="valid dictionary"):
         ProfileUpdate.model_validate(["first_name", None])
+
+
+def test_the_text_size_and_contrast_vocabularies_are_the_contracts() -> None:
+    """text-size §10.6: three sizes, and "system" as a stored contrast value."""
+    assert TEXT_SIZES == ("normal", "large", "xlarge")
+    assert CONTRAST_MODES == ("system", "standard", "more")
+
+
+def test_the_account_carries_its_text_size_and_contrast() -> None:
+    """``/auth/me`` answers both, ``None`` while never chosen (text-size §6)."""
+    fresh = UserResponse(**_user())
+    assert (fresh.text_size, fresh.contrast) == (None, None)
+    chosen = UserResponse(**_user(text_size="xlarge", contrast="system")).model_dump()
+    assert (chosen["text_size"], chosen["contrast"]) == ("xlarge", "system")
+    with pytest.raises(ValidationError):
+        UserResponse(**_user(text_size="huge"))
+    with pytest.raises(ValidationError):
+        UserResponse(**_user(contrast="high"))
+
+
+def test_the_profile_update_writes_them_alone_and_never_clears_them() -> None:
+    """A pick writes one field; an explicit null is refused — "System" is the way back
+    (text-size §10.6, settings §6.1 rule 3)."""
+    for size in TEXT_SIZES:
+        assert ProfileUpdate(text_size=size).model_dump(exclude_unset=True) == {"text_size": size}
+    for mode in CONTRAST_MODES:
+        assert ProfileUpdate(contrast=mode).model_dump(exclude_unset=True) == {"contrast": mode}
+    assert {"text_size", "contrast"} <= set(PROFILE_NOT_NULLABLE)
+    for field in ("text_size", "contrast"):
+        with pytest.raises(ValidationError, match="cannot be null"):
+            ProfileUpdate.model_validate({field: None})
+    with pytest.raises(ValidationError):
+        ProfileUpdate.model_validate({"text_size": "Large"})
+    with pytest.raises(ValidationError):
+        ProfileUpdate.model_validate({"contrast": "high"})
 
 
 @pytest.mark.parametrize(

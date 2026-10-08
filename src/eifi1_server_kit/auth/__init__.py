@@ -11,7 +11,8 @@ the reference, cited ``file`` per rule.
   invitation, email change) and the session's claims;
 * :mod:`~eifi1_server_kit.auth.limits` — :class:`AuthLimiters`, with the per-address
   delay that never locks out;
-* :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes;
+* :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes, with the account's text size
+  and contrast (``docs/text-size-harmonization.md`` §6);
 * :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes.
 """
 
@@ -53,6 +54,7 @@ from eifi1_server_kit.auth.limits import (
     login_failure_delay,
 )
 from eifi1_server_kit.auth.schemas import (
+    CONTRAST_MODES,
     DEFAULT_LOCALE,
     LOCALE_PATTERN,
     MAX_EMAIL_LENGTH,
@@ -60,6 +62,8 @@ from eifi1_server_kit.auth.schemas import (
     MAX_PASSWORD_BYTES,
     MIN_PASSWORD_LENGTH,
     PROFILE_NOT_NULLABLE,
+    TEXT_SIZES,
+    ContrastMode,
     Email,
     ExistingPassword,
     LocaleTag,
@@ -69,6 +73,7 @@ from eifi1_server_kit.auth.schemas import (
     PersonName,
     ProfileUpdate,
     RegisterRequest,
+    TextSize,
     TokenResponse,
     TwoFactorChallenge,
     UserResponse,
@@ -112,6 +117,7 @@ __all__ = [
     "CHALLENGE_LIFETIMES",
     "CHALLENGE_PER_IP",
     "CHALLENGE_PER_SUBJECT",
+    "CONTRAST_MODES",
     "DEFAULT_LOCALE",
     "EMAIL_CHANGE_TOKEN_KIND",
     "EMAIL_CHANGE_TTL",
@@ -141,6 +147,7 @@ __all__ = [
     "RESET_PER_IP",
     "RESET_TTL",
     "TAG_SEPARATOR",
+    "TEXT_SIZES",
     "VERIFICATION_RESEND_PER_RECIPIENT",
     "VERIFY_TTL",
     "AuthError",
@@ -148,6 +155,7 @@ __all__ = [
     "AuthLimiters",
     "Budget",
     "ChallengeKind",
+    "ContrastMode",
     "Email",
     "ExistingPassword",
     "LocaleTag",
@@ -161,6 +169,7 @@ __all__ = [
     "ProfileUpdate",
     "RegisterRequest",
     "RegistrationDecision",
+    "TextSize",
     "TokenResponse",
     "TwoFactorChallenge",
     "UserResponse",
