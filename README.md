@@ -459,7 +459,7 @@ the daily notice job stay in the app; the kit sends no request.
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None)`, `grant_holds(row, now)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
 | Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port, `dispatch(event, store, apply, *, load, plan_for_price, now=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
-| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `PlanOut` (`.from_spec(plan)`), `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
 | Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
 
 **The switch is off by default**, and switching on without the provider, the API key or the
@@ -492,6 +492,13 @@ PLANS = plan_catalogue(
 refuse_billing_read_only(settings.billing_standing(owner_row, now), "a new budget")  # 402 billing_read_only
 check_limit(PLANS[normalize_plan(owner_row.plan_code)], "budgets", owned_budgets)  # 402 plan_limit
 ```
+
+**`GET /billing/plans`** answers `plans_out(PLANS)`: a `PlanOut` per plan, `{code, prices,
+limits, sort}` in `sort` order, with the prices nested currency → interval → gross minor
+units — ui-kit's `PlanPrices`, so `BillingPlan.prices` takes them as they are
+(`{"CHF": {"month": 7900, "year": 79000}}`). A combination the plan doesn't sell is left
+out, never `0`, and unlimited is `null`. The names and feature lines are the page's, from
+the app's i18n by `code`.
 
 **Whose standing**: the payer's, not the caller's — keksdose's budget owner, Kurvenschmiede's
 row owner (the creator's for a create), kastlan's acting company. No row means always in

@@ -1,4 +1,4 @@
-"""Billing's wire shapes (``docs/billing-harmonization.md`` §4, §6 and §12.5 in
+"""Billing's wire shapes (``docs/billing-harmonization.md`` §3.1, §4, §6 and §12.5 in
 ``Eifi1/ui-kit``).
 
 Like the other kit schemas, meant to be used as they are or SUBCLASSED: the app adds its
@@ -22,8 +22,10 @@ from eifi1_server_kit.auth.schemas import UtcDateTime
 from eifi1_server_kit.billing.errors import BILLING_ERROR_DETAIL, BillingErrorCode
 from eifi1_server_kit.billing.plans import (
     BillingCurrency,
+    BillingInterval,
     Currency,
     Interval,
+    MinorUnits,
     PlanCode,
     PlanSpec,
     dimensions_over_limit,
@@ -39,7 +41,9 @@ __all__ = [
     "CheckoutRequest",
     "PlanChangeRequest",
     "PlanChangeResponse",
+    "PlanOut",
     "SyncRefusal",
+    "plans_out",
 ]
 
 
@@ -107,6 +111,74 @@ class BillingOverview(BaseModel):
             usage=dict(usage),
             currency=BillingCurrency(str(currency).strip().upper()),
         )
+
+
+class PlanOut(BaseModel):
+    """One plan of ``GET /billing/plans`` (§4): ``{code, prices, limits, sort}``, the
+    catalogue's :class:`~eifi1_server_kit.billing.PlanSpec` as JSON can carry it. Build the
+    list with :func:`plans_out`.
+
+    **``prices`` is nested, currency → interval → GROSS minor units** (§4, §12.17)::
+
+        {"code": "standard",
+         "prices": {"CHF": {"month": 7900, "year": 79000}, "EUR": {"month": 7900, "year": 79000}},
+         "limits": {"units": 150, "seats": 5, "storage": 26843545600},
+         "sort": 1}
+
+    ``PlanSpec.prices`` is keyed by ``(currency, interval)``, and a tuple is no JSON key, so
+    each app invented its own list and converted it in the page (kastlan's ``[{currency,
+    interval, amount}]``, its 0.32 report). This is ui-kit's ``PlanPrices``, so
+    ``BillingPlan.prices`` takes it as it is. A combination the plan doesn't sell is
+    ABSENT, never ``0``: the page reads ``0`` — and a plan with no prices at all, ``{}`` —
+    as free. ``limits`` is the plan's, ``null`` for unlimited (kastlan's ``storage`` in
+    bytes, §13.1); ``sort`` the catalogue's order, cheapest first, which decides the page's
+    upgrade and downgrade.
+
+    **No name, description or feature lines**: those are the app's i18n, never the
+    provider's or the server's (§3.1). The page maps ``code`` to its own words and builds
+    ui-kit's ``BillingPlan`` from both.
+
+    A RETIRED PRICE needs nothing here: its id stays findable in the settings for the
+    subscriptions still on it (:class:`~eifi1_server_kit.billing.BillingSettings`), and
+    this shape carries amounts, not price ids. A plan sold no more stays in the catalogue
+    for the rows on it — its limits still gate creation (§3.4) — and the page marks it
+    ``disabled`` or the route leaves it out; it is the app's word, not the catalogue's.
+    """
+
+    code: PlanCode
+    prices: dict[Currency, dict[Interval, MinorUnits]]
+    limits: dict[str, int | None]
+    sort: int
+
+    @classmethod
+    def from_spec(cls, plan: PlanSpec) -> Self:
+        """``plan`` on the wire: its prices nested, CHF before EUR and month before year
+        whatever order the spec lists them in, so the JSON is the same on every run."""
+        prices: dict[BillingCurrency, dict[BillingInterval, int]] = {}
+        for currency in BillingCurrency:
+            for interval in BillingInterval:
+                amount = plan.prices.get((currency, interval))
+                if amount is not None:
+                    prices.setdefault(currency, {})[interval] = amount
+        return cls(code=plan.code, prices=prices, limits=dict(plan.limits), sort=plan.sort)
+
+
+def plans_out(catalogue: Mapping[str, PlanSpec]) -> list[PlanOut]:
+    """The answer to ``GET /billing/plans`` (§4): every plan of ``catalogue`` as
+    :class:`PlanOut`, in ``sort`` order (then by code, as
+    :func:`~eifi1_server_kit.billing.plan_catalogue` orders them — sorted again here, so a
+    mapping built by hand comes out the same)::
+
+        @router.get("/billing/plans", response_model=list[PlanOut])
+        def billing_plans(payer: Payer = Depends(current_payer)) -> list[PlanOut]:
+            settings.require_billing_enabled()  # 404 billing_disabled
+            return plans_out(PLANS)
+
+    Every currency the plans are sold in: the page picks the payer's — the overview's
+    ``currency`` (§12.18) — and offers the switch where a plan has more than one.
+    """
+    ordered = sorted(catalogue.values(), key=lambda plan: (plan.sort, plan.code))
+    return [PlanOut.from_spec(plan) for plan in ordered]
 
 
 class CheckoutRequest(BaseModel):

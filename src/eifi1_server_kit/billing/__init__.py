@@ -25,8 +25,9 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 * :mod:`~eifi1_server_kit.billing.webhooks` — the event-store port, the pure
   :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
   policy;
-* :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, checkout,
-  the operator's plan change, and a sync reply's refused changes;
+* :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, the plans
+  (:class:`PlanOut`, :func:`plans_out`), checkout, the operator's plan change, and a sync
+  reply's refused changes;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -80,7 +81,9 @@ from eifi1_server_kit.billing.schemas import (
     CheckoutRequest,
     PlanChangeRequest,
     PlanChangeResponse,
+    PlanOut,
     SyncRefusal,
+    plans_out,
 )
 from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PriceRef
 from eifi1_server_kit.billing.signatures import (
@@ -151,6 +154,7 @@ __all__ = [
     "PlanChangeResponse",
     "PlanCode",
     "PlanLimitError",
+    "PlanOut",
     "PlanSpec",
     "PoisonEventError",
     "PriceRef",
@@ -174,6 +178,7 @@ __all__ = [
     "normalize_plan",
     "parse_webhook_event",
     "plan_catalogue",
+    "plans_out",
     "refuse_billing_read_only",
     "row_changes",
     "trial_ends_at",
