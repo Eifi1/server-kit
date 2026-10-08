@@ -27,7 +27,7 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
   :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
   policy;
 * :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, the plans
-  (:class:`PlanOut`, :func:`plans_out`), checkout, the operator's plan change, and a sync
+  (:class:`PlanOut` with :class:`PlanPrices`, :func:`plans_out`), checkout, the operator's plan change, and a sync
   reply's refused changes;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
@@ -82,7 +82,9 @@ from eifi1_server_kit.billing.schemas import (
     CheckoutRequest,
     PlanChangeRequest,
     PlanChangeResponse,
+    PlanIntervalPrices,
     PlanOut,
+    PlanPrices,
     SyncRefusal,
     plans_out,
 )
@@ -155,8 +157,10 @@ __all__ = [
     "PlanChangeRequest",
     "PlanChangeResponse",
     "PlanCode",
+    "PlanIntervalPrices",
     "PlanLimitError",
     "PlanOut",
+    "PlanPrices",
     "PlanSpec",
     "PoisonEventError",
     "PriceRef",

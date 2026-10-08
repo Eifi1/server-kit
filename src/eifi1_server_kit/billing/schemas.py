@@ -14,15 +14,14 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta
-from typing import Annotated, Self
+from typing import Annotated, Self, TypedDict
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, with_config
 
 from eifi1_server_kit.auth.schemas import UtcDateTime
 from eifi1_server_kit.billing.errors import BILLING_ERROR_DETAIL, BillingErrorCode
 from eifi1_server_kit.billing.plans import (
     BillingCurrency,
-    BillingInterval,
     Currency,
     Interval,
     MinorUnits,
@@ -46,7 +45,9 @@ __all__ = [
     "CheckoutRequest",
     "PlanChangeRequest",
     "PlanChangeResponse",
+    "PlanIntervalPrices",
     "PlanOut",
+    "PlanPrices",
     "SyncRefusal",
     "plans_out",
 ]
@@ -126,6 +127,36 @@ class BillingOverview(BaseModel):
         )
 
 
+@with_config(ConfigDict(extra="forbid"))
+class PlanIntervalPrices(TypedDict, total=False):
+    """One currency's prices on the wire: ``{month?, year?}``, GROSS minor units (§4,
+    §12.17). A period the plan isn't sold for is ABSENT, never ``0`` or ``null``.
+
+    A ``TypedDict`` with a key per :class:`~eifi1_server_kit.billing.BillingInterval`, not
+    a ``dict`` keyed by the enum: OpenAPI's ``propertyNames`` is dropped by
+    openapi-typescript (7.13), which then generates ``{[key: string]: number}`` — not
+    assignable to ui-kit's ``PlanIntervalPrices`` without a cast (keksdose's 0.32 report).
+    Named keys generate ``{month?: number; year?: number}``, ui-kit's type as it is.
+    """
+
+    month: MinorUnits
+    year: MinorUnits
+
+
+@with_config(ConfigDict(extra="forbid"))
+class PlanPrices(TypedDict, total=False):
+    """A plan's prices on the wire: ``{CHF?, EUR?}``, each a :class:`PlanIntervalPrices`
+    — ui-kit's ``PlanPrices``, which ``BillingPlan.prices`` takes as it is (§3.1, §4). A
+    currency the plan isn't sold in is ABSENT; a plan sold in none is ``{}``, which the
+    page reads as free. A key per
+    :class:`~eifi1_server_kit.billing.BillingCurrency`, for the reason
+    :class:`PlanIntervalPrices` gives; any other key is refused.
+    """
+
+    CHF: PlanIntervalPrices
+    EUR: PlanIntervalPrices
+
+
 class PlanOut(BaseModel):
     """One plan of ``GET /billing/plans`` (§4): ``{code, prices, limits, sort}``, the
     catalogue's :class:`~eifi1_server_kit.billing.PlanSpec` as JSON can carry it. Build the
@@ -140,7 +171,8 @@ class PlanOut(BaseModel):
 
     ``PlanSpec.prices`` is keyed by ``(currency, interval)``, and a tuple is no JSON key, so
     each app invented its own list and converted it in the page (kastlan's ``[{currency,
-    interval, amount}]``, its 0.32 report). This is ui-kit's ``PlanPrices``, so
+    interval, amount}]``, its 0.32 report). This is ui-kit's ``PlanPrices``
+    (:class:`PlanPrices`, with named keys so the generated TypeScript is that type too), so
     ``BillingPlan.prices`` takes it as it is. A combination the plan doesn't sell is
     ABSENT, never ``0``: the page reads ``0`` — and a plan with no prices at all, ``{}`` —
     as free. ``limits`` is the plan's, ``null`` for unlimited (kastlan's ``storage`` in
@@ -159,20 +191,18 @@ class PlanOut(BaseModel):
     """
 
     code: PlanCode
-    prices: dict[Currency, dict[Interval, MinorUnits]]
+    prices: PlanPrices
     limits: dict[str, int | None]
     sort: int
 
     @classmethod
     def from_spec(cls, plan: PlanSpec) -> Self:
         """``plan`` on the wire: its prices nested, CHF before EUR and month before year
-        whatever order the spec lists them in, so the JSON is the same on every run."""
-        prices: dict[BillingCurrency, dict[BillingInterval, int]] = {}
-        for currency in BillingCurrency:
-            for interval in BillingInterval:
-                amount = plan.prices.get((currency, interval))
-                if amount is not None:
-                    prices.setdefault(currency, {})[interval] = amount
+        whatever order the spec lists them in (:class:`PlanPrices`' order), so the JSON is
+        the same on every run."""
+        prices: dict[str, dict[str, int]] = {}
+        for (currency, interval), amount in plan.prices.items():
+            prices.setdefault(currency.value, {})[interval.value] = amount
         return cls(code=plan.code, prices=prices, limits=dict(plan.limits), sort=plan.sort)
 
 

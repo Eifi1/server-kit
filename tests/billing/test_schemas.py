@@ -18,7 +18,9 @@ from eifi1_server_kit.billing import (
     CheckoutRequest,
     PlanChangeRequest,
     PlanChangeResponse,
+    PlanIntervalPrices,
     PlanOut,
+    PlanPrices,
     PlanSpec,
     SubscriptionSource,
     SubscriptionStatus,
@@ -149,9 +151,7 @@ def test_the_plans_go_over_the_wire_with_nested_prices() -> None:
         TypeAdapter(list[PlanOut]).validate_python(wire), (STARTER, STANDARD, PROFESSIONAL), strict=True
     ):
         assert out == PlanOut.from_spec(spec)
-        assert {
-            (currency, interval): amount for currency, by in out.prices.items() for interval, amount in by.items()
-        } == spec.prices
+        assert out.prices["CHF"] == {"month": spec.price("CHF", "month"), "year": spec.price("CHF", "year")}
 
 
 def test_a_plan_on_the_wire_leaves_out_what_it_does_not_sell() -> None:
@@ -166,8 +166,37 @@ def test_a_plan_on_the_wire_leaves_out_what_it_does_not_sell() -> None:
         {"code": "personal", "prices": {"EUR": {"year": 9000}}, "limits": {"curves": 10}, "sort": 1},
         {"code": "professional", "prices": {}, "limits": {"curves": None}, "sort": 1},
     ]
-    with pytest.raises(ValidationError):  # money is never a float (§4)
-        PlanOut.model_validate({"code": "personal", "prices": {"EUR": {"year": 90.0}}, "limits": {}, "sort": 0})
+    for prices in (
+        {"EUR": {"year": 90.0}},  # money is never a float (§4)
+        {"USD": {"year": 9000}},  # a currency the apps don't charge in
+        {"EUR": {"week": 900}},
+    ):
+        with pytest.raises(ValidationError):
+            PlanOut.model_validate({"code": "personal", "prices": prices, "limits": {}, "sort": 0})
+
+
+def test_the_plans_schema_names_every_currency_and_period() -> None:
+    """keksdose's 0.32 report: openapi-typescript drops ``propertyNames``, so a dict keyed
+    by the enums generates ``{[key: string]: …}``, not assignable to ui-kit's
+    ``PlanPrices``. Named, optional keys and no others generate ``{CHF?: {month?: number;
+    year?: number}; EUR?: …}`` — ui-kit's type as it is."""
+    assert sorted(PlanPrices.__optional_keys__) == [currency.value for currency in BillingCurrency]
+    assert sorted(PlanIntervalPrices.__optional_keys__) == [interval.value for interval in BillingInterval]
+    assert not PlanPrices.__required_keys__ and not PlanIntervalPrices.__required_keys__
+    for mode in ("validation", "serialization"):
+        schema = TypeAdapter(list[PlanOut]).json_schema(mode=mode)
+        defs = schema["$defs"]
+        assert defs["PlanOut"]["properties"]["prices"] == {"$ref": "#/$defs/PlanPrices"}
+        assert defs["PlanPrices"]["properties"] == {
+            "CHF": {"$ref": "#/$defs/PlanIntervalPrices"},
+            "EUR": {"$ref": "#/$defs/PlanIntervalPrices"},
+        }
+        assert defs["PlanIntervalPrices"]["properties"] == {
+            "month": {"minimum": 0, "title": "Month", "type": "integer"},
+            "year": {"minimum": 0, "title": "Year", "type": "integer"},
+        }
+        for name in ("PlanPrices", "PlanIntervalPrices"):
+            assert defs[name]["additionalProperties"] is False and "required" not in defs[name]
 
 
 def test_a_checkout_request_is_normalised_and_closed() -> None:
