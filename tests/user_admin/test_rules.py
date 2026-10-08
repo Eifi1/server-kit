@@ -61,13 +61,16 @@ def test_account_error_carries_its_code_status_and_extra_fields() -> None:
 
 def test_the_levels_are_the_contracts_table() -> None:
     """§4.2: type_email for deactivate, erase and transfer (and the user's own deletion,
-    whose body types the address, §6.4); acknowledge for a forced password change and a role."""
+    whose body types the address, §6.4); acknowledge for a forced password change, a role
+    and a plan (billing §6)."""
     assert set(CONFIRMATION_LEVELS) == set(AdminAction)
     typed = {action for action, level in CONFIRMATION_LEVELS.items() if level is TYPE_EMAIL}
     acknowledged = {action for action, level in CONFIRMATION_LEVELS.items() if level is ACKNOWLEDGE}
     assert typed == {AdminAction.DEACTIVATE, AdminAction.ERASE, AdminAction.TRANSFER, AdminAction.DELETION_REQUEST}
-    assert acknowledged == {AdminAction.PASSWORD_CHANGE_REQUIRE, AdminAction.ROLE}
+    assert acknowledged == {AdminAction.PASSWORD_CHANGE_REQUIRE, AdminAction.ROLE, AdminAction.PLAN}
     assert confirmation_level("mail_reset") is NONE
+    # keksdose's own word since 0.30, so its stored rows read as the kit's action.
+    assert AdminAction("plan") is AdminAction.PLAN and confirmation_level("plan") is ACKNOWLEDGE
     assert confirmation_level(AdminAction.DEACTIVATE) is TYPE_EMAIL
     with pytest.raises(ValueError):
         confirmation_level("delete_everything")

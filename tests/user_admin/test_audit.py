@@ -48,6 +48,7 @@ def test_the_actions_are_the_contracts() -> None:
         "deletion_request",
         "deletion_cancel",
         "erase",
+        "plan",
     ]
 
 
