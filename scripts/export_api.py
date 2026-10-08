@@ -75,6 +75,7 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("eifi1_server_kit.user_admin", "docs/user-admin-harmonization.md", "§7"),
     ("eifi1_server_kit.settings", "docs/settings-harmonization.md", "§6"),
     ("eifi1_server_kit.demo", "docs/landing-demo-harmonization.md", "§6"),
+    ("eifi1_server_kit.billing", "docs/billing-harmonization.md", "§10"),
     ("eifi1_server_kit.mail", "docs/auth-harmonization.md", "§8"),
     ("eifi1_server_kit.feedback", "docs/feedback-harmonization.md", "§3"),
     ("eifi1_server_kit.uploads", "docs/feedback-harmonization.md", "§3.5"),

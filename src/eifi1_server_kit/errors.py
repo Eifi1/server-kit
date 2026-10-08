@@ -6,8 +6,10 @@ Every refusal the kit raises is a plain exception carrying the contract's status
 review's 422 / 403, :class:`~eifi1_server_kit.auth.AuthError` 400 / 401 / 403 / 409,
 user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
 :class:`~eifi1_server_kit.user_admin.RosterQueryError` 422, the settings rule's
-:class:`~eifi1_server_kit.settings.PatchNullError` 422, and the demo's
-:class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503).
+:class:`~eifi1_server_kit.settings.PatchNullError` 422, the demo's
+:class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503, and billing's
+:class:`~eifi1_server_kit.billing.BillingError` 400 / 402 / 404 / 503 and
+:class:`~eifi1_server_kit.billing.PlanLimitError` 402).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -25,7 +27,8 @@ plus ``"code"`` for a refusal that carries one (:class:`~eifi1_server_kit.auth.A
 ``{"detail": "Invalid credentials", "code": "invalid_credentials"}``), which the kit's
 pages switch on instead of the English detail — and the refusal's ``extra`` fields, for
 one that names something (:class:`~eifi1_server_kit.user_admin.AccountError`: kastlan's
-``{"detail": …, "code": "last_admin", "companies": [...]}``) — and the refusal's
+``{"detail": …, "code": "last_admin", "companies": [...]}``; a plan limit's ``dimension``,
+``plan``, ``limit`` and ``used``) — and the refusal's
 ``headers``, for one that carries a ``Retry-After``
 (:class:`~eifi1_server_kit.demo.DemoError`'s ``demo_rate_limited``).
 
@@ -42,6 +45,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from eifi1_server_kit.auth.errors import AuthError
+from eifi1_server_kit.billing.errors import BillingError, PlanLimitError
 from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.feedback.errors import FeedbackError
 from eifi1_server_kit.settings import PatchNullError
@@ -72,6 +76,8 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     RosterQueryError,
     PatchNullError,
     DemoError,
+    BillingError,
+    PlanLimitError,
 )
 
 

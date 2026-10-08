@@ -125,6 +125,7 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     assert all(contract is not None for contract in contracts.values())
     assert contracts["eifi1_server_kit.settings"] == {"doc": "docs/settings-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.demo"] == {"doc": "docs/landing-demo-harmonization.md", "section": "§6"}
+    assert contracts["eifi1_server_kit.billing"] == {"doc": "docs/billing-harmonization.md", "section": "§10"}
 
 
 def test_the_members_are_each_modules_all_in_order(data: dict[str, Any]) -> None:
