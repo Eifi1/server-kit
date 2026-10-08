@@ -521,7 +521,9 @@ the app's i18n by `code`.
 
 **Whose standing**: the payer's, not the caller's — keksdose's budget owner, Kurvenschmiede's
 row owner (the creator's for a create), kastlan's acting company. No row means always in
-good standing (demo users, ownerless items). The gate is the app's choice of two equal
+good standing (demo users, ownerless items) — so with RLS on the subscription table, read
+the payer's row with the bypass, or a guest reads it back as nothing and the gate fails
+open; where a row must exist, a missing one is an error. The gate is the app's choice of two equal
 shapes: `billing_write_allowed` at the auth dependency, after the demo's 403, with an
 allow-list in the demo's syntax (billing, the account's settings, signing out, feedback,
 removing access, leaving, admin routes, receiving sync); or `refuse_billing_read_only` at
@@ -532,7 +534,9 @@ a `SyncRefusal` beside the updates. Scheduled jobs skip a lapsed payer's data th
 row waits with it empty until their first owned item); a beta payer — existing at launch,
 or invited before it (`is_beta`) — is `comped` until `beta_comped_until(launch)`; an
 operator's grant is `comped`, `manual`, with or without an end (`AdminAction.PLAN`,
-`acknowledge`; `PlanChangeRequest` / `PlanChangeResponse`). A beta row written before the
+`acknowledge`; `PlanChangeRequest` / `PlanChangeResponse`) — except that a running beta
+grant given no new end keeps its beta: only the plan moves, or a pre-launch move would be
+free for good (keksdose's `kept_beta`). A beta row written before the
 launch date is known (the beta migration, a registration before launch) stores no
 `comped_until`, and the kit reads it as `beta_comped_until(settings.billing_launch_at)` at
 read time, so a moved launch date needs no data change: `effective_comped_until(row,

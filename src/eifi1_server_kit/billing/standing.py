@@ -172,6 +172,14 @@ def in_good_standing(
     * **No row: always** (§12.7) — demo users, the demo's system account, ownerless items
       such as keksdose's preview budget. They are never gated and never counted. Every real
       payer has a row (§12.12), so ``None`` means one of these, never "forgotten".
+
+      **This FAILS OPEN when the row is there but hidden.** With row-level security on the
+      subscription table, a guest's request — keksdose's guest in the owner's budget,
+      kastlan's staff of another company — reads the PAYER's row back as nothing, and a
+      lapsed owner's data stays writable through every guest (keksdose's 0.32 report).
+      Read the payer's row with the RLS bypass, as the webhook does (§12.20), or, where a
+      row must exist — any payer, §12.12 — treat a missing one as an error rather than
+      pass ``None`` here.
     * ``active`` — yes; but a subscription set to cancel at its period's end is out once
       that end has passed, even before the provider's final event arrives (it may be late;
       a cancelled period cannot renew).

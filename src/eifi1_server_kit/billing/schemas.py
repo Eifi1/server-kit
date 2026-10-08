@@ -268,6 +268,18 @@ class PlanChangeRequest(BaseModel):
     until ``comped_until`` or without an end; a ``comped_until`` of now ends a grant. Log it
     as ``detail {from, to, comped_until, counts}`` (§6). An admin transfer or an erasure
     hand-over never checks a limit, and neither does this (§12.15).
+
+    **A running beta grant keeps its beta** (keksdose's ``kept_beta``, its 0.32 report):
+    given no ``comped_until``, a change on a row whose ``source`` is ``beta`` and whose
+    grant holds (:func:`~eifi1_server_kit.billing.grant_holds` with the settings' launch)
+    moves ``plan_code`` only — ``status``, ``source`` and ``comped_until`` stay, so the
+    beta still ends at the launch plus 12 months
+    (:func:`~eifi1_server_kit.billing.effective_comped_until`). Before the launch every
+    payer is beta; writing such a move as ``manual`` without an end would make the payer
+    free for good, which nobody decided. A ``comped_until`` turns it into an operator's
+    grant until then; any other row takes the grant as above. The kit writes no row, so
+    the rule is the app's: keksdose's ``set_plan``, which reports ``kept_beta`` beside
+    :class:`PlanChangeResponse`'s fields (subclass it to add the field).
     """
 
     model_config = ConfigDict(extra="forbid")
