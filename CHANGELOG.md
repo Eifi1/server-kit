@@ -10,6 +10,82 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.6.1] (2026-10-09)
+
+From the apps' 0.32 adoptions (kastlan, keksdose, Kurvenschmiede). Additive: no public
+name is removed or renamed, and every new argument and setting defaults to 0.6.0's
+behaviour.
+
+### Added
+
+* **billing:** `PlanOut`, a plan on the wire for `GET /billing/plans` (§4): `{code, prices,
+  limits, sort}` with the prices nested currency → interval → gross minor units — ui-kit's
+  `PlanPrices`, which `BillingPlan.prices` takes as it is. `PlanSpec.prices`' `(currency,
+  interval)` keys can't cross JSON, so each app invented its own list (kastlan sent
+  `[{currency, interval, amount}]` and converted it in the page). A combination not sold
+  is absent, never `0`; unlimited is `null`; names and feature lines stay the app's i18n
+  (§3.1). `PlanOut.from_spec(plan)` nests the prices in a fixed order (CHF, EUR; month,
+  year), and `plans_out(catalogue)` answers the route in `sort` order. From kastlan's 0.32
+  report. The prices are typed `PlanPrices` and `PlanIntervalPrices`, TypedDicts with a
+  key per currency and per period and no others, so openapi-typescript generates
+  `{CHF?: {month?: number; year?: number}; EUR?: …}`, ui-kit's type, without a cast: a
+  dict keyed by the enums carried them only as `propertyNames`, which it drops. From
+  keksdose's 0.32 report.
+* **billing:** `effective_comped_until(row, launch)`, when a row's free grant ends as the
+  kit reads it — for a banner's "free until …" — and a `launch=None` keyword on
+  `grant_holds`, `in_good_standing`, `dispatch` and `BillingOverview.from_row` (see
+  Fixed).
+* **billing:** `BillingSettings.billing_signature_tolerance`, Paddle's timestamp window in
+  seconds, for the route to pass to `verify_webhook_signature(…, tolerance=…)`. The
+  default stays Paddle's five seconds (its docs: "Our SDKs have a default tolerance of
+  five seconds between the timestamp and the current time"); a scale-to-zero host, whose
+  cold start can eat them, widens it in its environment — keksdose runs 60.
+  `PADDLE_SIGNATURE_TOLERANCE` is unchanged. From keksdose's 0.32 report.
+* **billing:** `DuplicateEventError`: `EventStore.record` may raise it when its insert hits
+  the unique `(provider, event_id)` — a delivery that raced another past `seen` — and
+  `dispatch` answers `DispatchOutcome.DUPLICATE`, as for an event seen before;
+  `webhook_answer` answers it 200 wherever it is raised. It replaces the savepoint recipe,
+  which can't nest on SQLite's driver in the apps' tests. The `seen` path is unchanged.
+  From keksdose's 0.32 report.
+
+### Fixed
+
+* **billing:** a beta row stored without an end — the apps' beta migrations and every
+  registration before the launch date is known write `comped_until = None` — no longer
+  reads as free for good. Given the launch date it ends at `beta_comped_until(launch)`,
+  resolved at read time, so a moved launch date needs no data change (§3.2).
+  `BillingSettings.billing_standing` passes `billing_launch_at` itself, and
+  `BillingOverview.from_row(…, launch=…)` shows the effective end. An explicit
+  `comped_until` wins over the launch, an operator's grant (`manual`) without an end keeps
+  none, and without a launch date — switching billing on does not require one — a beta
+  row holds as in 0.6.0. From Kurvenschmiede's 0.32 report.
+* **billing:** an empty `<APP>_BILLING_*` variable reads as unset, so an `.env` template
+  can list them all empty: `BILLING_LAUNCH_AT=` was no datetime, and `BILLING_PRICE_IDS=`
+  failed in pydantic-settings' JSON decoding before any validator ran. The mixin leaves
+  its own blank fields at their defaults (an app's own fields are untouched), and the
+  price ids carry pydantic-settings' `NoDecode` (imported where it is installed; the kit
+  still doesn't depend on it) and are decoded by the mixin. pydantic-settings joins the
+  dev dependencies, for the tests. From keksdose's 0.32 report.
+
+### Docs
+
+* README and `BillingSettings`: a test that monkeypatches `billing_price_ids` passes the
+  parsed shape, lists of ids (`{"pro": {"CHF": {"year": ["pri_test"]}}}`). The string →
+  list step, the keys' normalisation and the one-id check are the field's validation,
+  which runs when the settings are built, never on assignment; a bare string is read
+  character by character (`billing_price_id` answers `"p"`). From kastlan's 0.32 report.
+* `row_changes` hands `status`, `source` and `provider` back as the kit's `StrEnum`s; they
+  compare equal to and store as their string values, so an app writing `.value` sees no
+  difference. From Kurvenschmiede's 0.32 report.
+* `in_good_standing(None)` is true, so with RLS on the subscription table a guest who
+  reads the payer's row back as nothing makes the gate FAIL OPEN: read the payer's row
+  with the bypass, or treat a missing row as an error where one must exist. From
+  keksdose's 0.32 report.
+* `PlanChangeRequest`: a running beta grant given no `comped_until` keeps its beta — only
+  the plan moves, and the beta still ends at the launch plus 12 months — or a pre-launch
+  plan move would be free for good (keksdose's `kept_beta`). The kit writes no row, so the
+  rule is the app's. From keksdose's 0.32 report.
+
 ## [0.6.0] (2026-10-08)
 
 The backend half of the billing round and of the text-size round (ui-kit 0.32,
