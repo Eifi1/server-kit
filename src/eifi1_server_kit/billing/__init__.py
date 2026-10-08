@@ -25,6 +25,8 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 * :mod:`~eifi1_server_kit.billing.dispatch` — the event-store port, the pure
   :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
   policy;
+* :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, checkout,
+  the operator's plan change, and a sync reply's refused changes;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -79,6 +81,15 @@ from eifi1_server_kit.billing.plans import (
     normalize_plan,
     plan_catalogue,
 )
+from eifi1_server_kit.billing.schemas import (
+    BillingOverview,
+    BillingStatus,
+    CheckoutAnswer,
+    CheckoutRequest,
+    PlanChangeRequest,
+    PlanChangeResponse,
+    SyncRefusal,
+)
 from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PriceRef
 from eifi1_server_kit.billing.signatures import (
     LEMONSQUEEZY_SIGNATURE_HEADER,
@@ -123,8 +134,12 @@ __all__ = [
     "BillingError",
     "BillingErrorCode",
     "BillingInterval",
+    "BillingOverview",
     "BillingProvider",
     "BillingSettings",
+    "BillingStatus",
+    "CheckoutAnswer",
+    "CheckoutRequest",
     "Currency",
     "DispatchOutcome",
     "EventKind",
@@ -132,6 +147,8 @@ __all__ = [
     "Interval",
     "MinorUnits",
     "NormalisedEvent",
+    "PlanChangeRequest",
+    "PlanChangeResponse",
     "PlanCode",
     "PlanLimitError",
     "PlanSpec",
@@ -140,6 +157,7 @@ __all__ = [
     "SubscriptionRow",
     "SubscriptionSource",
     "SubscriptionStatus",
+    "SyncRefusal",
     "WebhookAnswer",
     "beta_comped_until",
     "billing_write_allowed",
