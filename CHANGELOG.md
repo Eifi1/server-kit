@@ -10,6 +10,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.6.0] (2026-10-08)
+
 The backend half of the billing round and of the text-size round (ui-kit 0.32,
 `docs/billing-harmonization.md` §10 with §12, and `docs/text-size-harmonization.md` §6
 with §10.6). Additive but for the two notes under Changed.
