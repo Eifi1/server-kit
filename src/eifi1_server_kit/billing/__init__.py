@@ -22,7 +22,7 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
   checked with ``hmac`` (no SDK);
 * :mod:`~eifi1_server_kit.billing.events` — the normalised event vocabulary,
   :class:`NormalisedEvent`, and a mapper per provider;
-* :mod:`~eifi1_server_kit.billing.dispatch` — the event-store port, the pure
+* :mod:`~eifi1_server_kit.billing.webhooks` — the event-store port, the pure
   :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
   policy;
 * :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, checkout,
@@ -34,14 +34,6 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 
 from __future__ import annotations
 
-from eifi1_server_kit.billing.dispatch import (
-    DispatchOutcome,
-    EventStore,
-    WebhookAnswer,
-    dispatch,
-    row_changes,
-    webhook_answer,
-)
 from eifi1_server_kit.billing.errors import (
     BILLING_ERROR_DETAIL,
     BILLING_ERROR_STATUS,
@@ -111,6 +103,14 @@ from eifi1_server_kit.billing.standing import (
     in_good_standing,
     is_beta,
     trial_ends_at,
+)
+from eifi1_server_kit.billing.webhooks import (
+    DispatchOutcome,
+    EventStore,
+    WebhookAnswer,
+    dispatch,
+    row_changes,
+    webhook_answer,
 )
 
 __all__ = [
