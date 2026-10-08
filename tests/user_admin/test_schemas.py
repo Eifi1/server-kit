@@ -203,8 +203,8 @@ def test_admin_action_row() -> None:
         )
     )
     assert row.action is AdminAction.ERASE and row.detail == {} and row.actor is None
-    with pytest.raises(ValidationError):
-        AdminActionRow(id=1, at=NOW, action="dance")
+    # 0.5.1: an app's own action is kept as written, not refused.
+    assert AdminActionRow(id=1, at=NOW, action="dance").action == "dance"
 
 
 def test_email_change() -> None:
@@ -226,3 +226,12 @@ def test_deletion_request() -> None:
         DeletionRequest(password="secret")  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
         DeletionRequest(password="secret", confirm_email="ada@example.com", mode="now")  # type: ignore[call-arg]
+
+
+def test_an_admin_action_row_takes_the_app_s_own_action() -> None:
+    # 0.5.1 (keksdose's `plan`): admin_action_record takes a str, so the row does too.
+    row = AdminActionRow.model_validate(
+        {"id": 10, "at": NOW, "action": "plan", "detail": {"from": "free", "to": "pro"}}
+    )
+    assert row.action == "plan" and not isinstance(row.action, AdminAction)
+    assert AdminActionRow.model_validate({"id": 11, "at": NOW, "action": "erase"}).action is AdminAction.ERASE

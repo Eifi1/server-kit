@@ -233,3 +233,20 @@ def test_a_plain_mapping_is_matched_without_regard_to_case() -> None:
 def test_trusted_hops_counts_proxies() -> None:
     with pytest.raises(ValueError, match="0 or more"):
         client_ip(Headers(), "10.0.0.9", trusted_hops=-1)
+
+
+def test_a_short_header_is_logged_once_per_process(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """keksdose (0.5.1): a mis-measured hop count silently put every caller into one
+    window; the first short header says so, the next ones don't repeat it."""
+    import eifi1_server_kit.limiter as limiter_module
+
+    monkeypatch.setattr(limiter_module, "_short_header_warned", False)
+    with caplog.at_level("WARNING", logger="eifi1_server_kit.limiter"):
+        client_ip(_xff("203.0.113.7"), "10.0.0.9", trusted_hops=3)
+        client_ip(_xff("203.0.113.7"), "10.0.0.9", trusted_hops=3)
+    warnings = [r for r in caplog.records if r.name == "eifi1_server_kit.limiter"]
+    assert len(warnings) == 1
+    assert "1 entries, fewer than trusted_hops=3" in warnings[0].getMessage()
+    assert "203.0.113.7" not in warnings[0].getMessage()

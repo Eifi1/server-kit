@@ -268,7 +268,9 @@ class AdminActionRow(BaseModel):
 
     id: int
     at: datetime
-    action: AdminAction
+    #: An :class:`AdminAction`, or the app's own action as a string (keksdose's ``plan``):
+    #: :func:`admin_action_record` takes both, so the row does too (0.5.1).
+    action: Annotated[AdminAction | str, Field(union_mode="left_to_right")]
     actor_id: int | None = None
     target_user_id: int | None = None
     target_email: str | None = None
