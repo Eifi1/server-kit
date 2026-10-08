@@ -35,6 +35,14 @@ from eifi1_server_kit.billing.standing import SubscriptionRow, in_good_standing
 
 __all__ = ["BillingProvider", "BillingSettings", "PriceRef"]
 
+#: How far, in seconds, Paddle's signature timestamp ``ts`` may be from now: Paddle's own
+#: default (its docs: "Our SDKs have a default tolerance of five seconds between the
+#: timestamp and the current time"). Checked both ways, so a clock running ahead is no
+#: loophole either. The default of
+#: :attr:`BillingSettings.billing_signature_tolerance`; exported by
+#: :mod:`~eifi1_server_kit.billing.signatures`.
+PADDLE_SIGNATURE_TOLERANCE = 5.0
+
 
 class BillingProvider(enum.StrEnum):
     """The Merchants of Record the kit speaks (§2.2, §9). Marcel has not chosen yet, so both
@@ -107,6 +115,16 @@ class BillingSettings(BaseModel):
     #: The webhook's signing secret (§5): Paddle's endpoint secret key (``pdl_ntfset_…``),
     #: Lemon Squeezy's signing secret.
     billing_webhook_secret: SecretStr | None = None
+    #: How far, in seconds, Paddle's signature timestamp may be from now (§5): the
+    #: ``tolerance`` the app passes to
+    #: :func:`~eifi1_server_kit.billing.verify_webhook_signature`. Paddle's default, five
+    #: seconds (:data:`PADDLE_SIGNATURE_TOLERANCE`), unless the deployment widens it: on a
+    #: scale-to-zero host (Cloud Run at min-instances 0) a cold start can eat the five
+    #: seconds, and every first delivery after a quiet spell answers 400 until Paddle's
+    #: retry lands warm. keksdose runs 60 (``KEKSDOSE_BILLING_SIGNATURE_TOLERANCE=60``). A
+    #: replay inside the window is still a duplicate to the event store (§5). Lemon
+    #: Squeezy signs no timestamp, so it ignores this.
+    billing_signature_tolerance: float = Field(default=PADDLE_SIGNATURE_TOLERANCE, gt=0)
     #: Plan → currency → interval → price id(s); see the class docstring.
     billing_price_ids: dict[PlanCode, dict[Currency, dict[Interval, _PriceIds]]] = Field(default_factory=dict)
     #: When billing went on for this app (§2.4): the beta's 12 months run from it

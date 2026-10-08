@@ -454,7 +454,7 @@ the daily notice job stay in the app; the kit sends no request.
 
 | Area | Names |
 |---|---|
-| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch) |
+| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch) |
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
@@ -542,7 +542,9 @@ end — and switching billing on does not require one.
 async def paddle_webhook(request: Request, session=Depends(system_session)) -> Response:
     settings.require_billing_enabled()  # 404
     raw = await request.body()
-    verify_webhook_signature("paddle", raw, request.headers, settings.billing_webhook_key())  # 400
+    verify_webhook_signature(
+        "paddle", raw, request.headers, settings.billing_webhook_key(), tolerance=settings.billing_signature_tolerance
+    )  # 400
     try:
         event = parse_webhook_event("paddle", raw)  # None: not used
         result = (
@@ -568,8 +570,10 @@ async def paddle_webhook(request: Request, session=Depends(system_session)) -> R
 ```
 
 The signatures follow the providers' docs: Paddle's `Paddle-Signature: ts=…;h1=…` (hex
-HMAC-SHA256 of `ts:raw_body`, 5 s tolerance, any `h1` during a secret rotation), Lemon
-Squeezy's `X-Signature` (hex HMAC-SHA256 of the raw body). The checkout carries
+HMAC-SHA256 of `ts:raw_body`, any `h1` during a secret rotation, and Paddle's five-second
+tolerance on `ts` unless `billing_signature_tolerance` widens it — a scale-to-zero host's
+cold start can eat five seconds; keksdose runs 60), Lemon Squeezy's `X-Signature` (hex
+HMAC-SHA256 of the raw body). The checkout carries
 `checkout_custom_data(payer_ref)`, which both providers send back with every subscription
 event, so `load` finds the row by `event.payer_ref`, else by the provider's ids. `dispatch`
 skips a duplicate; skips a snapshot older than `updated_from_event_at` (neither provider

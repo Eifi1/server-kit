@@ -8,6 +8,7 @@ import hashlib
 import hmac
 
 import pytest
+from pydantic import ValidationError
 
 from eifi1_server_kit.billing import (
     LEMONSQUEEZY_SIGNATURE_HEADER,
@@ -17,6 +18,7 @@ from eifi1_server_kit.billing import (
     BillingError,
     BillingErrorCode,
     BillingProvider,
+    BillingSettings,
     verify_lemonsqueezy_signature,
     verify_paddle_signature,
     verify_webhook_signature,
@@ -86,6 +88,24 @@ def test_a_paddle_signature_refuses_a_replay_a_tampered_body_and_another_secret(
     # The timestamp is signed too: moving it breaks the signature.
     with _refused("no h1 matches"):
         verify_paddle_signature(BODY, f"ts={TS + 1};h1={_h1()}", SECRET, now=TS)
+
+
+def test_the_tolerance_is_a_setting_paddles_five_seconds_by_default() -> None:
+    """A scale-to-zero host's cold start can eat five seconds; the deployment widens the
+    window in its environment (keksdose runs 60), and the route passes it on."""
+    assert BillingSettings().billing_signature_tolerance == PADDLE_SIGNATURE_TOLERANCE
+    cold = BillingSettings(billing_signature_tolerance=60)
+    headers = {"Paddle-Signature": f"ts={TS};h1={_h1()}"}
+    with _refused("outside the tolerance"):
+        verify_webhook_signature("paddle", BODY, headers, SECRET, now=TS + 30)
+    verify_webhook_signature("paddle", BODY, headers, SECRET, now=TS + 30, tolerance=cold.billing_signature_tolerance)
+    with _refused("outside the tolerance"):
+        verify_webhook_signature(
+            "paddle", BODY, headers, SECRET, now=TS + 61, tolerance=cold.billing_signature_tolerance
+        )
+    for refused in (0, -1, "soon"):
+        with pytest.raises(ValidationError):
+            BillingSettings.model_validate({"billing_signature_tolerance": refused})
 
 
 def test_a_paddle_signature_checks_against_the_current_time_by_default() -> None:

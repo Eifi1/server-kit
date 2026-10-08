@@ -7,7 +7,10 @@ route is the app's; what it does in between is this::
     async def paddle_webhook(request: Request, session=Depends(system_session)) -> Response:
         settings.require_billing_enabled()                       # 404 billing_disabled
         raw = await request.body()
-        verify_webhook_signature("paddle", raw, request.headers, settings.billing_webhook_key())  # 400
+        verify_webhook_signature(
+            "paddle", raw, request.headers, settings.billing_webhook_key(),
+            tolerance=settings.billing_signature_tolerance,
+        )                                                        # 400
         try:
             event = parse_webhook_event("paddle", raw)
             result = None if event is None else await dispatch(
