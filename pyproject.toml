@@ -35,7 +35,7 @@ dev = [
     # The tests drive the CORS middleware through a real FastAPI app beside Starlette's
     # CORSMiddleware, the same way keksdose's own test does. Held to keksdose's range
     # (<0.137) so the kit is tested against what the strictest app can install.
-    "fastapi>=0.115.0,<0.137",
+    "fastapi>=0.115.0,<0.143",
     # The `mail` extra, so ResendClient is tested against httpx's MockTransport — and the
     # client FastAPI's tests drive an app with.
     "httpx>=0.28.0",
