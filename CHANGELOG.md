@@ -10,6 +10,79 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.6.0] (2026-10-08)
+
+The backend half of the billing round and of the text-size round (ui-kit 0.32,
+`docs/billing-harmonization.md` §10 with §12, and `docs/text-size-harmonization.md` §6
+with §10.6). Additive but for the two notes under Changed.
+
+### Added
+
+* **billing:** a new subpackage, Layer 1 like the rest: no tables, no routes, no provider
+  SDK, no request to a provider.
+  * **settings:** `BillingSettings`, a mixin: `billing_enabled` off by default;
+    `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key` and
+    `billing_webhook_secret`, all three required to switch on; `billing_price_ids` keyed by
+    plan, currency and interval (a list keeps retired price ids findable);
+    `billing_launch_at`. `require_billing_enabled()` (404 `billing_disabled`),
+    `billing_price_id()` (503 `billing_not_configured`), `billing_price_ref()` →
+    `PriceRef`, `billing_plan_for_price()`, `billing_webhook_key()`, `billing_standing()`
+    (everyone is in good standing while billing is off).
+  * **plans:** `PlanSpec(code, limits, prices, sort)` with gross prices in strict integer
+    minor units keyed by `(currency, interval)`; `plan_catalogue()` (no duplicate codes,
+    the same dimensions in every plan); `normalize_plan()` (lowercase, so keksdose's
+    uppercase history reads the same); `check_limit(plan, dimension, used, *, adding=1)`
+    raising `PlanLimitError`, 402 `{detail, code: "plan_limit", dimension, plan, limit,
+    used}`; `dimensions_over_limit()`; `BillingCurrency` (CHF, EUR), `BillingInterval`,
+    `CURRENCY_EXPONENTS`, `minor_to_decimal()`.
+  * **standing:** `SubscriptionStatus`, `SubscriptionSource`, the `SubscriptionRow`
+    protocol; `in_good_standing(row, now, *, retry_grace=None)` per §3.3 with §12.7 (no
+    row: always), §12.9 (an empty trial end waits) and §12.11 (after a grant, the
+    provider's paid period); `grant_holds()`; `trial_ends_at()` (30 days),
+    `beta_comped_until()` (12 calendar months), `is_beta()` by the invitation's date.
+  * **gate:** `billing_write_allowed(method, path, *, standing, allow=frozenset())`, the
+    demo's shape with the payer's standing as an input, and `refuse_billing_read_only(in_good_standing,
+    what)` for an app's own choke points (§12.2).
+  * **webhooks:** `verify_webhook_signature()` with `verify_paddle_signature()` (`ts`,
+    `h1`, 5 s tolerance, secret rotation) and `verify_lemonsqueezy_signature()`, both with
+    `hmac`; the normalised vocabulary `EventKind`, `NormalisedEvent`,
+    `parse_webhook_event()` with `map_paddle_event()` and `map_lemonsqueezy_event()`,
+    `PoisonEventError`, `checkout_custom_data()`; the `EventStore` port and
+    `dispatch(event, store, apply, *, load, plan_for_price, now=None)` with the ordering
+    guard, an operator's grant beating provider events (§12.11) and a replaced
+    subscription's late end skipped; `row_changes()`; `webhook_answer()` (unknown and
+    duplicate 200, poison 200 and logged, transient 500).
+  * **schemas:** `BillingStatus`, `BillingOverview` (`from_row`), `CheckoutRequest`,
+    `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`of`), `SyncRefusal`.
+  * **errors:** `BillingError` (`billing_disabled` 404, `billing_read_only` 402,
+    `billing_not_configured` 503, `invalid_signature` 400) and `PlanLimitError` join
+    `CONTRACT_ERRORS`, so `install_contract_error_handlers` answers them.
+* **user_admin:** `AdminAction.PLAN` (`"plan"`, keksdose's word) at the `acknowledge` level
+  (billing §6). keksdose's stored rows read as the kit's action, and its type-ignore on
+  `AdminActionRow` can go.
+* **auth:** the account's text size and contrast (text-size §6, §10.6): `TEXT_SIZES`
+  (`normal`, `large`, `xlarge`), `CONTRAST_MODES` (`system`, `standard`, `more`), their
+  types `TextSize` and `ContrastMode`, and optional `text_size` and `contrast` on
+  `UserResponse` (`None` = never chosen) and `ProfileUpdate`.
+* The API export lists `eifi1_server_kit.billing` against `docs/billing-harmonization.md`
+  §10.
+
+### Changed
+
+* **auth:** `PROFILE_NOT_NULLABLE` names `text_size` and `contrast` too, so an explicit
+  `null` on them is refused like on a name ("System" is the stored way back). An app that
+  passes `PROFILE_NOT_NULLABLE` to `apply_patch` with a model NOT derived from the kit's
+  `ProfileUpdate` gets `no such field` until its model has both fields.
+* **user_admin:** `AdminActionRow.action` reads `"plan"` as `AdminAction.PLAN` (equal to
+  `"plan"` as before).
+
+### Fixed
+
+* **user_admin:** `admin_action_record` keeps an app's own action as written
+  (`"reseed_demo"`), as `AdminActionRow` reads it back since 0.5.1; it used to raise
+  `'…' is not a valid AdminAction`. A known value is still stored as the enum's value, and
+  an empty or blank action is still a `ValueError`. Found by keksdose after adopting 0.5.1.
+
 ## [0.5.1] (2026-10-07)
 
 From the apps' 0.31 adoptions (kastlan, keksdose).

@@ -63,6 +63,20 @@ LOCALE_PATTERN = r"^[A-Za-z]{2}(-[A-Za-z0-9]{2,4})?$"
 #: kit's fallback language (i18n H7).
 DEFAULT_LOCALE = "de-CH"
 
+#: A text size as stored on the account (``docs/text-size-harmonization.md`` §2.1,
+#: §10.6): 100, 125 and 150 % of the browser's own font size.
+TextSize = Literal["normal", "large", "xlarge"]
+#: A contrast mode as stored on the account (text-size §2.4, §10.6). ``"system"`` follows
+#: the device's ``prefers-contrast``; it is a stored value, not the absence of one.
+ContrastMode = Literal["system", "standard", "more"]
+#: The text sizes in the settings card's order (text-size §10.6) — the kit's
+#: ``TextSizeSetting`` offers the same three.
+TEXT_SIZES: tuple[TextSize, ...] = ("normal", "large", "xlarge")
+#: The contrast modes in the settings card's order (text-size §10.6). ``"system"`` is one
+#: of them, because the PATCH rule refuses an explicit ``null``: without it, somebody who
+#: picked "More" could never go back to following the device.
+CONTRAST_MODES: tuple[ContrastMode, ...] = ("system", "standard", "more")
+
 
 def _normalised(value: object) -> object:
     return normalise_email(value) if isinstance(value, str) else value
@@ -232,6 +246,13 @@ class UserResponse(BaseModel):
     #: account. The ORM row rarely has it, so the app passes it — a property on its model
     #: read through ``from_attributes``, or ``model_copy(update=…)``.
     demo_expires_at: UtcDateTime | None = None
+    #: The account's text size (text-size §6, §10.6); ``None`` = never chosen, so a device
+    #: without its own choice uses Normal. The app's column, read through
+    #: ``from_attributes``; an app without the column yet answers ``None``.
+    text_size: TextSize | None = None
+    #: The account's contrast mode (text-size §6, §10.6); ``None`` = never chosen, which
+    #: reads as ``"system"``.
+    contrast: ContrastMode | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -251,15 +272,18 @@ class UserResponse(BaseModel):
         return False
 
 
-#: The fields of :class:`ProfileUpdate` that a PATCH may leave out but never null.
-PROFILE_NOT_NULLABLE: tuple[str, ...] = ("first_name", "last_name", "locale")
+#: The fields of :class:`ProfileUpdate` that a PATCH may leave out but never null. The
+#: text size and the contrast are among them (text-size §10.6): their ``null`` means only
+#: "never chosen", which a person cannot choose — "System" is a value of its own.
+PROFILE_NOT_NULLABLE: tuple[str, ...] = ("first_name", "last_name", "locale", "text_size", "contrast")
 
 
 class ProfileUpdate(BaseModel):
-    """``PATCH /auth/me {first_name?, last_name?, locale?}`` (§6.1; Kurvenschmiede
-    ``ProfileUpdate``).
+    """``PATCH /auth/me {first_name?, last_name?, locale?, text_size?, contrast?}`` (§6.1;
+    Kurvenschmiede ``ProfileUpdate``; ``docs/text-size-harmonization.md`` §6, §10.6).
 
-    Every field optional, so the language picker writes the locale alone. Unknown fields
+    Every field optional, so the language picker writes the locale alone, and the text-size
+    and contrast cards write theirs alone (a pick writes the device and the account). Unknown fields
     are refused (``extra="forbid"``): the obvious next field somebody sends is ``role``
     or ``email``, and a schema that silently ignored it would read as having accepted it.
     An explicit ``null`` is refused too — a name cannot be cleared, and
@@ -284,6 +308,10 @@ class ProfileUpdate(BaseModel):
     first_name: PersonName | None = None
     last_name: PersonName | None = None
     locale: LocaleTag | None = None
+    #: One of :data:`TEXT_SIZES`; left out keeps the account's, ``null`` is refused.
+    text_size: TextSize | None = None
+    #: One of :data:`CONTRAST_MODES`; left out keeps the account's, ``null`` is refused.
+    contrast: ContrastMode | None = None
 
     @field_validator("locale", mode="before")
     @classmethod

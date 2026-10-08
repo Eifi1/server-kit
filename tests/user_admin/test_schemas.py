@@ -229,9 +229,12 @@ def test_deletion_request() -> None:
 
 
 def test_an_admin_action_row_takes_the_app_s_own_action() -> None:
-    # 0.5.1 (keksdose's `plan`): admin_action_record takes a str, so the row does too.
-    row = AdminActionRow.model_validate(
-        {"id": 10, "at": NOW, "action": "plan", "detail": {"from": "free", "to": "pro"}}
-    )
-    assert row.action == "plan" and not isinstance(row.action, AdminAction)
+    # 0.5.1: admin_action_record takes a str, so the row does too.
+    row = AdminActionRow.model_validate({"id": 10, "at": NOW, "action": "message", "detail": {"kind": "announcement"}})
+    assert row.action == "message" and not isinstance(row.action, AdminAction)
     assert AdminActionRow.model_validate({"id": 11, "at": NOW, "action": "erase"}).action is AdminAction.ERASE
+    # 0.6: keksdose's stored "plan" rows read as the kit's action now (billing §6).
+    plan = AdminActionRow.model_validate(
+        {"id": 12, "at": NOW, "action": "plan", "detail": {"from": "free", "to": "pro"}}
+    )
+    assert plan.action is AdminAction.PLAN

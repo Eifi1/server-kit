@@ -146,8 +146,10 @@ def admin_action_record(
     every other app leave it out, so a table without the column takes the record as it
     is). No ``id``: the database assigns it.
 
-    * ``action`` — an :class:`~eifi1_server_kit.user_admin.AdminAction` or its value;
-      stored as the plain string.
+    * ``action`` — an :class:`~eifi1_server_kit.user_admin.AdminAction` or its value,
+      stored as the plain string — or the app's own action (``"reseed_demo"``), kept as
+      written, as :class:`~eifi1_server_kit.user_admin.AdminActionRow` reads it back
+      (0.5.1). An empty or blank action is a :class:`ValueError`.
     * ``actor_id`` — who acted; ``None`` for the erasure job (its ``erase`` and
       Kurvenschmiede's day-30 ``transfer``). A ``deletion_request`` names the user
       themselves (§6.4).
@@ -159,10 +161,16 @@ def admin_action_record(
     * ``now`` — stored as given, so an app with naive UTC columns (kastlan) passes a
       naive one.
     """
+    if not isinstance(action, str) or not action.strip():
+        raise ValueError("an admin action is a non-empty string")
+    try:
+        stored = AdminAction(action).value
+    except ValueError:
+        stored = str(action)  # the app's own action, kept as written
     record: dict[str, Any] = {
         "at": now,
         "actor_id": actor_id,
-        "action": AdminAction(action).value,
+        "action": stored,
         "target_user_id": target_user_id,
         "target_email": None if target_email is None else normalise_email(target_email),
         "detail": audit_detail(detail),

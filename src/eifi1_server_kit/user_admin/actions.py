@@ -52,6 +52,11 @@ class AdminAction(enum.StrEnum):
     DELETION_CANCEL = "deletion_cancel"
     #: The account was erased — by the scheduled job (no actor) or by kastlan's operator.
     ERASE = "erase"
+    #: A manual plan change or free grant (``docs/billing-harmonization.md`` §6): the row's
+    #: ``detail`` is ``{from, to, comped_until, counts}``. keksdose's own ``"plan"`` since
+    #: 0.30, now the kit's word; for kastlan the target is a company (``company_id`` set,
+    #: ``target_user_id`` empty).
+    PLAN = "plan"
 
 
 class ConfirmationLevel(enum.StrEnum):
@@ -79,7 +84,7 @@ _RANK: Mapping[ConfirmationLevel, int] = {
 #: The contract's level per action (§4.2). ``type_email``: deactivate, erase (the
 #: operator's "erase now"), transfer — and the user's own deletion request, whose body
 #: carries the typed address (§6.4). ``acknowledge``: force a password change, change a
-#: role. Everything else: ``none``.
+#: role, change a plan (billing §6). Everything else: ``none``.
 CONFIRMATION_LEVELS: Mapping[AdminAction, ConfirmationLevel] = {
     AdminAction.DEACTIVATE: ConfirmationLevel.TYPE_EMAIL,
     AdminAction.REACTIVATE: ConfirmationLevel.NONE,
@@ -97,6 +102,7 @@ CONFIRMATION_LEVELS: Mapping[AdminAction, ConfirmationLevel] = {
     AdminAction.DELETION_REQUEST: ConfirmationLevel.TYPE_EMAIL,
     AdminAction.DELETION_CANCEL: ConfirmationLevel.NONE,
     AdminAction.ERASE: ConfirmationLevel.TYPE_EMAIL,
+    AdminAction.PLAN: ConfirmationLevel.ACKNOWLEDGE,
 }
 
 

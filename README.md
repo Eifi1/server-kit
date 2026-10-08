@@ -11,7 +11,9 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 §3, [`docs/auth-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/auth-harmonization.md)
 §8, [`docs/user-admin-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/user-admin-harmonization.md)
 §7, [`docs/settings-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/settings-harmonization.md)
-§6 and [`docs/landing-demo-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/landing-demo-harmonization.md)
+§6, [`docs/landing-demo-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/landing-demo-harmonization.md)
+§6, [`docs/billing-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/billing-harmonization.md)
+§10 and [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
 §6 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
 from the `server-kit-api.json` each release carries ([Developing](#developing)).
 
@@ -127,10 +129,13 @@ each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translati
 `TranslationLocaleError` (422), `TranslationAreaError` (422) and `TranslationAccessError`
 (403), `auth.AuthError` (`{"detail": "Invalid credentials", "code":
 "invalid_credentials"}` at 401, …), user administration's `AccountError` (409) and
-`RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`) and
-`demo.DemoError` (403 / 404 / 429 / 503). An `AccountError`'s `extra` fields go beside
-`detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin", "companies":
-[...]}`; a refusal's `headers` go on the answer (`DemoError`'s `Retry-After`). See
+`RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`),
+`demo.DemoError` (403 / 404 / 429 / 503), and billing's `BillingError` (400 / 402 / 404 /
+503) and `PlanLimitError` (402). An `AccountError`'s or a `PlanLimitError`'s `extra`
+fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin",
+"companies": [...]}` or `{"detail": …, "code": "plan_limit", "dimension": "budgets", "plan":
+"free", "limit": 1, "used": 1}`; a refusal's `headers` go on the answer (`DemoError`'s
+`Retry-After`). See
 [the refusals](#the-refusals).
 
 ### `eifi1_server_kit.translation_review`
@@ -172,7 +177,7 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
-| Schemas | `RegisterRequest`, `LoginRequest`, `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`), `ProfileUpdate` (the `offered_locales` knob, settings §6.2); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| Schemas | `RegisterRequest`, `LoginRequest`, `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400), `AuthError(code, detail=None)` |
 
 **The kit signs no JWT.** Each app keeps its library and secret and hands the claim dicts
@@ -231,9 +236,9 @@ holds stay in the app.
 | Area | Names |
 |---|---|
 | Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` |
-| Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
+| Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, and billing §6's `plan` at `acknowledge`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
 | User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, `RosterQueryError` (422), `LIKE_ESCAPE` |
-| Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, now=)` → the row's fields; `audit_detail` (ids, roles, flags and counts only), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
+| Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, now=)` → the row's fields (an `AdminAction`, or the app's own action kept as written); `audit_detail` (ids, roles, flags and counts only), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
 | Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `AdminActionRow`; `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
 | Export | `export_envelope(app, account, data, now)` (`"format": "eifi1-account-export"`, `"version": 1`), `export_filename`, `EXPORT_PER_USER` (once a minute), `NEVER_EXPORT`; `assert_no_secrets(obj, allow=)` / `secret_paths` → `ExportSecretError`; `looks_secret`, `looks_secret_key`, `looks_secret_value` |
@@ -438,6 +443,111 @@ included**: layer 1 catches only writes, and the account export is a GET. Mail t
 address is skipped silently (`is_demo_address`). Every app passes `is_demo` to
 `name_incomplete`, or each demo is asked for a last name it doesn't have.
 
+### `eifi1_server_kit.billing`
+
+Billing, plans and payment (billing contract §10; its §12 wins over the sections above
+it). All three apps charge through a Merchant of Record — Paddle or Lemon Squeezy, not
+chosen yet, so both sit behind one interface — in CHF and EUR, with hosted checkout and a
+hosted portal only. A lapsed payer is read-only, never locked. Layer 1: the subscription
+row and `billing_events`, the routes, the provider's API client, the gate's allow-list and
+the daily notice job stay in the app; the kit sends no request.
+
+| Area | Names |
+|---|---|
+| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` |
+| Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
+| Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None)`, `grant_holds(row, now)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
+| The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
+| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port, `dispatch(event, store, apply, *, load, plan_for_price, now=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
+| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
+
+**The switch is off by default**, and switching on without the provider, the API key or the
+webhook secret fails at start. While off, `GET /billing/status` answers `{billing_enabled:
+false}` (to a demo user too) and nothing else of billing exists: every other route and the
+webhook answer 404 `billing_disabled`, and everyone is in good standing:
+
+```python
+from eifi1_server_kit.billing import BillingSettings
+
+
+class Settings(BaseSettings, DemoSettings, BillingSettings):
+    model_config = SettingsConfigDict(env_prefix="KEKSDOSE_")
+    # KEKSDOSE_BILLING_PRICE_IDS='{"pro": {"CHF": {"year": "pri_01…"}, "EUR": {"year": "pri_01…"}}}'
+```
+
+**The catalogue lives in code**; the provider's price ids live in the settings, the names
+in the app's i18n. A limit gates creation only — a downgrade never deletes or hides
+anything — and comes after the read-only gate, so a lapsed payer creating gets
+`billing_read_only`, never `plan_limit`:
+
+```python
+PLANS = plan_catalogue(
+    [
+        PlanSpec(code="free", limits={"budgets": 1}),
+        PlanSpec(code="pro", limits={"budgets": 5}, prices={("CHF", "year"): 3000, ("EUR", "year"): 3000}, sort=1),
+    ]
+)
+
+refuse_billing_read_only(settings.billing_standing(owner_row, now), "a new budget")  # 402 billing_read_only
+check_limit(PLANS[normalize_plan(owner_row.plan_code)], "budgets", owned_budgets)  # 402 plan_limit
+```
+
+**Whose standing**: the payer's, not the caller's — keksdose's budget owner, Kurvenschmiede's
+row owner (the creator's for a create), kastlan's acting company. No row means always in
+good standing (demo users, ownerless items). The gate is the app's choice of two equal
+shapes: `billing_write_allowed` at the auth dependency, after the demo's 403, with an
+allow-list in the demo's syntax (billing, the account's settings, signing out, feedback,
+removing access, leaving, admin routes, receiving sync); or `refuse_billing_read_only` at
+the app's own write choke points. Sync stays on the list and refuses changes one by one, in
+a `SyncRefusal` beside the updates. Scheduled jobs skip a lapsed payer's data themselves.
+
+**The row's dates**: a new payer starts `trialing` until `trial_ends_at(now)` (a pure guest's
+row waits with it empty until their first owned item); a beta payer — existing at launch,
+or invited before it (`is_beta`) — is `comped` until `beta_comped_until(launch)`; an
+operator's grant is `comped`, `manual`, with or without an end (`AdminAction.PLAN`,
+`acknowledge`; `PlanChangeRequest` / `PlanChangeResponse`).
+
+**The webhook**, one per provider, `POST /webhooks/<provider>`, in one transaction:
+
+```python
+@router.post("/webhooks/paddle")
+async def paddle_webhook(request: Request, session=Depends(system_session)) -> Response:
+    settings.require_billing_enabled()  # 404
+    raw = await request.body()
+    verify_webhook_signature("paddle", raw, request.headers, settings.billing_webhook_key())  # 400
+    try:
+        event = parse_webhook_event("paddle", raw)  # None: not used
+        result = (
+            None
+            if event is None
+            else await dispatch(
+                event, EventTable(session), apply, load=find_payer_row, plan_for_price=settings.billing_plan_for_price
+            )
+        )
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        result = exc
+    answer = webhook_answer(result)
+    if answer.log:
+        logger.warning("billing webhook %s: %r", answer.status_code, result)  # never the body
+    return Response(status_code=answer.status_code)
+```
+
+The signatures follow the providers' docs: Paddle's `Paddle-Signature: ts=…;h1=…` (hex
+HMAC-SHA256 of `ts:raw_body`, 5 s tolerance, any `h1` during a secret rotation), Lemon
+Squeezy's `X-Signature` (hex HMAC-SHA256 of the raw body). The checkout carries
+`checkout_custom_data(payer_ref)`, which both providers send back with every subscription
+event, so `load` finds the row by `event.payer_ref`, else by the provider's ids. `dispatch`
+skips a duplicate; skips a snapshot older than `updated_from_event_at` (neither provider
+guarantees the order); skips a replaced subscription's late end; leaves a running grant's
+status, source and plan alone (writing only the link and dates — the provider's paid period
+counts once the grant ends); and otherwise hands `apply(event, row, changes)` the columns
+to write. Unknown and duplicate events answer 200, poison 200 and a log line, a price the
+settings don't know 503, anything else 500, so the provider retries. The event table sits
+outside tenant RLS: a webhook writes rows for any payer.
+
 ### `eifi1_server_kit.mail`
 
 The **`mail` extra** (`httpx`) for `ResendClient` only; the rest needs nothing.
@@ -473,7 +583,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.5.1/eifi1_server_kit-0.5.1-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.6.0/eifi1_server_kit-0.6.0-py3-none-any.whl"
 ```
 
 With the image guard or the Resend client, name the extra: `"eifi1-server-kit[images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.

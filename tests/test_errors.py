@@ -11,6 +11,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from eifi1_server_kit.auth import AuthError, AuthErrorCode
+from eifi1_server_kit.billing import BillingError, BillingErrorCode, PlanLimitError
 from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.errors import CONTRACT_ERRORS, contract_error_response, install_contract_error_handlers
 from eifi1_server_kit.feedback import (
@@ -45,8 +46,8 @@ RAISED: dict[str, tuple[Exception, int]] = {
     "plain": (ValueError("an app's own invalid input"), 400),
 }
 
-#: The coded refusals answer ``{"detail", "code"}`` (§5.2), and the user-admin ones too.
-CODED: dict[str, tuple[AuthError | AccountError, int]] = {
+#: The coded refusals answer ``{"detail", "code"}`` (§5.2), and the user-admin and billing ones too.
+CODED: dict[str, tuple[AuthError | AccountError | BillingError, int]] = {
     "credentials": (AuthError(AuthErrorCode.INVALID_CREDENTIALS), 401),
     "closed": (AuthError(AuthErrorCode.REGISTRATION_CLOSED), 403),
     "taken": (AuthError(AuthErrorCode.EMAIL_TAKEN, "That address has an account"), 409),
@@ -54,6 +55,8 @@ CODED: dict[str, tuple[AuthError | AccountError, int]] = {
     "expired": (AuthError(AuthErrorCode.TOKEN_EXPIRED), 400),
     "last_admin": (AccountError(AccountErrorCode.LAST_ADMIN), 409),
     "mismatch": (AccountError(AccountErrorCode.CONFIRMATION_MISMATCH), 409),
+    "billing_off": (BillingError(BillingErrorCode.BILLING_DISABLED), 404),
+    "read_only": (BillingError(BillingErrorCode.BILLING_READ_ONLY), 402),
 }
 
 
@@ -80,6 +83,10 @@ def _app(*, value_error_first: bool) -> FastAPI:
     @app.get("/companies")
     async def companies() -> None:
         raise AccountError(AccountErrorCode.LAST_ADMIN, extra={"companies": ["Example AG", "Muster GmbH"]})
+
+    @app.get("/plan-limit")
+    async def plan_limit() -> None:
+        raise PlanLimitError(dimension="budgets", plan="free", limit=1, used=1)
 
     @app.get("/caught")
     async def caught() -> None:
@@ -114,6 +121,19 @@ async def test_every_kit_refusal_keeps_its_status_beside_a_value_error_handler(v
                 "companies": ["Example AG", "Muster GmbH"],
             },
         )
+        # A plan limit names the dimension, the plan, the limit and the count (billing §3.4).
+        limited = await client.get("/plan-limit")
+        assert (limited.status_code, limited.json()) == (
+            402,
+            {
+                "detail": "The free plan's limit on budgets is 1",
+                "code": "plan_limit",
+                "dimension": "budgets",
+                "plan": "free",
+                "limit": 1,
+                "used": 1,
+            },
+        )
         # An endpoint's own mapping still comes first (Kurvenschmiede's foreign row is a 404).
         caught = await client.get("/caught")
         assert (caught.status_code, caught.json()) == (404, {"detail": "Feedback not found"})
@@ -143,6 +163,8 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         RosterQueryError,
         PatchNullError,
         DemoError,
+        BillingError,
+        PlanLimitError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error

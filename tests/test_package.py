@@ -25,6 +25,7 @@ def test_the_package_is_typed() -> None:
 def test_every_exported_name_exists() -> None:
     for module_name in (
         "eifi1_server_kit.auth",
+        "eifi1_server_kit.billing",
         "eifi1_server_kit.cors",
         "eifi1_server_kit.demo",
         "eifi1_server_kit.errors",
