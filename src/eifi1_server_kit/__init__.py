@@ -13,6 +13,9 @@ no routes — those stay in each app. Import from the submodules:
   account's language from the app's offered ones;
 * :mod:`eifi1_server_kit.demo` — the demo: its settings, the start's gate, the refusals,
   model R's read-only guard, the throwaway user and its one lifetime;
+* :mod:`eifi1_server_kit.billing` — billing: its settings, the plan catalogue and limits,
+  good standing and the read-only gate, the providers' webhooks (signatures, normalised
+  events, a pure dispatcher), the wire shapes;
 * :mod:`eifi1_server_kit.mail` — mail texts per language, one escaped layout as a whole
   document, Resend and console transports;
 * :mod:`eifi1_server_kit.feedback` — the feedback contract (schemas, enums, rules,
@@ -25,8 +28,9 @@ no routes — those stay in each app. Import from the submodules:
 * :mod:`eifi1_server_kit.errors` — every kit refusal answered at its contract status.
 
 The contracts are ``docs/feedback-harmonization.md``, ``docs/auth-harmonization.md``,
-``docs/user-admin-harmonization.md``, ``docs/settings-harmonization.md`` and
-``docs/landing-demo-harmonization.md`` in ``Eifi1/ui-kit``; the rules are keksdose's,
+``docs/user-admin-harmonization.md``, ``docs/settings-harmonization.md``,
+``docs/landing-demo-harmonization.md``, ``docs/billing-harmonization.md`` and
+``docs/text-size-harmonization.md`` in ``Eifi1/ui-kit``; the rules are keksdose's,
 lifted with a citation on each.
 """
 

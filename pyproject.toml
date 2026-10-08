@@ -1,7 +1,7 @@
 [project]
 name = "eifi1-server-kit"
 version = "0.5.1"
-description = "The backend sibling of @eifi1/ui-kit: the cross-app contracts (feedback, uploads, limiter, CORS, translation review, sign-in and the account, user administration, settings, the demo, mail) as pure, framework-light code."
+description = "The backend sibling of @eifi1/ui-kit: the cross-app contracts (feedback, uploads, limiter, CORS, translation review, sign-in and the account, user administration, settings, the demo, billing, mail) as pure, framework-light code."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
