@@ -52,7 +52,9 @@ SIGNATURE_HEADERS: Mapping[BillingProvider, str] = {
 }
 #: How far, in seconds, Paddle's ``ts`` may be from now: Paddle's own default (its docs:
 #: "The default tolerance between the timestamp and the current time is five seconds").
-#: Checked both ways, so a clock running ahead is no loophole either.
+#: Checked both ways, so a clock running ahead is no loophole either. An app on a
+#: scale-to-zero host (Cloud Run at min-instances 0) may pass a wider ``tolerance``: a cold
+#: start can outlast five seconds — Paddle's retry would pass, a little later.
 PADDLE_SIGNATURE_TOLERANCE = 5.0
 
 
