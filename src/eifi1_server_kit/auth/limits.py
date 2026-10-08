@@ -41,7 +41,7 @@ class Budget:
     max_hits: int
     window_seconds: float
 
-    def limiter(self, clock: Clock) -> SlidingWindowRateLimiter:
+    def limiter(self, clock: Clock = time.monotonic) -> SlidingWindowRateLimiter:
         return SlidingWindowRateLimiter(max_hits=self.max_hits, window_seconds=self.window_seconds, clock=clock)
 
 

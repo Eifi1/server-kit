@@ -28,6 +28,8 @@ from eifi1_server_kit.user_admin import looks_secret, looks_secret_key, looks_se
         ("key_epoch", False),
         ("password_changed_at", False),
         ("totp_enabled", False),
+        ("api_tokens_revoked", False),  # 0.5.1: a fact about a secret
+        ("session_valid", False),
         ("token_type", False),
         ("tokenizer", False),
         ("api_tokens", True),  # as a LEAF; as a list of objects it is walked instead
@@ -66,3 +68,18 @@ def test_a_flag_or_an_empty_value_never_looks_secret() -> None:
         assert not looks_secret("password_hash", value)
     assert looks_secret("password_hash", 0)
     assert looks_secret("note", "$2b$12$abcdefghijklmnop"), "the shape wins over a harmless key"
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://fcm.googleapis.com/fcm/send/abc:APA91b",
+        "https://updates.push.services.mozilla.com/wpush/v2/gAAAA",
+        "https://web.push.apple.com/QGuQyavXutnMH",
+        "https://wns2-par02p.notify.windows.com/w/?token=x",
+    ],
+)
+def test_a_push_endpoint_is_a_secret_under_any_key(endpoint: str) -> None:
+    # 0.5.1 (keksdose): a Web Push endpoint is a capability URL, wherever it is stored.
+    assert looks_secret_value(endpoint)
+    assert looks_secret("device", endpoint)

@@ -10,6 +10,26 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.5.1] (2026-10-07)
+
+From the apps' 0.31 adoptions (kastlan, keksdose).
+
+### Fixed
+
+* **user_admin:** `AdminActionRow.action` takes the app's own action as a string (keksdose's
+  `plan`), as `admin_action_record` already did. `FACT_SUFFIXES` gains `revoked` and
+  `valid` (`api_tokens_revoked` is a fact, not a secret), and `SECRET_VALUE_PATTERNS`
+  catches a Web Push endpoint under any key (a capability URL). The README now
+  recommends a planted-secret byte check in the export test as well.
+* **limiter:** `client_ip` logs once per process when an `X-Forwarded-For` is shorter than
+  `trusted_hops`, so a mis-measured hop count, which puts every caller into one window,
+  shows up in the log.
+* **auth:** `Budget.limiter()` defaults its clock to `time.monotonic`, like every other
+  limiter in the kit, so a per-demo budget is one call.
+* **demo:** `refuse_demo` says "Not possible for a demo account: …" (and `DEMO_REFUSED`'s
+  default detail "Not possible for a demo account"). It also refuses an admin acting ON a
+  demo account, and "in the demo" read wrongly from that side. The code is unchanged.
+
 ## [0.5.0] (2026-10-07)
 
 The backend half of the settings round and of the landing and demo round (ui-kit 0.31,

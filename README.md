@@ -292,6 +292,11 @@ wrongly. A feedback file's storage `key` (a keyed digest) is flagged, and rightl
 out rather than allowed: it is an address inside the app, not the user's data
 (Kurvenschmiede's 0.30 adoption; keksdose has the same field).
 
+**Plant a secret, too.** The shape check can't know every secret: a value under a harmless
+key that has no secret's shape passes it. keksdose's export test also plants known secret
+values (a token, a push endpoint, a key wrap) in the fixture and asserts their bytes appear
+nowhere in the serialised export. Do the same.
+
 **Deletion** is two-stage: deactivated at once, erased later. In `after_days` mode the
 erasure is a Cloud Scheduler → Cloud Run Job, one account per transaction, which
 re-checks `deletion_due(…, scheduled_at=row.deletion_scheduled_at)` on the locked row. In
@@ -468,7 +473,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.5.0/eifi1_server_kit-0.5.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.5.1/eifi1_server_kit-0.5.1-py3-none-any.whl"
 ```
 
 With the image guard or the Resend client, name the extra: `"eifi1-server-kit[images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.

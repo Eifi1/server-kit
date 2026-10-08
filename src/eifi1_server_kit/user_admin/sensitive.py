@@ -77,7 +77,23 @@ SECRET_WHOLE_KEYS: frozenset[str] = frozenset({"auth", "key", "keys"})
 #: A key's last word that says it holds a FACT about a secret — when, whether, how many,
 #: which one — and not the secret.
 FACT_SUFFIXES: frozenset[str] = frozenset(
-    {"at", "on", "until", "date", "count", "enabled", "required", "fingerprint", "epoch", "kind", "type"}
+    {
+        "at",
+        "on",
+        "until",
+        "date",
+        "count",
+        "enabled",
+        "required",
+        "fingerprint",
+        "epoch",
+        "kind",
+        "type",
+        # 0.5.1 (keksdose): `api_tokens_revoked`, `sessions_valid` are facts about a secret,
+        # not the secret — keksdose had renamed them to `*_count` to get past the check.
+        "revoked",
+        "valid",
+    }
 )
 
 #: Shapes no export and no audit detail holds legitimately.
@@ -89,6 +105,13 @@ SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*$"),  # a JWT
     re.compile(r"^[0-9a-fA-F]{64}$"),  # a SHA-256 digest: the kit's one-time-token hash
     re.compile(r"[?&](token|invite|code|key)=", re.IGNORECASE),  # a link that carries one
+    # 0.5.1 (keksdose): a Web Push subscription's endpoint is a capability URL — anyone
+    # holding it can push to the device — and it may sit under a harmless key.
+    re.compile(
+        r"^https://(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com"
+        r"|[a-z0-9.-]*\.push\.apple\.com|[a-z0-9.-]*\.notify\.windows\.com)/",
+        re.IGNORECASE,
+    ),
 )
 
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")

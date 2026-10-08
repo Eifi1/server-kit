@@ -32,6 +32,7 @@ costing a slot:
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import defaultdict, deque
@@ -198,8 +199,31 @@ def client_ip(headers: Mapping[str, str], peer: str | None, *, trusted_hops: int
         lines = [value for name, value in headers.items() if name.lower() == "x-forwarded-for"]
     entries = [entry.strip() for line in lines for entry in line.split(",") if entry.strip()]
     if len(entries) < trusted_hops:
+        _warn_short_header(len(entries), trusted_hops)
         return fallback
     return entries[-trusted_hops]
+
+
+logger = logging.getLogger("eifi1_server_kit.limiter")
+_short_header_warned = False
+
+
+def _warn_short_header(entries: int, trusted_hops: int) -> None:
+    """Say ONCE per process that a header was shorter than ``trusted_hops`` (0.5.1,
+    keksdose). Every such request falls back to the peer, so a mis-measured hop count
+    silently puts every caller — sign-in included — into one window; a log line is the
+    only way an operator notices. Once, because after a bad measurement every request
+    would repeat it. The count only, never an address."""
+    global _short_header_warned
+    if _short_header_warned:
+        return
+    _short_header_warned = True
+    logger.warning(
+        "X-Forwarded-For had %d entries, fewer than trusted_hops=%d: answering the peer. "
+        "If this is not a direct request, re-measure trusted_hops.",
+        entries,
+        trusted_hops,
+    )
 
 
 #: The contract's budgets (§3.5, §3.6): 20 uploads and 20 crash reports per user per hour.
