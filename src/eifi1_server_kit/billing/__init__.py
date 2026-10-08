@@ -20,6 +20,8 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
   :func:`refuse_billing_read_only` for an app's own choke points;
 * :mod:`~eifi1_server_kit.billing.signatures` — each provider's webhook signature,
   checked with ``hmac`` (no SDK);
+* :mod:`~eifi1_server_kit.billing.events` — the normalised event vocabulary,
+  :class:`NormalisedEvent`, and a mapper per provider;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -34,6 +36,21 @@ from eifi1_server_kit.billing.errors import (
     BillingError,
     BillingErrorCode,
     PlanLimitError,
+)
+from eifi1_server_kit.billing.events import (
+    LEMONSQUEEZY_EVENT_KINDS,
+    LEMONSQUEEZY_STATUSES,
+    PADDLE_EVENT_KINDS,
+    PADDLE_STATUSES,
+    PAYER_REF_KEY,
+    WEBHOOK_MAPPERS,
+    EventKind,
+    NormalisedEvent,
+    PoisonEventError,
+    checkout_custom_data,
+    map_lemonsqueezy_event,
+    map_paddle_event,
+    parse_webhook_event,
 )
 from eifi1_server_kit.billing.gate import billing_write_allowed, refuse_billing_read_only
 from eifi1_server_kit.billing.plans import (
@@ -79,12 +96,18 @@ __all__ = [
     "BILLING_ERROR_DETAIL",
     "BILLING_ERROR_STATUS",
     "CURRENCY_EXPONENTS",
+    "LEMONSQUEEZY_EVENT_KINDS",
     "LEMONSQUEEZY_SIGNATURE_HEADER",
+    "LEMONSQUEEZY_STATUSES",
+    "PADDLE_EVENT_KINDS",
     "PADDLE_SIGNATURE_HEADER",
     "PADDLE_SIGNATURE_TOLERANCE",
+    "PADDLE_STATUSES",
+    "PAYER_REF_KEY",
     "PLAN_LIMIT_CODE",
     "SIGNATURE_HEADERS",
     "TRIAL_LENGTH",
+    "WEBHOOK_MAPPERS",
     "BillingCurrency",
     "BillingError",
     "BillingErrorCode",
@@ -92,11 +115,14 @@ __all__ = [
     "BillingProvider",
     "BillingSettings",
     "Currency",
+    "EventKind",
     "Interval",
     "MinorUnits",
+    "NormalisedEvent",
     "PlanCode",
     "PlanLimitError",
     "PlanSpec",
+    "PoisonEventError",
     "PriceRef",
     "SubscriptionRow",
     "SubscriptionSource",
@@ -104,12 +130,16 @@ __all__ = [
     "beta_comped_until",
     "billing_write_allowed",
     "check_limit",
+    "checkout_custom_data",
     "dimensions_over_limit",
     "grant_holds",
     "in_good_standing",
     "is_beta",
+    "map_lemonsqueezy_event",
+    "map_paddle_event",
     "minor_to_decimal",
     "normalize_plan",
+    "parse_webhook_event",
     "plan_catalogue",
     "refuse_billing_read_only",
     "trial_ends_at",
