@@ -22,6 +22,9 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
   checked with ``hmac`` (no SDK);
 * :mod:`~eifi1_server_kit.billing.events` — the normalised event vocabulary,
   :class:`NormalisedEvent`, and a mapper per provider;
+* :mod:`~eifi1_server_kit.billing.dispatch` — the event-store port, the pure
+  :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
+  policy;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -29,6 +32,14 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 
 from __future__ import annotations
 
+from eifi1_server_kit.billing.dispatch import (
+    DispatchOutcome,
+    EventStore,
+    WebhookAnswer,
+    dispatch,
+    row_changes,
+    webhook_answer,
+)
 from eifi1_server_kit.billing.errors import (
     BILLING_ERROR_DETAIL,
     BILLING_ERROR_STATUS,
@@ -115,7 +126,9 @@ __all__ = [
     "BillingProvider",
     "BillingSettings",
     "Currency",
+    "DispatchOutcome",
     "EventKind",
+    "EventStore",
     "Interval",
     "MinorUnits",
     "NormalisedEvent",
@@ -127,11 +140,13 @@ __all__ = [
     "SubscriptionRow",
     "SubscriptionSource",
     "SubscriptionStatus",
+    "WebhookAnswer",
     "beta_comped_until",
     "billing_write_allowed",
     "check_limit",
     "checkout_custom_data",
     "dimensions_over_limit",
+    "dispatch",
     "grant_holds",
     "in_good_standing",
     "is_beta",
@@ -142,8 +157,10 @@ __all__ = [
     "parse_webhook_event",
     "plan_catalogue",
     "refuse_billing_read_only",
+    "row_changes",
     "trial_ends_at",
     "verify_lemonsqueezy_signature",
     "verify_paddle_signature",
     "verify_webhook_signature",
+    "webhook_answer",
 ]
