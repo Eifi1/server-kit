@@ -9,8 +9,12 @@ three apps charge, through a Merchant of Record — Paddle or Lemon Squeezy, beh
 interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new payer gets a
 30-day trial without a card, a beta payer 12 free months.
 
+* :mod:`~eifi1_server_kit.billing.settings` — :class:`BillingSettings`, the switch (off by
+  default), the provider, its secrets and the price ids;
 * :mod:`~eifi1_server_kit.billing.plans` — :class:`PlanSpec`, the catalogue, the limits
   (:func:`check_limit`), currencies, intervals and minor units;
+* :mod:`~eifi1_server_kit.billing.standing` — the row's statuses and sources,
+  :func:`in_good_standing`, and the trial's and the beta's dates;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -41,25 +45,51 @@ from eifi1_server_kit.billing.plans import (
     normalize_plan,
     plan_catalogue,
 )
+from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PriceRef
+from eifi1_server_kit.billing.standing import (
+    BETA_FREE_MONTHS,
+    TRIAL_LENGTH,
+    SubscriptionRow,
+    SubscriptionSource,
+    SubscriptionStatus,
+    beta_comped_until,
+    grant_holds,
+    in_good_standing,
+    is_beta,
+    trial_ends_at,
+)
 
 __all__ = [
+    "BETA_FREE_MONTHS",
     "BILLING_ERROR_DETAIL",
     "BILLING_ERROR_STATUS",
     "CURRENCY_EXPONENTS",
     "PLAN_LIMIT_CODE",
+    "TRIAL_LENGTH",
     "BillingCurrency",
     "BillingError",
     "BillingErrorCode",
     "BillingInterval",
+    "BillingProvider",
+    "BillingSettings",
     "Currency",
     "Interval",
     "MinorUnits",
     "PlanCode",
     "PlanLimitError",
     "PlanSpec",
+    "PriceRef",
+    "SubscriptionRow",
+    "SubscriptionSource",
+    "SubscriptionStatus",
+    "beta_comped_until",
     "check_limit",
     "dimensions_over_limit",
+    "grant_holds",
+    "in_good_standing",
+    "is_beta",
     "minor_to_decimal",
     "normalize_plan",
     "plan_catalogue",
+    "trial_ends_at",
 ]
