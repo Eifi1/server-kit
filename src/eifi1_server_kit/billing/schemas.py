@@ -1,5 +1,5 @@
-"""Billing's wire shapes (``docs/billing-harmonization.md`` §3.1, §4, §6 and §12.5 in
-``Eifi1/ui-kit``).
+"""Billing's wire shapes (``docs/billing-harmonization.md`` §3.1, §4, §6, §12.5, §14.5 and
+§14.12 in ``Eifi1/ui-kit``).
 
 Like the other kit schemas, meant to be used as they are or SUBCLASSED: the app adds its
 fields and narrows a type. The request bodies refuse unknown fields (``extra="forbid"``): a
@@ -30,6 +30,7 @@ from eifi1_server_kit.billing.plans import (
     dimensions_over_limit,
     normalize_plan,
 )
+from eifi1_server_kit.billing.provider import PortalTarget
 from eifi1_server_kit.billing.standing import (
     SubscriptionRow,
     SubscriptionSource,
@@ -48,6 +49,7 @@ __all__ = [
     "PlanIntervalPrices",
     "PlanOut",
     "PlanPrices",
+    "PortalRequest",
     "SyncRefusal",
     "plans_out",
 ]
@@ -90,6 +92,13 @@ class BillingOverview(BaseModel):
     #: The payer's currency (§4, §12.18): the subscription's, else the account's stored
     #: currency (keksdose ``reporting_currency``), else the locale's.
     currency: BillingCurrency
+    #: The provider has a customer for this payer (§14.5): the row's
+    #: ``provider_customer_id`` is set, whatever the status or the source. False: the page
+    #: shows a caption in place of "Payment and invoices" and "Cancel subscription", and
+    #: never asks for the portal (which would answer 409 ``billing_not_at_provider``).
+    #: True: both show — a payer who bought under a grant keeps the way to the invoices and
+    #: to "Cancel" (§12.26).
+    at_provider: bool = False
 
     @classmethod
     def from_row(
@@ -124,6 +133,7 @@ class BillingOverview(BaseModel):
             limits=dict(plan.limits),
             usage=dict(usage),
             currency=BillingCurrency(str(currency).strip().upper()),
+            at_provider=row.provider_customer_id is not None,
         )
 
 
@@ -240,6 +250,29 @@ class CheckoutRequest(BaseModel):
     currency: Currency
 
 
+class PortalRequest(BaseModel):
+    """``POST /billing/portal {target?}`` (§14.5), an optional body: where the portal link
+    opens — ``overview`` ("Payment and invoices", the default), ``cancel`` ("Cancel
+    subscription", the subscription's cancel link, §12.26) or ``payment_method`` (the
+    payment-failed banner). The link is never stored::
+
+        @router.post("/billing/portal", response_model=CheckoutAnswer)
+        async def portal(body: PortalRequest | None = None, payer=Depends(current_payer)) -> CheckoutAnswer:
+            settings.require_billing_enabled()
+            row = await row_of(payer)
+            url = await billing_client().portal_url(
+                customer_id=row.provider_customer_id,           # None: 409 billing_not_at_provider
+                subscription_id=row.provider_subscription_id,
+                target=(body or PortalRequest()).target,
+            )
+            return CheckoutAnswer(url=url)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: PortalTarget = "overview"
+
+
 def _web_address(value: str) -> str:
     if not value.startswith(("https://", "http://")):
         raise ValueError("the provider's page is an http(s) address")
@@ -278,8 +311,8 @@ class PlanChangeRequest(BaseModel):
     payer is beta; writing such a move as ``manual`` without an end would make the payer
     free for good, which nobody decided. A ``comped_until`` turns it into an operator's
     grant until then; any other row takes the grant as above. The kit writes no row, so
-    the rule is the app's: keksdose's ``set_plan``, which reports ``kept_beta`` beside
-    :class:`PlanChangeResponse`'s fields (subclass it to add the field).
+    the rule is the app's (keksdose's ``set_plan``), which answers it as
+    :class:`PlanChangeResponse`'s ``kept_beta``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -290,29 +323,54 @@ class PlanChangeRequest(BaseModel):
 
 
 class PlanChangeResponse(BaseModel):
-    """What a plan change did (§6): ``{previous_plan, plan, limits, over_limit}``.
+    """What a plan change did (§6, §14.12): ``{previous_plan, plan, limits, over_limit,
+    usage, kept_beta, comped_until}`` — what ui-kit's ``usePlanChangeResult`` turns into
+    the operator's result lines.
 
     ``previous_plan`` is the point of the shape: "the plan was changed" without the value
-    it replaced is no trail (keksdose). ``over_limit`` — a downgrade below what the payer
-    has — is not an error and nothing is cleaned up: every item stays open and writable,
-    only the next create is refused (§3.4), so the panel says it rather than let an admin
-    discover it. Build it with :meth:`of`.
+    it replaced is no trail (keksdose); ``None`` when the account had no subscription
+    (the line then reads "Plan set to …"). ``over_limit`` — a downgrade below what the
+    payer has — is not an error and nothing is cleaned up: every item stays open and
+    writable, only the next create is refused (§3.4), so the panel says it rather than let
+    an admin discover it, with one line per dimension over the new limit from ``usage``
+    and ``limits``. ``kept_beta``: a running beta kept its end and only the plan moved
+    (§12.34, :class:`PlanChangeRequest`). ``comped_until``: the grant's end as written.
+    Build it with :meth:`of`.
     """
 
-    previous_plan: PlanCode
+    previous_plan: PlanCode | None
     plan: PlanCode
     limits: dict[str, int | None]
     over_limit: bool
+    #: What the payer has, per dimension (§12.15): the figures for the over-limit lines.
+    usage: dict[str, int]
+    #: A running beta grant kept its beta (§12.34): only the plan changed.
+    kept_beta: bool = False
+    #: The grant's end as the change wrote it; ``None``: no end, or no grant.
+    comped_until: UtcDateTime | None = None
 
     @classmethod
-    def of(cls, previous_plan: str, plan: PlanSpec, usage: Mapping[str, int]) -> Self:
-        """The answer for a change from ``previous_plan`` to ``plan``, with the payer's
-        ``usage`` (:func:`~eifi1_server_kit.billing.dimensions_over_limit`)."""
+    def of(
+        cls,
+        previous_plan: str | None,
+        plan: PlanSpec,
+        usage: Mapping[str, int],
+        *,
+        kept_beta: bool = False,
+        comped_until: datetime | None = None,
+    ) -> Self:
+        """The answer for a change from ``previous_plan`` (``None``: there was no
+        subscription) to ``plan``, with the payer's ``usage``
+        (:func:`~eifi1_server_kit.billing.dimensions_over_limit`), whether a running beta
+        was kept, and the grant's end."""
         return cls(
             previous_plan=previous_plan,
             plan=plan.code,
             limits=dict(plan.limits),
             over_limit=bool(dimensions_over_limit(plan, usage)),
+            usage=dict(usage),
+            kept_beta=kept_beta,
+            comped_until=comped_until,
         )
 
 

@@ -1,4 +1,4 @@
-"""Billing's wire shapes (billing contract §4, §6, §12.5)."""
+"""Billing's wire shapes (billing contract §4, §6, §12.5, §14.5, §14.12)."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from eifi1_server_kit.billing import (
     PlanOut,
     PlanPrices,
     PlanSpec,
+    PortalRequest,
     SubscriptionSource,
     SubscriptionStatus,
     SyncRefusal,
@@ -55,6 +56,7 @@ def test_the_overview_is_built_from_the_row() -> None:
         "limits": {"budgets": 1},
         "usage": {"budgets": 1},
         "currency": "CHF",
+        "at_provider": False,
     }
     assert not BillingOverview.from_row(
         row, plan=FREE, usage={}, currency=BillingCurrency.EUR, now=NOW + 10 * DAY
@@ -86,6 +88,26 @@ def test_the_overview_shows_a_beta_rows_end_from_the_launch_date() -> None:
     assert not ended.in_good_standing
     unknown = BillingOverview.from_row(beta, plan=PRO, usage={}, currency="CHF", now=NOW + 9999 * DAY)
     assert unknown.comped_until is None and unknown.in_good_standing
+
+
+def test_the_overview_says_whether_the_payer_reached_the_provider() -> None:
+    """§14.5: a provider customer, whatever the status or the source — a payer who bought
+    under a grant keeps the way to the invoices and to "Cancel" (§12.26)."""
+    trial = Row(provider_subscription_id="sub_1")  # a link without a customer: not there
+    assert not BillingOverview.from_row(trial, plan=FREE, usage={}, currency="CHF", now=NOW).at_provider
+    granted = Row(plan_code="pro", status="comped", source="beta", provider_customer_id="ctm_1")
+    assert BillingOverview.from_row(granted, plan=PRO, usage={}, currency="CHF", now=NOW).at_provider
+    ended = Row(plan_code="pro", status="canceled", source="provider", provider_customer_id="ctm_1")
+    assert BillingOverview.from_row(ended, plan=PRO, usage={}, currency="CHF", now=NOW).at_provider
+
+
+def test_a_portal_request_names_its_target() -> None:
+    """§14.5: an optional body; overview by default; nothing else accepted."""
+    assert PortalRequest().target == "overview"
+    assert PortalRequest.model_validate({"target": "payment_method"}).target == "payment_method"
+    for body in ({"target": "invoices"}, {"target": "cancel", "url": "https://elsewhere.example"}):
+        with pytest.raises(ValidationError):
+            PortalRequest.model_validate(body)
 
 
 def test_the_overview_reads_the_rows_vocabulary() -> None:
@@ -232,8 +254,26 @@ def test_a_plan_change_is_acknowledged_and_closed() -> None:
 def test_a_plan_change_answer_reports_a_downgrade_below_use() -> None:
     """§3.4, §6: not an error, and nothing is cleaned up."""
     down = PlanChangeResponse.of("PRO", FREE, {"budgets": 3})
-    assert down.model_dump() == {"previous_plan": "pro", "plan": "free", "limits": {"budgets": 1}, "over_limit": True}
+    assert down.model_dump() == {
+        "previous_plan": "pro",
+        "plan": "free",
+        "limits": {"budgets": 1},
+        "over_limit": True,
+        "usage": {"budgets": 3},
+        "kept_beta": False,
+        "comped_until": None,
+    }
     assert not PlanChangeResponse.of("free", PRO, {"budgets": 3}).over_limit
+
+
+def test_a_plan_change_answer_carries_what_the_result_lines_read() -> None:
+    """§14.12: no previous plan (the account had no subscription), a kept beta, the grant's
+    end — ui-kit's ``PlanChangeOutcome``."""
+    first = PlanChangeResponse.of(None, PRO, {}, comped_until=datetime(2027, 1, 31, 22, 59, 59, tzinfo=UTC))
+    assert first.previous_plan is None and first.usage == {} and not first.kept_beta
+    assert first.model_dump(mode="json")["comped_until"] == "2027-01-31T22:59:59Z"
+    kept = PlanChangeResponse.of("free", PRO, {"budgets": 1}, kept_beta=True)
+    assert kept.kept_beta and kept.comped_until is None
 
 
 def test_a_sync_refusal_names_the_refused_changes() -> None:

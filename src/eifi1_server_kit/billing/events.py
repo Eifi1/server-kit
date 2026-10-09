@@ -14,6 +14,18 @@ snapshot's fields (:func:`~eifi1_server_kit.billing.row_changes`) and uses the k
 its log and its notices. ``payment_failed`` from Lemon Squeezy is the exception: its body is
 an invoice, so it carries no status (``status`` ``None``) and changes nothing but the link.
 
+**One Paddle account sells for all three apps** (decision 18, §14.3), and Paddle's
+notification destinations can't filter by product or custom data: every app's webhook
+receives every app's subscription events. So every checkout carries the app's tag
+(:func:`checkout_custom_data`'s ``app``, which the kit's client adds itself), and
+:func:`parse_webhook_event` given the app's ``billing_app`` drops another app's event and,
+once ``app`` is given, an untagged one too — never matched by the provider's customer id,
+since one person may be one Paddle customer across the apps.
+
+.. deprecated:: 0.7.0
+   Lemon Squeezy (:func:`map_lemonsqueezy_event`, :data:`LEMONSQUEEZY_EVENT_KINDS`,
+   :data:`LEMONSQUEEZY_STATUSES`) is deprecated and goes in 0.8 (decision 25, §14.13).
+
 =========================  ===================================  ================================
 kind                       Paddle Billing                       Lemon Squeezy
 =========================  ===================================  ================================
@@ -63,6 +75,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import json
+import logging
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -74,6 +87,7 @@ from eifi1_server_kit.billing.settings import BillingProvider
 from eifi1_server_kit.billing.standing import SubscriptionStatus
 
 __all__ = [
+    "APP_KEY",
     "LEMONSQUEEZY_EVENT_KINDS",
     "LEMONSQUEEZY_STATUSES",
     "PADDLE_EVENT_KINDS",
@@ -88,6 +102,8 @@ __all__ = [
     "map_paddle_event",
     "parse_webhook_event",
 ]
+
+logger = logging.getLogger("eifi1_server_kit.billing")
 
 
 class EventKind(enum.StrEnum):
@@ -109,21 +125,34 @@ class EventKind(enum.StrEnum):
 #: The key of the app's payer reference in a checkout's custom data
 #: (:func:`checkout_custom_data`).
 PAYER_REF_KEY = "payer_ref"
+#: The key of the app's tag in a checkout's custom data (§14.3): the settings'
+#: ``billing_app``.
+APP_KEY = "app"
 
 
-def checkout_custom_data(payer_ref: str) -> dict[str, str]:
-    """The custom data to put into a checkout, so its webhooks find the payer:
-    ``{"payer_ref": "user:42"}`` (or ``"company:7"``).
+def checkout_custom_data(payer_ref: str, *, app: str | None = None) -> dict[str, str]:
+    """The custom data to put into a checkout, so its webhooks find the payer and the app:
+    ``{"payer_ref": "user:42", "app": "keksdose"}`` (or ``"company:7"``, ``"kastlan"``).
 
     Paddle keeps a checkout's ``custom_data`` on the transaction and copies it to the
     subscription it creates, so every subscription event carries it; Lemon Squeezy sends a
     checkout's ``checkout_data.custom`` as ``meta.custom_data`` with every subscription
     event. The reference is the app's own and opaque to the provider — never an address.
     Flat, because Paddle's dashboard shows nested custom data badly.
+
+    ``app`` is the settings' ``billing_app`` (§14.3): on one Paddle account every app's
+    webhook receives every app's events, and the tag is how each keeps only its own
+    (:func:`parse_webhook_event`). The kit's client adds its own tag whatever is passed
+    here (:class:`~eifi1_server_kit.billing.PaddleClient`), so an app can't forget it.
     """
     if not payer_ref.strip():
         raise ValueError("a payer reference is a non-empty string")
-    return {PAYER_REF_KEY: payer_ref}
+    data = {PAYER_REF_KEY: payer_ref}
+    if app is not None:
+        if not app.strip():
+            raise ValueError("an app tag is a non-empty string")
+        data[APP_KEY] = app
+    return data
 
 
 class PoisonEventError(ValueError):
@@ -189,6 +218,12 @@ class NormalisedEvent(BaseModel):
     def payer_ref(self) -> str | None:
         """The payer reference the app put into the checkout, or ``None``."""
         value = self.custom_data.get(PAYER_REF_KEY)
+        return value if isinstance(value, str) and value else None
+
+    @property
+    def app(self) -> str | None:
+        """The app's tag the checkout carried (§14.3), or ``None`` for an untagged event."""
+        value = self.custom_data.get(APP_KEY)
         return value if isinstance(value, str) and value else None
 
 
@@ -335,6 +370,7 @@ def map_paddle_event(raw_body: bytes) -> NormalisedEvent | None:
 # --- Lemon Squeezy -----------------------------------------------------------------------
 
 #: Lemon Squeezy's subscription events and their kinds; any other event is not used.
+#: Deprecated in 0.7.0, removed in 0.8 (§14.13).
 LEMONSQUEEZY_EVENT_KINDS: Mapping[str, EventKind] = {
     "subscription_created": EventKind.SUBSCRIPTION_STARTED,
     "subscription_updated": EventKind.SUBSCRIPTION_UPDATED,
@@ -347,7 +383,8 @@ LEMONSQUEEZY_EVENT_KINDS: Mapping[str, EventKind] = {
 }
 
 #: Lemon Squeezy's subscription statuses and the row's. ``cancelled`` is still running
-#: until ``ends_at``, so it stays ``active`` with ``cancel_at_period_end``.
+#: until ``ends_at``, so it stays ``active`` with ``cancel_at_period_end``. Deprecated in
+#: 0.7.0, removed in 0.8 (§14.13).
 LEMONSQUEEZY_STATUSES: Mapping[str, SubscriptionStatus] = {
     "on_trial": SubscriptionStatus.TRIALING,
     "active": SubscriptionStatus.ACTIVE,
@@ -368,6 +405,9 @@ def _check_type(data: Mapping[str, Any], expected: str) -> None:
 def map_lemonsqueezy_event(raw_body: bytes) -> NormalisedEvent | None:
     """A Lemon Squeezy webhook as a :class:`NormalisedEvent`; ``None`` for an event billing
     doesn't use; :class:`PoisonEventError` for a body it cannot read.
+
+    .. deprecated:: 0.7.0
+       Removed in 0.8 with the rest of Lemon Squeezy (§14.13).
 
     The body is JSON:API: ``{meta: {event_name, custom_data?}, data: {type, id,
     attributes}}``. A subscription's attributes carry ``status``, ``customer_id``,
@@ -421,8 +461,42 @@ WEBHOOK_MAPPERS: Mapping[BillingProvider, Callable[[bytes], NormalisedEvent | No
 }
 
 
-def parse_webhook_event(provider: BillingProvider | str, raw_body: bytes) -> NormalisedEvent | None:
+def parse_webhook_event(
+    provider: BillingProvider | str, raw_body: bytes, *, app: str | None = None
+) -> NormalisedEvent | None:
     """The raw body of ``provider``'s webhook as a :class:`NormalisedEvent` — after its
     signature passed — or ``None`` for an event billing doesn't use (answer 2xx). A body
-    that cannot be read is a :class:`PoisonEventError` (answer 2xx and log)."""
-    return WEBHOOK_MAPPERS[BillingProvider(provider)](raw_body)
+    that cannot be read is a :class:`PoisonEventError` (answer 2xx and log).
+
+    ``app`` is the settings' ``billing_app`` (§14.3); pass it::
+
+        event = parse_webhook_event("paddle", raw, app=settings.billing_app)
+
+    Given, it keeps this app's events only: **another app's event** (``custom_data.app``
+    differs) **and an untagged one are ``None``** — answered 200, never recorded or
+    dispatched, and logged (the untagged at WARNING; the other apps' at INFO, since on one
+    account they are two thirds of the traffic). An untagged event is never matched by the
+    provider's customer id: one person may be one Paddle customer across the apps, and the
+    payer references (``user:<id>``) repeat between keksdose and Kurvenschmiede. Every
+    checkout from 0.7 on carries the tag, which Paddle copies to the subscription and its
+    later events. ``None``: every event, as before 0.7.
+    """
+    event = WEBHOOK_MAPPERS[BillingProvider(provider)](raw_body)
+    if event is None or app is None or event.app == app:
+        return event
+    if event.app is None:
+        logger.warning(
+            "billing webhook: dropped the untagged %s event %s (%s): no app in its custom data",
+            event.provider,
+            event.event_id,
+            event.provider_type,
+        )
+    else:
+        logger.info(
+            "billing webhook: dropped the %s event %s (%s) of the app %r",
+            event.provider,
+            event.event_id,
+            event.provider_type,
+            event.app,
+        )
+    return None

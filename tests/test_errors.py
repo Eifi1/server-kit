@@ -11,7 +11,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 
 from eifi1_server_kit.auth import AuthError, AuthErrorCode
-from eifi1_server_kit.billing import BillingError, BillingErrorCode, PlanLimitError
+from eifi1_server_kit.billing import BillingError, BillingErrorCode, PaddleError, PlanLimitError
 from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.errors import CONTRACT_ERRORS, contract_error_response, install_contract_error_handlers
 from eifi1_server_kit.feedback import (
@@ -57,6 +57,13 @@ CODED: dict[str, tuple[AuthError | AccountError | BillingError, int]] = {
     "mismatch": (AccountError(AccountErrorCode.CONFIRMATION_MISMATCH), 409),
     "billing_off": (BillingError(BillingErrorCode.BILLING_DISABLED), 404),
     "read_only": (BillingError(BillingErrorCode.BILLING_READ_ONLY), 402),
+    "provider_down": (BillingError(BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE), 502),
+    "not_at_provider": (BillingError(BillingErrorCode.BILLING_NOT_AT_PROVIDER), 409),
+    "subscribed": (BillingError(BillingErrorCode.BILLING_ALREADY_SUBSCRIBED), 409),
+    "not_sold": (BillingError(BillingErrorCode.BILLING_PLAN_NOT_SOLD), 422),
+    # Paddle's own words stay on the exception; the body says the kit's (§14.2).
+    "paddle": (PaddleError(404, paddle_code="not_found", paddle_detail="Entity ctm_x not found"), 502),
+    "paddle_key": (PaddleError(403, paddle_code="forbidden"), 503),
 }
 
 
