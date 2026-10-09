@@ -3,11 +3,12 @@ secrets, the price ids both ways, and the standing behind the switch."""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from eifi1_server_kit.billing import (
     BillingCurrency,
@@ -17,6 +18,7 @@ from eifi1_server_kit.billing import (
     BillingProvider,
     BillingSettings,
     PriceRef,
+    SubscriptionSource,
     SubscriptionStatus,
 )
 from tests.billing._rows import NOW, Row
@@ -132,3 +134,75 @@ def test_the_standing_is_everyones_while_billing_is_off() -> None:
     late = Row(status=SubscriptionStatus.PAST_DUE, current_period_end=NOW - timedelta(days=20))
     assert on.billing_standing(late, NOW)
     assert not on.billing_standing(late, NOW, retry_grace=timedelta(days=14))
+
+
+def test_the_standing_reads_a_beta_rows_end_from_the_launch_date() -> None:
+    """§3.2: a beta row stored without an end runs to the settings' launch + 12 months."""
+    beta = Row(status=SubscriptionStatus.COMPED, source=SubscriptionSource.BETA)
+    on = BillingSettings(billing_enabled=True, **SECRETS)
+    assert on.billing_standing(beta, NOW + 9999 * timedelta(days=1))  # no launch date yet
+    launched = BillingSettings(billing_enabled=True, billing_launch_at=datetime(2026, 11, 1), **SECRETS)
+    assert launched.billing_standing(beta, datetime(2027, 10, 31, tzinfo=UTC))
+    assert not launched.billing_standing(beta, datetime(2027, 11, 1, tzinfo=UTC))
+
+
+class _GardenSettings(BaseSettings, BillingSettings):
+    """An app's settings as the README shows them: pydantic-settings, the mixin, a prefix."""
+
+    model_config = SettingsConfigDict(env_prefix="GARDEN_")
+
+    garden_name: str = "Ada's Garden Planner"
+
+
+_BILLING_VARIABLES = [f"GARDEN_{name.upper()}" for name in BillingSettings.model_fields]
+
+
+@pytest.fixture
+def environment(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    for name in [*_BILLING_VARIABLES, "GARDEN_GARDEN_NAME"]:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+def test_an_empty_variable_is_an_unset_one(environment: pytest.MonkeyPatch) -> None:
+    """keksdose's 0.32 report: an ``.env`` template lists the variables empty until billing
+    goes on. ``BILLING_PRICE_IDS=`` failed in pydantic-settings' JSON decoding, and
+    ``BILLING_LAUNCH_AT=`` was no datetime; every billing variable left empty now reads as
+    its default."""
+    for name in _BILLING_VARIABLES:
+        environment.setenv(name, "")
+    environment.setenv("GARDEN_BILLING_LAUNCH_AT", "  ")
+    environment.setenv("GARDEN_GARDEN_NAME", "")
+    settings = _GardenSettings()
+    assert settings.billing_price_ids == {} and settings.billing_launch_at is None
+    assert not settings.billing_enabled and settings.billing_provider is None
+    assert settings.billing_api_key is None and settings.billing_webhook_secret is None
+    assert settings.billing_signature_tolerance == 5.0
+    assert settings.garden_name == ""  # the app's own variable: the app's call, untouched
+
+
+def test_the_variables_are_read_as_json_and_normalised(environment: pytest.MonkeyPatch) -> None:
+    environment.setenv("GARDEN_BILLING_ENABLED", "true")
+    environment.setenv("GARDEN_BILLING_PROVIDER", "lemonsqueezy")
+    environment.setenv("GARDEN_BILLING_API_KEY", "ls_test_example")
+    environment.setenv("GARDEN_BILLING_WEBHOOK_SECRET", "ls_signing_example")
+    environment.setenv("GARDEN_BILLING_SIGNATURE_TOLERANCE", "60")
+    environment.setenv("GARDEN_BILLING_LAUNCH_AT", "2026-11-01T00:00:00Z")
+    environment.setenv("GARDEN_BILLING_PRICE_IDS", '{"Pro": {"chf": {"Year": 12345, "month": ["v_2", "v_1"]}}}')
+    settings = _GardenSettings()
+    assert settings.billing_enabled and settings.billing_provider is BillingProvider.LEMONSQUEEZY
+    assert settings.billing_signature_tolerance == 60.0
+    assert settings.billing_launch_at == datetime(2026, 11, 1, tzinfo=UTC)
+    assert settings.billing_price_id("pro", "CHF", "year") == "12345"
+    assert settings.billing_price_ref("v_1") == PriceRef("pro", BillingCurrency.CHF, BillingInterval.MONTH)
+    # An app that reads its own fields gets the same, typed already.
+    assert BillingSettings.model_validate(settings, from_attributes=True).billing_price_ids == (
+        settings.billing_price_ids
+    )
+
+
+@pytest.mark.parametrize("text", ["{", '{"pro": {"CHF": {"year": ""}}}', "[]"])
+def test_price_ids_that_are_no_table_fail_at_start(environment: pytest.MonkeyPatch, text: str) -> None:
+    environment.setenv("GARDEN_BILLING_PRICE_IDS", text)
+    with pytest.raises(ValidationError, match="billing_price_ids"):
+        _GardenSettings()

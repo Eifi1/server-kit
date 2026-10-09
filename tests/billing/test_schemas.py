@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from eifi1_server_kit.billing import (
     BillingCurrency,
@@ -17,10 +18,15 @@ from eifi1_server_kit.billing import (
     CheckoutRequest,
     PlanChangeRequest,
     PlanChangeResponse,
+    PlanIntervalPrices,
+    PlanOut,
+    PlanPrices,
     PlanSpec,
     SubscriptionSource,
     SubscriptionStatus,
     SyncRefusal,
+    plan_catalogue,
+    plans_out,
 )
 from tests.billing._rows import NOW, Row
 
@@ -67,11 +73,130 @@ def test_the_overview_is_built_from_the_row() -> None:
         BillingOverview.from_row(Row(), plan=PRO, usage={}, currency="CHF", now=NOW)
 
 
+def test_the_overview_shows_a_beta_rows_end_from_the_launch_date() -> None:
+    """§3.2: a beta row stored without an end shows — and is in good standing until — the
+    launch plus 12 months; without a launch date it shows no end."""
+    beta = Row(plan_code="pro", status="comped", source="beta")
+    launch = datetime(2026, 11, 1, tzinfo=UTC)
+    shown = BillingOverview.from_row(beta, plan=PRO, usage={}, currency="CHF", now=NOW, launch=launch)
+    assert shown.comped_until == datetime(2027, 11, 1, tzinfo=UTC) and shown.in_good_standing
+    ended = BillingOverview.from_row(
+        beta, plan=PRO, usage={}, currency="CHF", now=datetime(2027, 11, 1, tzinfo=UTC), launch=launch
+    )
+    assert not ended.in_good_standing
+    unknown = BillingOverview.from_row(beta, plan=PRO, usage={}, currency="CHF", now=NOW + 9999 * DAY)
+    assert unknown.comped_until is None and unknown.in_good_standing
+
+
 def test_the_overview_reads_the_rows_vocabulary() -> None:
     row = Row(plan_code="pro", status="comped", source="beta", comped_until=NOW + DAY)
     overview = BillingOverview.from_row(row, plan=PRO, usage={"budgets": 9}, currency="CHF", now=NOW)
     assert (overview.status, overview.source) == (SubscriptionStatus.COMPED, SubscriptionSource.BETA)
     assert overview.comped_until == NOW + DAY and overview.usage == {"budgets": 9}
+
+
+GIB = 1024**3
+
+
+def _kastlan(code: str, units: int, seats: int, storage_gib: int, month: int, sort: int) -> PlanSpec:
+    """A plan of §13.1: the same gross figure in CHF and EUR, yearly is ten months."""
+    prices = {
+        (currency, interval): month * (10 if interval == "year" else 1)
+        for currency in ("EUR", "CHF")
+        for interval in ("year", "month")
+    }
+    return PlanSpec(
+        code=code,
+        limits={"units": units, "seats": seats, "storage": storage_gib * GIB},
+        prices=prices,
+        sort=sort,
+    )
+
+
+STARTER = _kastlan("starter", 40, 2, 5, 2900, sort=0)
+STANDARD = _kastlan("standard", 150, 5, 25, 7900, sort=1)
+PROFESSIONAL = _kastlan("professional", 500, 15, 100, 19900, sort=2)
+
+
+def test_the_plans_go_over_the_wire_with_nested_prices() -> None:
+    """§4 ``GET /billing/plans``, the §13.1 catalogue: currency → interval → gross minor
+    units, ui-kit's ``PlanPrices`` — no tuple keys, no list to convert in the page."""
+    plans = plans_out(plan_catalogue([PROFESSIONAL, STARTER, STANDARD]))
+    wire = json.loads(TypeAdapter(list[PlanOut]).dump_json(plans))
+    assert wire == [
+        {
+            "code": "starter",
+            "prices": {"CHF": {"month": 2900, "year": 29000}, "EUR": {"month": 2900, "year": 29000}},
+            "limits": {"units": 40, "seats": 2, "storage": 5_368_709_120},
+            "sort": 0,
+        },
+        {
+            "code": "standard",
+            "prices": {"CHF": {"month": 7900, "year": 79000}, "EUR": {"month": 7900, "year": 79000}},
+            "limits": {"units": 150, "seats": 5, "storage": 26_843_545_600},
+            "sort": 1,
+        },
+        {
+            "code": "professional",
+            "prices": {"CHF": {"month": 19900, "year": 199000}, "EUR": {"month": 19900, "year": 199000}},
+            "limits": {"units": 500, "seats": 15, "storage": 107_374_182_400},
+            "sort": 2,
+        },
+    ]
+    # The same order on every run, whatever order the spec lists its prices in.
+    assert [list(plan["prices"]) for plan in wire] == [["CHF", "EUR"]] * 3
+    assert all(list(by_interval) == ["month", "year"] for plan in wire for by_interval in plan["prices"].values())
+    # Back again: the page's JSON validates, and its prices are the spec's.
+    for out, spec in zip(
+        TypeAdapter(list[PlanOut]).validate_python(wire), (STARTER, STANDARD, PROFESSIONAL), strict=True
+    ):
+        assert out == PlanOut.from_spec(spec)
+        assert out.prices["CHF"] == {"month": spec.price("CHF", "month"), "year": spec.price("CHF", "year")}
+
+
+def test_a_plan_on_the_wire_leaves_out_what_it_does_not_sell() -> None:
+    """A combination not sold is absent, never 0 (the page reads 0 as free); unlimited is
+    null; a plan without prices is ``{}``; the order is ``sort``'s, then the code's."""
+    yearly = PlanSpec(code="Personal", limits={"curves": 10}, prices={("EUR", "year"): 9000}, sort=1)
+    unlimited = PlanSpec(code="professional", limits={"curves": None}, sort=1)
+    free = PlanSpec(code="free", limits={"curves": 1}, sort=0)
+    by_hand = {"professional": unlimited, "personal": yearly, "free": free}  # not plan_catalogue's order
+    assert [plan.model_dump(mode="json") for plan in plans_out(by_hand)] == [
+        {"code": "free", "prices": {}, "limits": {"curves": 1}, "sort": 0},
+        {"code": "personal", "prices": {"EUR": {"year": 9000}}, "limits": {"curves": 10}, "sort": 1},
+        {"code": "professional", "prices": {}, "limits": {"curves": None}, "sort": 1},
+    ]
+    for prices in (
+        {"EUR": {"year": 90.0}},  # money is never a float (§4)
+        {"USD": {"year": 9000}},  # a currency the apps don't charge in
+        {"EUR": {"week": 900}},
+    ):
+        with pytest.raises(ValidationError):
+            PlanOut.model_validate({"code": "personal", "prices": prices, "limits": {}, "sort": 0})
+
+
+def test_the_plans_schema_names_every_currency_and_period() -> None:
+    """keksdose's 0.32 report: openapi-typescript drops ``propertyNames``, so a dict keyed
+    by the enums generates ``{[key: string]: …}``, not assignable to ui-kit's
+    ``PlanPrices``. Named, optional keys and no others generate ``{CHF?: {month?: number;
+    year?: number}; EUR?: …}`` — ui-kit's type as it is."""
+    assert sorted(PlanPrices.__optional_keys__) == [currency.value for currency in BillingCurrency]
+    assert sorted(PlanIntervalPrices.__optional_keys__) == [interval.value for interval in BillingInterval]
+    assert not PlanPrices.__required_keys__ and not PlanIntervalPrices.__required_keys__
+    for mode in ("validation", "serialization"):
+        schema = TypeAdapter(list[PlanOut]).json_schema(mode=mode)
+        defs = schema["$defs"]
+        assert defs["PlanOut"]["properties"]["prices"] == {"$ref": "#/$defs/PlanPrices"}
+        assert defs["PlanPrices"]["properties"] == {
+            "CHF": {"$ref": "#/$defs/PlanIntervalPrices"},
+            "EUR": {"$ref": "#/$defs/PlanIntervalPrices"},
+        }
+        assert defs["PlanIntervalPrices"]["properties"] == {
+            "month": {"minimum": 0, "title": "Month", "type": "integer"},
+            "year": {"minimum": 0, "title": "Year", "type": "integer"},
+        }
+        for name in ("PlanPrices", "PlanIntervalPrices"):
+            assert defs[name]["additionalProperties"] is False and "required" not in defs[name]
 
 
 def test_a_checkout_request_is_normalised_and_closed() -> None:

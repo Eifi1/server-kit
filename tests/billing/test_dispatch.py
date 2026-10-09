@@ -15,6 +15,7 @@ from eifi1_server_kit.billing import (
     BillingProvider,
     BillingSettings,
     DispatchOutcome,
+    DuplicateEventError,
     EventKind,
     EventStore,
     NormalisedEvent,
@@ -126,6 +127,35 @@ async def test_a_duplicate_is_answered_without_touching_anything() -> None:
     assert store.calls[-1] == "seen"
 
 
+@dataclass
+class _UniqueStore(_Store):
+    """A store the way SQLite's driver leaves it in a test: no savepoint, so ``seen`` can't
+    see the delivery racing this one, and ``record``'s insert hits the unique key and
+    raises :class:`DuplicateEventError`."""
+
+    async def seen(self, provider: BillingProvider, event_id: str) -> bool:
+        self.calls.append("seen")
+        return False
+
+    async def record(self, event: NormalisedEvent, *, received_at: datetime) -> None:
+        if (event.provider, event.event_id) in self.rows:
+            self.calls.append("duplicate")
+            raise DuplicateEventError(f"{event.provider} {event.event_id}")
+        await super().record(event, received_at=received_at)
+
+
+async def test_a_duplicate_found_by_the_insert_is_answered_the_same() -> None:
+    """keksdose's 0.32 report: the unique key catches the race ``seen`` can't, and the
+    store says so with :class:`DuplicateEventError` instead of a savepoint."""
+    store, payers = _UniqueStore(), _Payers({"user:1": _trial()})
+    assert await _dispatch(_event(), store, payers) is DispatchOutcome.APPLIED
+    raced = _event(status=SubscriptionStatus.EXPIRED, occurred_at=NOW + 1 * DAY)
+    assert await _dispatch(raced, store, payers) is DispatchOutcome.DUPLICATE
+    assert payers.rows["user:1"].status is SubscriptionStatus.ACTIVE and len(payers.applied) == 1
+    assert store.calls[-2:] == ["seen", "duplicate"]  # not loaded, applied or marked processed
+    assert webhook_answer(DuplicateEventError("paddle evt_1")) == WebhookAnswer(200, log=False)
+
+
 async def test_an_older_snapshot_does_not_overwrite_a_newer_one() -> None:
     """§5's ordering guard: neither provider guarantees the order of delivery."""
     store, payers = _Store(), _Payers({"user:1": _trial()})
@@ -218,6 +248,31 @@ async def test_a_running_grant_keeps_its_status_but_takes_the_link() -> None:
     # After the grant, provider events apply again.
     renewed = _event(event_id="evt_3", occurred_at=NOW + 6 * DAY, subscription_ref="sub_2")
     assert await _dispatch(renewed, store, payers, now=NOW + 6 * DAY) is DispatchOutcome.APPLIED
+    assert (beta.status, beta.source) == (SubscriptionStatus.ACTIVE, SubscriptionSource.PROVIDER)
+
+
+async def test_a_beta_rows_grant_ends_a_year_after_the_launch_date() -> None:
+    """§3.2: a beta row stored without an end holds until the launch + 12 months, given the
+    launch date; provider events apply again from then on."""
+    beta = Row(status=SubscriptionStatus.COMPED, source=SubscriptionSource.BETA, plan_code="pro")
+    store, payers = _Store(), _Payers({"user:1": beta})
+    launch, end = datetime(2026, 11, 1, tzinfo=UTC), datetime(2027, 11, 1, tzinfo=UTC)
+    port: EventStore = store
+
+    async def at(event: NormalisedEvent, now: datetime) -> DispatchOutcome:
+        return await dispatch(
+            event,
+            port,
+            payers.apply,
+            load=payers.load,
+            plan_for_price=SETTINGS.billing_plan_for_price,
+            now=now,
+            launch=launch,
+        )
+
+    assert await at(_event(occurred_at=end - DAY), end - DAY) is DispatchOutcome.GRANT_HOLDS
+    assert beta.status is SubscriptionStatus.COMPED
+    assert await at(_event(event_id="evt_2", occurred_at=end), end) is DispatchOutcome.APPLIED
     assert (beta.status, beta.source) == (SubscriptionStatus.ACTIVE, SubscriptionSource.PROVIDER)
 
 

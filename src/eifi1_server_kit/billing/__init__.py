@@ -14,7 +14,8 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 * :mod:`~eifi1_server_kit.billing.plans` — :class:`PlanSpec`, the catalogue, the limits
   (:func:`check_limit`), currencies, intervals and minor units;
 * :mod:`~eifi1_server_kit.billing.standing` — the row's statuses and sources,
-  :func:`in_good_standing`, and the trial's and the beta's dates;
+  :func:`in_good_standing`, and the trial's and the beta's dates
+  (:func:`effective_comped_until` for a beta row stored before the launch date was known);
 * :mod:`~eifi1_server_kit.billing.gate` — the read-only gate:
   :func:`billing_write_allowed` (the demo's shape, the standing as an input) and
   :func:`refuse_billing_read_only` for an app's own choke points;
@@ -25,8 +26,9 @@ interface — in CHF and EUR; a lapsed payer is read-only, never locked; a new p
 * :mod:`~eifi1_server_kit.billing.webhooks` — the event-store port, the pure
   :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
   policy;
-* :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, checkout,
-  the operator's plan change, and a sync reply's refused changes;
+* :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, the plans
+  (:class:`PlanOut` with :class:`PlanPrices`, :func:`plans_out`), checkout, the operator's plan change, and a sync
+  reply's refused changes;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -80,7 +82,11 @@ from eifi1_server_kit.billing.schemas import (
     CheckoutRequest,
     PlanChangeRequest,
     PlanChangeResponse,
+    PlanIntervalPrices,
+    PlanOut,
+    PlanPrices,
     SyncRefusal,
+    plans_out,
 )
 from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PriceRef
 from eifi1_server_kit.billing.signatures import (
@@ -99,6 +105,7 @@ from eifi1_server_kit.billing.standing import (
     SubscriptionSource,
     SubscriptionStatus,
     beta_comped_until,
+    effective_comped_until,
     grant_holds,
     in_good_standing,
     is_beta,
@@ -106,6 +113,7 @@ from eifi1_server_kit.billing.standing import (
 )
 from eifi1_server_kit.billing.webhooks import (
     DispatchOutcome,
+    DuplicateEventError,
     EventStore,
     WebhookAnswer,
     dispatch,
@@ -142,6 +150,7 @@ __all__ = [
     "CheckoutRequest",
     "Currency",
     "DispatchOutcome",
+    "DuplicateEventError",
     "EventKind",
     "EventStore",
     "Interval",
@@ -150,7 +159,10 @@ __all__ = [
     "PlanChangeRequest",
     "PlanChangeResponse",
     "PlanCode",
+    "PlanIntervalPrices",
     "PlanLimitError",
+    "PlanOut",
+    "PlanPrices",
     "PlanSpec",
     "PoisonEventError",
     "PriceRef",
@@ -165,6 +177,7 @@ __all__ = [
     "checkout_custom_data",
     "dimensions_over_limit",
     "dispatch",
+    "effective_comped_until",
     "grant_holds",
     "in_good_standing",
     "is_beta",
@@ -174,6 +187,7 @@ __all__ = [
     "normalize_plan",
     "parse_webhook_event",
     "plan_catalogue",
+    "plans_out",
     "refuse_billing_read_only",
     "row_changes",
     "trial_ends_at",

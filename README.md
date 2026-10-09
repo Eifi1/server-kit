@@ -454,12 +454,12 @@ the daily notice job stay in the app; the kit sends no request.
 
 | Area | Names |
 |---|---|
-| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` |
+| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch) |
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
-| Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None)`, `grant_holds(row, now)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
+| Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
-| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port, `dispatch(event, store, apply, *, load, plan_for_price, now=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
-| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
+| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
 | Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
 
 **The switch is off by default**, and switching on without the provider, the API key or the
@@ -475,6 +475,23 @@ class Settings(BaseSettings, DemoSettings, BillingSettings):
     model_config = SettingsConfigDict(env_prefix="KEKSDOSE_")
     # KEKSDOSE_BILLING_PRICE_IDS='{"pro": {"CHF": {"year": "pri_01…"}, "EUR": {"year": "pri_01…"}}}'
 ```
+
+**An empty billing variable is an unset one**: `KEKSDOSE_BILLING_LAUNCH_AT=` is no launch
+date and `KEKSDOSE_BILLING_PRICE_IDS=` no price ids, so an `.env` template can list every
+variable empty until billing goes on. The price ids skip pydantic-settings' own JSON
+decoding (its `NoDecode`), which refuses an empty value, and the mixin decodes them; only
+the mixin's fields are read this way, never the app's own.
+
+**A test that monkeypatches `billing_price_ids` passes the parsed shape**: lowercase plan
+codes, `CHF` / `EUR`, `month` / `year`, and a LIST of ids per combination, current first —
+`monkeypatch.setattr(settings, "billing_price_ids", {"pro": {"CHF": {"year": ["pri_test"]}}})`.
+The string → list step, the keys' normalisation and the one-id-one-combination check are
+the field's validation, which runs when the settings are built or validated, never on
+attribute assignment (`BillingSettings` doesn't set `validate_assignment`, pydantic's
+default). A bare `"pri_test"` slips through and is read character by character:
+`billing_price_id("pro", "CHF", "year")` answers `"p"`, and the webhook's `"pri_test"` finds
+no plan. To keep the environment's shape, validate it first:
+`BillingSettings(billing_price_ids={"pro": {"CHF": {"year": "pri_test"}}}).billing_price_ids`.
 
 **The catalogue lives in code**; the provider's price ids live in the settings, the names
 in the app's i18n. A limit gates creation only — a downgrade never deletes or hides
@@ -493,9 +510,20 @@ refuse_billing_read_only(settings.billing_standing(owner_row, now), "a new budge
 check_limit(PLANS[normalize_plan(owner_row.plan_code)], "budgets", owned_budgets)  # 402 plan_limit
 ```
 
+**`GET /billing/plans`** answers `plans_out(PLANS)`: a `PlanOut` per plan, `{code, prices,
+limits, sort}` in `sort` order, with the prices nested currency → interval → gross minor
+units — ui-kit's `PlanPrices`, so `BillingPlan.prices` takes them as they are
+(`{"CHF": {"month": 7900, "year": 79000}}`). The kit's `PlanPrices` and
+`PlanIntervalPrices` name every key, so openapi-typescript generates `{CHF?: {month?:
+number; year?: number}; EUR?: …}` — ui-kit's type, no cast. A combination the plan doesn't
+sell is left out, never `0`, and unlimited is `null`. The names and feature lines are the page's, from
+the app's i18n by `code`.
+
 **Whose standing**: the payer's, not the caller's — keksdose's budget owner, Kurvenschmiede's
 row owner (the creator's for a create), kastlan's acting company. No row means always in
-good standing (demo users, ownerless items). The gate is the app's choice of two equal
+good standing (demo users, ownerless items) — so with RLS on the subscription table, read
+the payer's row with the bypass, or a guest reads it back as nothing and the gate fails
+open; where a row must exist, a missing one is an error. The gate is the app's choice of two equal
 shapes: `billing_write_allowed` at the auth dependency, after the demo's 403, with an
 allow-list in the demo's syntax (billing, the account's settings, signing out, feedback,
 removing access, leaving, admin routes, receiving sync); or `refuse_billing_read_only` at
@@ -506,7 +534,16 @@ a `SyncRefusal` beside the updates. Scheduled jobs skip a lapsed payer's data th
 row waits with it empty until their first owned item); a beta payer — existing at launch,
 or invited before it (`is_beta`) — is `comped` until `beta_comped_until(launch)`; an
 operator's grant is `comped`, `manual`, with or without an end (`AdminAction.PLAN`,
-`acknowledge`; `PlanChangeRequest` / `PlanChangeResponse`).
+`acknowledge`; `PlanChangeRequest` / `PlanChangeResponse`) — except that a running beta
+grant given no new end keeps its beta: only the plan moves, or a pre-launch move would be
+free for good (keksdose's `kept_beta`). A beta row written before the
+launch date is known (the beta migration, a registration before launch) stores no
+`comped_until`, and the kit reads it as `beta_comped_until(settings.billing_launch_at)` at
+read time, so a moved launch date needs no data change: `effective_comped_until(row,
+launch)` for a banner's "free until …", and pass `launch=settings.billing_launch_at` to
+`in_good_standing`, `grant_holds`, `dispatch` and `BillingOverview.from_row`
+(`settings.billing_standing` passes it itself). Without a launch date such a row has no
+end — and switching billing on does not require one.
 
 **The webhook**, one per provider, `POST /webhooks/<provider>`, in one transaction:
 
@@ -515,14 +552,21 @@ operator's grant is `comped`, `manual`, with or without an end (`AdminAction.PLA
 async def paddle_webhook(request: Request, session=Depends(system_session)) -> Response:
     settings.require_billing_enabled()  # 404
     raw = await request.body()
-    verify_webhook_signature("paddle", raw, request.headers, settings.billing_webhook_key())  # 400
+    verify_webhook_signature(
+        "paddle", raw, request.headers, settings.billing_webhook_key(), tolerance=settings.billing_signature_tolerance
+    )  # 400
     try:
         event = parse_webhook_event("paddle", raw)  # None: not used
         result = (
             None
             if event is None
             else await dispatch(
-                event, EventTable(session), apply, load=find_payer_row, plan_for_price=settings.billing_plan_for_price
+                event,
+                EventTable(session),
+                apply,
+                load=find_payer_row,
+                plan_for_price=settings.billing_plan_for_price,
+                launch=settings.billing_launch_at,
             )
         )
         await session.commit()
@@ -536,11 +580,16 @@ async def paddle_webhook(request: Request, session=Depends(system_session)) -> R
 ```
 
 The signatures follow the providers' docs: Paddle's `Paddle-Signature: ts=…;h1=…` (hex
-HMAC-SHA256 of `ts:raw_body`, 5 s tolerance, any `h1` during a secret rotation), Lemon
-Squeezy's `X-Signature` (hex HMAC-SHA256 of the raw body). The checkout carries
+HMAC-SHA256 of `ts:raw_body`, any `h1` during a secret rotation, and Paddle's five-second
+tolerance on `ts` unless `billing_signature_tolerance` widens it — a scale-to-zero host's
+cold start can eat five seconds; keksdose runs 60), Lemon Squeezy's `X-Signature` (hex
+HMAC-SHA256 of the raw body). The checkout carries
 `checkout_custom_data(payer_ref)`, which both providers send back with every subscription
 event, so `load` finds the row by `event.payer_ref`, else by the provider's ids. `dispatch`
-skips a duplicate; skips a snapshot older than `updated_from_event_at` (neither provider
+skips a duplicate — one `seen` finds, or one whose insert hits the unique key, which the
+store's `record` reports by raising `DuplicateEventError` (flush the insert there and undo
+it: a savepoint where the driver nests them, else a rollback, which also works on SQLite in
+tests); skips a snapshot older than `updated_from_event_at` (neither provider
 guarantees the order); skips a replaced subscription's late end; leaves a running grant's
 status, source and plan alone (writing only the link and dates — the provider's paid period
 counts once the grant ends); and otherwise hands `apply(event, row, changes)` the columns
@@ -583,7 +632,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.6.0/eifi1_server_kit-0.6.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.6.1/eifi1_server_kit-0.6.1-py3-none-any.whl"
 ```
 
 With the image guard or the Resend client, name the extra: `"eifi1-server-kit[images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.

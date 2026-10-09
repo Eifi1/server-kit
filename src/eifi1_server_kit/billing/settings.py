@@ -12,13 +12,22 @@ read-only gate is off — everyone is in good standing
 (:meth:`BillingSettings.billing_standing`). **Switching on requires the secrets** (§10): a
 deployment with the switch on and a secret missing fails at start, not at its first
 webhook.
+
+**An empty ``<APP>_BILLING_*`` variable is an unset one**: an ``.env`` template lists the
+variables with nothing after ``=`` until billing goes on, and the defaults must hold for
+it (keksdose's 0.32 report). Read through pydantic-settings, an empty
+``BILLING_LAUNCH_AT=`` was no datetime, and an empty ``BILLING_PRICE_IDS=`` failed before
+any validator ran: pydantic-settings decodes a dict-typed variable as JSON first. The
+price ids therefore opt out of that decoding (its ``NoDecode`` marker) and are decoded
+here.
 """
 
 from __future__ import annotations
 
 import enum
+import json
 from datetime import datetime, timedelta
-from typing import Annotated, NamedTuple, Self
+from typing import Annotated, Any, NamedTuple, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr, StringConstraints, model_validator
 
@@ -34,6 +43,14 @@ from eifi1_server_kit.billing.plans import (
 from eifi1_server_kit.billing.standing import SubscriptionRow, in_good_standing
 
 __all__ = ["BillingProvider", "BillingSettings", "PriceRef"]
+
+#: How far, in seconds, Paddle's signature timestamp ``ts`` may be from now: Paddle's own
+#: default (its docs: "Our SDKs have a default tolerance of five seconds between the
+#: timestamp and the current time"). Checked both ways, so a clock running ahead is no
+#: loophole either. The default of
+#: :attr:`BillingSettings.billing_signature_tolerance`; exported by
+#: :mod:`~eifi1_server_kit.billing.signatures`.
+PADDLE_SIGNATURE_TOLERANCE = 5.0
 
 
 class BillingProvider(enum.StrEnum):
@@ -66,6 +83,23 @@ _PriceId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
 _PriceIds = Annotated[list[_PriceId], BeforeValidator(_price_ids), Field(min_length=1)]
 
 
+def _no_json_decoding() -> object:
+    """pydantic-settings' ``NoDecode`` marker, so its sources hand the price ids over as
+    the variable's text, an empty one included; ``None`` — no marker — without
+    pydantic-settings, where no source decodes anything. The kit doesn't depend on
+    pydantic-settings; every app reads its settings through it."""
+    try:
+        from pydantic_settings import NoDecode
+    except ImportError:  # pragma: no cover - the kit's tests run with pydantic-settings
+        return None
+    return NoDecode
+
+
+def _json_text(value: object) -> object:
+    """The price ids as the environment holds them, JSON text, decoded; a mapping as it is."""
+    return json.loads(value) if isinstance(value, str | bytes) else value
+
+
 class BillingSettings(BaseModel):
     """Billing's settings (§4, §10), named for ``<APP>_BILLING_*``.
 
@@ -85,6 +119,12 @@ class BillingSettings(BaseModel):
     A combination may hold a LIST instead: the current id first — what a new checkout uses
     — then retired ids whose subscriptions still run, so their webhooks still find the plan
     (``["pri_new", "pri_old"]``). An id may stand for one combination only.
+
+    The one id becoming a list, the keys' normalisation and that check are the field's
+    VALIDATION: they run when the settings are built or validated, not on assignment (no
+    ``validate_assignment``). A test that monkeypatches ``billing_price_ids`` passes the
+    parsed shape — ``{"pro": {"CHF": {"year": ["pri_test"]}}}`` — or a bare string is read
+    character by character (:meth:`billing_price_id` answers ``"p"``).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -101,13 +141,43 @@ class BillingSettings(BaseModel):
     #: The webhook's signing secret (§5): Paddle's endpoint secret key (``pdl_ntfset_…``),
     #: Lemon Squeezy's signing secret.
     billing_webhook_secret: SecretStr | None = None
+    #: How far, in seconds, Paddle's signature timestamp may be from now (§5): the
+    #: ``tolerance`` the app passes to
+    #: :func:`~eifi1_server_kit.billing.verify_webhook_signature`. Paddle's default, five
+    #: seconds (:data:`PADDLE_SIGNATURE_TOLERANCE`), unless the deployment widens it: on a
+    #: scale-to-zero host (Cloud Run at min-instances 0) a cold start can eat the five
+    #: seconds, and every first delivery after a quiet spell answers 400 until Paddle's
+    #: retry lands warm. keksdose runs 60 (``KEKSDOSE_BILLING_SIGNATURE_TOLERANCE=60``). A
+    #: replay inside the window is still a duplicate to the event store (§5). Lemon
+    #: Squeezy signs no timestamp, so it ignores this.
+    billing_signature_tolerance: float = Field(default=PADDLE_SIGNATURE_TOLERANCE, gt=0)
     #: Plan → currency → interval → price id(s); see the class docstring.
-    billing_price_ids: dict[PlanCode, dict[Currency, dict[Interval, _PriceIds]]] = Field(default_factory=dict)
+    billing_price_ids: Annotated[
+        dict[PlanCode, dict[Currency, dict[Interval, _PriceIds]]],
+        _no_json_decoding(),
+        BeforeValidator(_json_text),
+    ] = Field(default_factory=dict)
     #: When billing went on for this app (§2.4): the beta's 12 months run from it
     #: (:func:`~eifi1_server_kit.billing.beta_comped_until`), and an invitation created
     #: before it makes a beta payer (:func:`~eifi1_server_kit.billing.is_beta`). Unset until
-    #: Marcel names the date.
+    #: Marcel names the date, and NOT required to switch on: a beta row stored without an
+    #: end reads as no end until it is set, then as this date plus 12 months
+    #: (:func:`~eifi1_server_kit.billing.effective_comped_until`), so moving the date moves
+    #: every such row's end with it.
     billing_launch_at: datetime | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _an_empty_variable_is_unset(cls, data: Any) -> Any:
+        """Drop a billing field given as blank text, so its default applies. Only the
+        mixin's own fields: what an app's own empty variable means is the app's call."""
+        if not isinstance(data, dict):
+            return data  # model_validate(settings, from_attributes=True): typed already
+        return {
+            name: value
+            for name, value in data.items()
+            if not (name in _OWN_FIELDS and isinstance(value, str) and not value.strip())
+        }
 
     @model_validator(mode="after")
     def _switching_on_needs_the_secrets(self) -> Self:
@@ -184,5 +254,13 @@ class BillingSettings(BaseModel):
     ) -> bool:
         """:func:`~eifi1_server_kit.billing.in_good_standing`, behind the switch: with
         billing off everyone is in good standing (§4). The standing the read-only gate
-        takes (:func:`~eifi1_server_kit.billing.billing_write_allowed`)."""
-        return not self.billing_enabled or in_good_standing(row, now, retry_grace=retry_grace)
+        takes (:func:`~eifi1_server_kit.billing.billing_write_allowed`). A beta row stored
+        without an end ends at :attr:`billing_launch_at` plus 12 months, once that is set
+        (§3.2)."""
+        return not self.billing_enabled or in_good_standing(
+            row, now, retry_grace=retry_grace, launch=self.billing_launch_at
+        )
+
+
+#: The mixin's fields, the ones an empty variable leaves at their default.
+_OWN_FIELDS = frozenset(BillingSettings.model_fields)

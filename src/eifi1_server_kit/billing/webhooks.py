@@ -7,11 +7,15 @@ route is the app's; what it does in between is this::
     async def paddle_webhook(request: Request, session=Depends(system_session)) -> Response:
         settings.require_billing_enabled()                       # 404 billing_disabled
         raw = await request.body()
-        verify_webhook_signature("paddle", raw, request.headers, settings.billing_webhook_key())  # 400
+        verify_webhook_signature(
+            "paddle", raw, request.headers, settings.billing_webhook_key(),
+            tolerance=settings.billing_signature_tolerance,
+        )                                                        # 400
         try:
             event = parse_webhook_event("paddle", raw)
             result = None if event is None else await dispatch(
-                event, EventTable(session), apply, load=find_payer_row, plan_for_price=settings.billing_plan_for_price
+                event, EventTable(session), apply, load=find_payer_row,
+                plan_for_price=settings.billing_plan_for_price, launch=settings.billing_launch_at,
             )
             await session.commit()                               # recorded and applied in ONE transaction
         except Exception as exc:
@@ -25,9 +29,11 @@ route is the app's; what it does in between is this::
 **The event table sits outside tenant RLS**, or the handler uses the bypass explicitly
 (§12.20): a webhook writes rows for any payer. kastlan's ``billing_stripe_events`` becomes
 ``billing_events(provider, event_id UNIQUE, type, occurred_at, received_at, processed_at)``
-(§5). Two deliveries of one event racing each other: the loser's ``record`` violates the
-unique key, its transaction rolls back, it answers 500 and the provider's retry finds the
-event seen — keksdose's savepoint recipe (``gcp_billing_service``) avoids even that 500.
+(§5). Two deliveries of one event racing each other: both pass ``seen``, and the loser's
+``record`` violates the unique key. Its store raises :class:`DuplicateEventError`, and
+:func:`dispatch` answers :attr:`DispatchOutcome.DUPLICATE` — a 200, as for an event seen
+before. A store that lets the database error through instead rolls back and answers 500,
+and the provider's retry finds the event seen.
 """
 
 from __future__ import annotations
@@ -45,12 +51,29 @@ from eifi1_server_kit.billing.standing import SubscriptionRow, SubscriptionSourc
 
 __all__ = [
     "DispatchOutcome",
+    "DuplicateEventError",
     "EventStore",
     "WebhookAnswer",
     "dispatch",
     "row_changes",
     "webhook_answer",
 ]
+
+
+class DuplicateEventError(Exception):
+    """Raised by :meth:`EventStore.record` when the event is in the table already: the
+    insert hit the unique ``(provider, event_id)`` — a second delivery that raced the first
+    past :meth:`~EventStore.seen` (§5). :func:`dispatch` answers it as
+    :attr:`DispatchOutcome.DUPLICATE`, and :func:`webhook_answer` as a 200 wherever it is
+    raised.
+
+    It replaces the savepoint recipe as the kit's way: a nested transaction is what lets
+    the outer one go on after the failed insert, and SQLite's driver in the apps' tests
+    can't nest one, so each app worked around it (keksdose's 0.32 report). The store
+    catches the database's unique violation, undoes the failed insert — a savepoint where
+    the driver nests them, else a rollback of the session: nothing :func:`dispatch` did
+    before ``record`` needs keeping, since ``seen`` only reads — and raises this.
+    """
 
 
 class EventStore(Protocol):
@@ -63,7 +86,11 @@ class EventStore(Protocol):
 
     async def record(self, event: NormalisedEvent, *, received_at: datetime) -> None:
         """Insert the event: ``provider``, ``event_id``, ``type`` (``event.provider_type``),
-        ``occurred_at`` and ``received_at``; ``processed_at`` empty."""
+        ``occurred_at`` and ``received_at``; ``processed_at`` empty.
+
+        Flush it here, so a unique violation surfaces here and not at the commit, and raise
+        :class:`DuplicateEventError` for one: the event is in the table already.
+        """
         ...
 
     async def mark_processed(self, provider: BillingProvider, event_id: str, *, processed_at: datetime) -> None:
@@ -77,7 +104,8 @@ class DispatchOutcome(enum.StrEnum):
 
     #: Written onto the payer's row.
     APPLIED = "applied"
-    #: Seen before (§5): nothing written, nothing recorded again.
+    #: Seen before (§5) — by ``seen``, or by ``record`` raising
+    #: :class:`DuplicateEventError`: nothing written, nothing recorded again.
     DUPLICATE = "duplicate"
     #: Older than the row's ``updated_from_event_at`` — the ordering guard (§5): recorded,
     #: not applied. Neither provider guarantees the order of delivery.
@@ -113,6 +141,12 @@ def row_changes(
       period once the grant ends (§12.11).
 
     Datetimes are aware, in UTC: an app with naive columns (kastlan) strips the zone.
+    ``status``, ``source`` and ``provider`` are the kit's ``StrEnum`` members
+    (:class:`~eifi1_server_kit.billing.SubscriptionStatus`,
+    :class:`~eifi1_server_kit.billing.SubscriptionSource`,
+    :class:`~eifi1_server_kit.billing.BillingProvider`), not plain strings: a ``str``
+    subclass, so they compare equal to their string values and a string column stores
+    them as those values — an app that writes ``.value`` instead sees no difference.
     """
     changes: dict[str, object] = {"provider": event.provider}
     if event.customer_ref is not None:
@@ -155,13 +189,16 @@ async def dispatch[RowT: SubscriptionRow](
     load: Callable[[NormalisedEvent], Awaitable[RowT | None]],
     plan_for_price: Callable[[str], str | None],
     now: datetime | None = None,
+    launch: datetime | None = None,
 ) -> DispatchOutcome:
     """Record ``event`` and apply it to the payer's row, through the app's ports (§5).
 
     Pure but for its callbacks, which it awaits in order and never concurrently:
 
     1. **seen** → :attr:`DispatchOutcome.DUPLICATE`; nothing else happens;
-    2. **record** it (``received_at`` = ``now``);
+    2. **record** it (``received_at`` = ``now``); a :class:`DuplicateEventError` from it —
+       a delivery that raced this one past ``seen`` — is
+       :attr:`~DispatchOutcome.DUPLICATE` too, and nothing else happens;
     3. **load** the payer's row — by ``event.payer_ref`` first (the checkout's custom data,
        :func:`~eifi1_server_kit.billing.checkout_custom_data`), else by the provider's
        subscription or customer id. None → :attr:`~DispatchOutcome.NO_PAYER`;
@@ -172,7 +209,10 @@ async def dispatch[RowT: SubscriptionRow](
        :attr:`~DispatchOutcome.OTHER_SUBSCRIPTION`; one that would (the payer subscribed
        again) takes the row's link;
     6. **a free grant** (§12.11, :func:`~eifi1_server_kit.billing.grant_holds`) → apply only
-       the link and the dates, :attr:`~DispatchOutcome.GRANT_HOLDS`;
+       the link and the dates, :attr:`~DispatchOutcome.GRANT_HOLDS`. Pass ``launch`` — the
+       settings' ``billing_launch_at`` — so a beta row stored without an end stops
+       holding at the launch plus 12 months (§3.2); without it such a row holds for good,
+       as in 0.6.0;
     7. otherwise **apply** :func:`row_changes`, with the plan from ``plan_for_price``
        (:meth:`~eifi1_server_kit.billing.BillingSettings.billing_plan_for_price`). A price
        the settings don't know is 503 ``billing_not_configured``: nothing is kept, and the
@@ -187,7 +227,10 @@ async def dispatch[RowT: SubscriptionRow](
     moment = datetime.now(UTC) if now is None else _aware(now)
     if await store.seen(event.provider, event.event_id):
         return DispatchOutcome.DUPLICATE
-    await store.record(event, received_at=moment)
+    try:
+        await store.record(event, received_at=moment)
+    except DuplicateEventError:
+        return DispatchOutcome.DUPLICATE
     row = await load(event)
     if row is None:
         return DispatchOutcome.NO_PAYER
@@ -200,7 +243,7 @@ async def dispatch[RowT: SubscriptionRow](
     elif _foreign(event, row):
         outcome = DispatchOutcome.OTHER_SUBSCRIPTION
     else:
-        holds = event.is_snapshot and grant_holds(row, moment)
+        holds = event.is_snapshot and grant_holds(row, moment, launch=launch)
         plan_code: str | None = None
         if event.is_snapshot and not holds and event.plan_price_id is not None:
             plan_code = plan_for_price(event.plan_price_id)
@@ -226,7 +269,9 @@ def webhook_answer(result: DispatchOutcome | BaseException | None) -> WebhookAns
     """The answer policy (§5): what the webhook route answers for what happened.
 
     * ``None`` — an event billing doesn't use — and every :class:`DispatchOutcome`: 200.
-      Paddle and Lemon Squeezy both ask for a 200; anything else is retried.
+      Paddle and Lemon Squeezy both ask for a 200; anything else is retried. So is a
+      :class:`DuplicateEventError` that reaches the route (a store that raises it at the
+      commit): the event is in the table, a retry would only find it there.
     * :attr:`DispatchOutcome.NO_PAYER` and a
       :class:`~eifi1_server_kit.billing.PoisonEventError`: 200 and logged — a retry would
       bring the same bytes (keksdose's Pub/Sub rule).
@@ -242,6 +287,8 @@ def webhook_answer(result: DispatchOutcome | BaseException | None) -> WebhookAns
         return WebhookAnswer(200, log=False)
     if isinstance(result, DispatchOutcome):
         return WebhookAnswer(200, log=result is DispatchOutcome.NO_PAYER)
+    if isinstance(result, DuplicateEventError):
+        return WebhookAnswer(200, log=False)
     if isinstance(result, PoisonEventError):
         return WebhookAnswer(200, log=True)
     if isinstance(result, BillingError):

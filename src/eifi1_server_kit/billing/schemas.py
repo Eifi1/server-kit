@@ -1,4 +1,4 @@
-"""Billing's wire shapes (``docs/billing-harmonization.md`` §4, §6 and §12.5 in
+"""Billing's wire shapes (``docs/billing-harmonization.md`` §3.1, §4, §6 and §12.5 in
 ``Eifi1/ui-kit``).
 
 Like the other kit schemas, meant to be used as they are or SUBCLASSED: the app adds its
@@ -14,9 +14,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta
-from typing import Annotated, Self
+from typing import Annotated, Self, TypedDict
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, with_config
 
 from eifi1_server_kit.auth.schemas import UtcDateTime
 from eifi1_server_kit.billing.errors import BILLING_ERROR_DETAIL, BillingErrorCode
@@ -24,12 +24,18 @@ from eifi1_server_kit.billing.plans import (
     BillingCurrency,
     Currency,
     Interval,
+    MinorUnits,
     PlanCode,
     PlanSpec,
     dimensions_over_limit,
     normalize_plan,
 )
-from eifi1_server_kit.billing.standing import SubscriptionRow, SubscriptionSource, SubscriptionStatus
+from eifi1_server_kit.billing.standing import (
+    SubscriptionRow,
+    SubscriptionSource,
+    SubscriptionStatus,
+    effective_comped_until,
+)
 from eifi1_server_kit.billing.standing import in_good_standing as _in_good_standing
 
 __all__ = [
@@ -39,7 +45,11 @@ __all__ = [
     "CheckoutRequest",
     "PlanChangeRequest",
     "PlanChangeResponse",
+    "PlanIntervalPrices",
+    "PlanOut",
+    "PlanPrices",
     "SyncRefusal",
+    "plans_out",
 ]
 
 
@@ -67,6 +77,9 @@ class BillingOverview(BaseModel):
     #: :func:`~eifi1_server_kit.billing.in_good_standing` now: false = read-only (§3.3).
     in_good_standing: bool
     trial_ends_at: UtcDateTime | None = None
+    #: When the free grant ends (:func:`~eifi1_server_kit.billing.effective_comped_until`):
+    #: a beta row stored without an end shows the launch plus 12 months, the banner's
+    #: "free until …" (§3.2); ``None`` is no end.
     comped_until: UtcDateTime | None = None
     current_period_end: UtcDateTime | None = None
     cancel_at_period_end: bool = False
@@ -88,25 +101,127 @@ class BillingOverview(BaseModel):
         currency: BillingCurrency | str,
         now: datetime,
         retry_grace: timedelta | None = None,
+        launch: datetime | None = None,
     ) -> Self:
         """The overview of ``row``, whose plan is ``plan`` (the catalogue's entry for
         ``row.plan_code`` — another plan is a :class:`ValueError`), with the payer's
-        ``usage`` and ``currency``, its standing as of ``now``."""
+        ``usage`` and ``currency``, its standing as of ``now``.
+
+        Pass ``launch=settings.billing_launch_at``: a beta row stored before the launch
+        date was known has no ``comped_until``, and both the standing and the
+        ``comped_until`` shown read it as the launch plus 12 months (§3.2)."""
         if normalize_plan(row.plan_code) != plan.code:
             raise ValueError(f"the row's plan is {row.plan_code!r}, not {plan.code!r}")
         return cls(
             plan=plan.code,
             status=SubscriptionStatus(row.status),
             source=SubscriptionSource(row.source),
-            in_good_standing=_in_good_standing(row, now, retry_grace=retry_grace),
+            in_good_standing=_in_good_standing(row, now, retry_grace=retry_grace, launch=launch),
             trial_ends_at=row.trial_ends_at,
-            comped_until=row.comped_until,
+            comped_until=effective_comped_until(row, launch),
             current_period_end=row.current_period_end,
             cancel_at_period_end=bool(row.cancel_at_period_end),
             limits=dict(plan.limits),
             usage=dict(usage),
             currency=BillingCurrency(str(currency).strip().upper()),
         )
+
+
+@with_config(ConfigDict(extra="forbid"))
+class PlanIntervalPrices(TypedDict, total=False):
+    """One currency's prices on the wire: ``{month?, year?}``, GROSS minor units (§4,
+    §12.17). A period the plan isn't sold for is ABSENT, never ``0`` or ``null``.
+
+    A ``TypedDict`` with a key per :class:`~eifi1_server_kit.billing.BillingInterval`, not
+    a ``dict`` keyed by the enum: OpenAPI's ``propertyNames`` is dropped by
+    openapi-typescript (7.13), which then generates ``{[key: string]: number}`` — not
+    assignable to ui-kit's ``PlanIntervalPrices`` without a cast (keksdose's 0.32 report).
+    Named keys generate ``{month?: number; year?: number}``, ui-kit's type as it is.
+    """
+
+    month: MinorUnits
+    year: MinorUnits
+
+
+@with_config(ConfigDict(extra="forbid"))
+class PlanPrices(TypedDict, total=False):
+    """A plan's prices on the wire: ``{CHF?, EUR?}``, each a :class:`PlanIntervalPrices`
+    — ui-kit's ``PlanPrices``, which ``BillingPlan.prices`` takes as it is (§3.1, §4). A
+    currency the plan isn't sold in is ABSENT; a plan sold in none is ``{}``, which the
+    page reads as free. A key per
+    :class:`~eifi1_server_kit.billing.BillingCurrency`, for the reason
+    :class:`PlanIntervalPrices` gives; any other key is refused.
+    """
+
+    CHF: PlanIntervalPrices
+    EUR: PlanIntervalPrices
+
+
+class PlanOut(BaseModel):
+    """One plan of ``GET /billing/plans`` (§4): ``{code, prices, limits, sort}``, the
+    catalogue's :class:`~eifi1_server_kit.billing.PlanSpec` as JSON can carry it. Build the
+    list with :func:`plans_out`.
+
+    **``prices`` is nested, currency → interval → GROSS minor units** (§4, §12.17)::
+
+        {"code": "standard",
+         "prices": {"CHF": {"month": 7900, "year": 79000}, "EUR": {"month": 7900, "year": 79000}},
+         "limits": {"units": 150, "seats": 5, "storage": 26843545600},
+         "sort": 1}
+
+    ``PlanSpec.prices`` is keyed by ``(currency, interval)``, and a tuple is no JSON key, so
+    each app invented its own list and converted it in the page (kastlan's ``[{currency,
+    interval, amount}]``, its 0.32 report). This is ui-kit's ``PlanPrices``
+    (:class:`PlanPrices`, with named keys so the generated TypeScript is that type too), so
+    ``BillingPlan.prices`` takes it as it is. A combination the plan doesn't sell is
+    ABSENT, never ``0``: the page reads ``0`` — and a plan with no prices at all, ``{}`` —
+    as free. ``limits`` is the plan's, ``null`` for unlimited (kastlan's ``storage`` in
+    bytes, §13.1); ``sort`` the catalogue's order, cheapest first, which decides the page's
+    upgrade and downgrade.
+
+    **No name, description or feature lines**: those are the app's i18n, never the
+    provider's or the server's (§3.1). The page maps ``code`` to its own words and builds
+    ui-kit's ``BillingPlan`` from both.
+
+    A RETIRED PRICE needs nothing here: its id stays findable in the settings for the
+    subscriptions still on it (:class:`~eifi1_server_kit.billing.BillingSettings`), and
+    this shape carries amounts, not price ids. A plan sold no more stays in the catalogue
+    for the rows on it — its limits still gate creation (§3.4) — and the page marks it
+    ``disabled`` or the route leaves it out; it is the app's word, not the catalogue's.
+    """
+
+    code: PlanCode
+    prices: PlanPrices
+    limits: dict[str, int | None]
+    sort: int
+
+    @classmethod
+    def from_spec(cls, plan: PlanSpec) -> Self:
+        """``plan`` on the wire: its prices nested, CHF before EUR and month before year
+        whatever order the spec lists them in (:class:`PlanPrices`' order), so the JSON is
+        the same on every run."""
+        prices: dict[str, dict[str, int]] = {}
+        for (currency, interval), amount in plan.prices.items():
+            prices.setdefault(currency.value, {})[interval.value] = amount
+        return cls(code=plan.code, prices=prices, limits=dict(plan.limits), sort=plan.sort)
+
+
+def plans_out(catalogue: Mapping[str, PlanSpec]) -> list[PlanOut]:
+    """The answer to ``GET /billing/plans`` (§4): every plan of ``catalogue`` as
+    :class:`PlanOut`, in ``sort`` order (then by code, as
+    :func:`~eifi1_server_kit.billing.plan_catalogue` orders them — sorted again here, so a
+    mapping built by hand comes out the same)::
+
+        @router.get("/billing/plans", response_model=list[PlanOut])
+        def billing_plans(payer: Payer = Depends(current_payer)) -> list[PlanOut]:
+            settings.require_billing_enabled()  # 404 billing_disabled
+            return plans_out(PLANS)
+
+    Every currency the plans are sold in: the page picks the payer's — the overview's
+    ``currency`` (§12.18) — and offers the switch where a plan has more than one.
+    """
+    ordered = sorted(catalogue.values(), key=lambda plan: (plan.sort, plan.code))
+    return [PlanOut.from_spec(plan) for plan in ordered]
 
 
 class CheckoutRequest(BaseModel):
@@ -153,6 +268,18 @@ class PlanChangeRequest(BaseModel):
     until ``comped_until`` or without an end; a ``comped_until`` of now ends a grant. Log it
     as ``detail {from, to, comped_until, counts}`` (§6). An admin transfer or an erasure
     hand-over never checks a limit, and neither does this (§12.15).
+
+    **A running beta grant keeps its beta** (keksdose's ``kept_beta``, its 0.32 report):
+    given no ``comped_until``, a change on a row whose ``source`` is ``beta`` and whose
+    grant holds (:func:`~eifi1_server_kit.billing.grant_holds` with the settings' launch)
+    moves ``plan_code`` only — ``status``, ``source`` and ``comped_until`` stay, so the
+    beta still ends at the launch plus 12 months
+    (:func:`~eifi1_server_kit.billing.effective_comped_until`). Before the launch every
+    payer is beta; writing such a move as ``manual`` without an end would make the payer
+    free for good, which nobody decided. A ``comped_until`` turns it into an operator's
+    grant until then; any other row takes the grant as above. The kit writes no row, so
+    the rule is the app's: keksdose's ``set_plan``, which reports ``kept_beta`` beside
+    :class:`PlanChangeResponse`'s fields (subclass it to add the field).
     """
 
     model_config = ConfigDict(extra="forbid")

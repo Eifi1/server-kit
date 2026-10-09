@@ -8,8 +8,13 @@ bytes, and the signature is over bytes.
 * **Paddle Billing** — ``Paddle-Signature: ts=1671552777;h1=eb4d…``: ``h1`` is the hex
   HMAC-SHA256 of ``"<ts>:<raw body>"`` under the notification destination's secret key
   (``pdl_ntfset_…``); there may be more than one ``h1`` while Paddle rotates a secret; and
-  the timestamp guards against a replay, five seconds by Paddle's default.
-  https://developer.paddle.com/webhooks/signature-verification (read 2026-10-08).
+  the timestamp guards against a replay: "To prevent replay attacks, you may like to
+  check the timestamp (``ts``) against the current time and reject events that are too
+  old. Our SDKs have a default tolerance of five seconds between the timestamp and the
+  current time." The kit's default is that, and the settings widen it
+  (``billing_signature_tolerance``).
+  https://developer.paddle.com/webhooks/signature-verification (read 2026-10-08 and
+  2026-10-09).
 * **Lemon Squeezy** — ``X-Signature``: the hex HMAC-SHA256 of the raw body under the
   webhook's signing secret. It carries no timestamp, so there is no replay window to check;
   the event store's duplicate check and the ordering guard carry that
@@ -29,7 +34,7 @@ import time
 from collections.abc import Mapping
 
 from eifi1_server_kit.billing.errors import BillingError, BillingErrorCode
-from eifi1_server_kit.billing.settings import BillingProvider
+from eifi1_server_kit.billing.settings import PADDLE_SIGNATURE_TOLERANCE, BillingProvider
 
 __all__ = [
     "LEMONSQUEEZY_SIGNATURE_HEADER",
@@ -50,12 +55,6 @@ SIGNATURE_HEADERS: Mapping[BillingProvider, str] = {
     BillingProvider.PADDLE: PADDLE_SIGNATURE_HEADER,
     BillingProvider.LEMONSQUEEZY: LEMONSQUEEZY_SIGNATURE_HEADER,
 }
-#: How far, in seconds, Paddle's ``ts`` may be from now: Paddle's own default (its docs:
-#: "The default tolerance between the timestamp and the current time is five seconds").
-#: Checked both ways, so a clock running ahead is no loophole either. An app on a
-#: scale-to-zero host (Cloud Run at min-instances 0) may pass a wider ``tolerance``: a cold
-#: start can outlast five seconds — Paddle's retry would pass, a little later.
-PADDLE_SIGNATURE_TOLERANCE = 5.0
 
 
 def _refuse(reason: str) -> BillingError:
@@ -138,10 +137,15 @@ def verify_webhook_signature(
 
         settings.require_billing_enabled()                  # 404 billing_disabled
         raw = await request.body()
-        verify_webhook_signature(BillingProvider.PADDLE, raw, request.headers, settings.billing_webhook_key())
+        verify_webhook_signature(
+            BillingProvider.PADDLE, raw, request.headers, settings.billing_webhook_key(),
+            tolerance=settings.billing_signature_tolerance,
+        )
 
-    ``now`` and ``tolerance`` are Paddle's (:func:`verify_paddle_signature`); Lemon
-    Squeezy's signature has no timestamp. An unknown provider is a :class:`ValueError`.
+    ``now`` and ``tolerance`` are Paddle's (:func:`verify_paddle_signature`); pass the
+    settings' ``billing_signature_tolerance``, so a deployment widens it in its
+    environment. Lemon Squeezy's signature has no timestamp. An unknown provider is a
+    :class:`ValueError`.
     """
     chosen = BillingProvider(provider)
     header = _header(headers, SIGNATURE_HEADERS[chosen])

@@ -27,6 +27,7 @@ __all__ = [
     "SubscriptionSource",
     "SubscriptionStatus",
     "beta_comped_until",
+    "effective_comped_until",
     "grant_holds",
     "in_good_standing",
     "is_beta",
@@ -108,16 +109,50 @@ class SubscriptionRow(Protocol):
     def updated_from_event_at(self) -> datetime | None: ...
 
 
-def grant_holds(row: SubscriptionRow, now: datetime) -> bool:
-    """Is a free grant running — ``comped`` before ``comped_until``, or without one?
+def effective_comped_until(row: SubscriptionRow, launch: datetime | None) -> datetime | None:
+    """When the row's free grant ends, as the kit reads it (§3.2, §2.4): what a banner's
+    "free until …" and the overview show, and what :func:`grant_holds` and
+    :func:`in_good_standing` compare with.
+
+    * The row's ``comped_until`` where it has one: an explicit end always wins, over the
+      launch too.
+    * A BETA row (``source`` ``beta``) without one: :func:`beta_comped_until` of
+      ``launch``, the settings' ``billing_launch_at``. The apps' beta migrations and every
+      registration before Marcel names the launch date write the row without that date;
+      read as "no end", it would be free for good. The kit resolves it at READ time
+      instead of having the app write it back, because the launch date may still move: a
+      moved date then needs no data change (Kurvenschmiede's 0.32 report).
+    * Otherwise ``None``, no end: an operator's grant without one (``source`` ``manual``,
+      the operator's own admin accounts, §12.8) — and a beta row while ``launch`` is
+      ``None``, as in 0.6.0.
+
+    ``launch`` is a required argument that may be ``None``:
+    :class:`~eifi1_server_kit.billing.BillingSettings` switches on with the provider and
+    its two secrets, NOT the launch date, so a deployment with billing on may still lack
+    one. Pass ``settings.billing_launch_at`` as it is. Naive in, naive out, like
+    :func:`beta_comped_until`.
+    """
+    if row.comped_until is not None:
+        return row.comped_until
+    if launch is None or SubscriptionSource(row.source) is not SubscriptionSource.BETA:
+        return None
+    return beta_comped_until(launch)
+
+
+def grant_holds(row: SubscriptionRow, now: datetime, *, launch: datetime | None = None) -> bool:
+    """Is a free grant running — ``comped`` before its end, or without one?
 
     While it is, a provider event does not overwrite the row (§12.11): an operator's grant
-    — or the beta's — beats the provider, and the provider's state applies from
-    ``comped_until`` on (:func:`in_good_standing`).
+    — or the beta's — beats the provider, and the provider's state applies from the
+    grant's end on (:func:`in_good_standing`). The end is
+    :func:`effective_comped_until`: ``comped_until``, else for a beta row the launch plus
+    12 months — given ``launch``, the settings' ``billing_launch_at``. Without ``launch`` a
+    beta row stored without an end holds without one, as in 0.6.0.
     """
     if SubscriptionStatus(row.status) is not SubscriptionStatus.COMPED:
         return False
-    return row.comped_until is None or _aware(now) < _aware(row.comped_until)
+    until = effective_comped_until(row, launch)
+    return until is None or _aware(now) < _aware(until)
 
 
 def _paid_until(row: SubscriptionRow, moment: datetime) -> bool:
@@ -125,22 +160,39 @@ def _paid_until(row: SubscriptionRow, moment: datetime) -> bool:
     return row.current_period_end is not None and moment < _aware(row.current_period_end)
 
 
-def in_good_standing(row: SubscriptionRow | None, now: datetime, *, retry_grace: timedelta | None = None) -> bool:
+def in_good_standing(
+    row: SubscriptionRow | None,
+    now: datetime,
+    *,
+    retry_grace: timedelta | None = None,
+    launch: datetime | None = None,
+) -> bool:
     """May the payer's data change at ``now``? §3.3, with §12.7 and §12.11.
 
     * **No row: always** (§12.7) — demo users, the demo's system account, ownerless items
       such as keksdose's preview budget. They are never gated and never counted. Every real
       payer has a row (§12.12), so ``None`` means one of these, never "forgotten".
+
+      **This FAILS OPEN when the row is there but hidden.** With row-level security on the
+      subscription table, a guest's request — keksdose's guest in the owner's budget,
+      kastlan's staff of another company — reads the PAYER's row back as nothing, and a
+      lapsed owner's data stays writable through every guest (keksdose's 0.32 report).
+      Read the payer's row with the RLS bypass, as the webhook does (§12.20), or, where a
+      row must exist — any payer, §12.12 — treat a missing one as an error rather than
+      pass ``None`` here.
     * ``active`` — yes; but a subscription set to cancel at its period's end is out once
       that end has passed, even before the provider's final event arrives (it may be late;
       a cancelled period cannot renew).
     * ``trialing`` — the cardless trial (``source`` ``trial``) before ``trial_ends_at``, or
       while it is empty: a pure guest's row waits for their first owned item to start it
       (§12.9). A provider's own trial counts as ``active``.
-    * ``comped`` — before ``comped_until``, or without one; after it, while the provider's
-      paid period runs (``current_period_end``): a payer who subscribed during the grant
-      — whose provider events left the grant in place (§12.11) — is in good standing from
-      the grant's end on, as the provider says.
+    * ``comped`` — before its end, or without one; after it, while the provider's paid
+      period runs (``current_period_end``): a payer who subscribed during the grant —
+      whose provider events left the grant in place (§12.11) — is in good standing from
+      the grant's end on, as the provider says. The end is
+      :func:`effective_comped_until`: ``comped_until``, else for a beta row stored without
+      one the launch plus 12 months, given ``launch`` (the settings'
+      ``billing_launch_at``); without ``launch`` such a row has no end, as in 0.6.0.
     * ``past_due`` — yes: the provider retries, and moves it on when it gives up (Paddle to
       ``canceled`` or ``paused``, Lemon Squeezy after 4 retries over 2 weeks to ``unpaid``).
       With ``retry_grace``, also no later than ``current_period_end`` plus the grace — a
@@ -149,7 +201,8 @@ def in_good_standing(row: SubscriptionRow | None, now: datetime, *, retry_grace:
 
     Billing switched off means everyone is in good standing (§4):
     :meth:`~eifi1_server_kit.billing.BillingSettings.billing_standing` asks the switch
-    first. An unknown ``status`` is a :class:`ValueError`.
+    first, and passes its ``billing_launch_at`` as ``launch``. An unknown ``status`` is a
+    :class:`ValueError`.
     """
     if row is None:
         return True
@@ -160,7 +213,7 @@ def in_good_standing(row: SubscriptionRow | None, now: datetime, *, retry_grace:
     if status in (SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING):
         return not row.cancel_at_period_end or row.current_period_end is None or _paid_until(row, moment)
     if status is SubscriptionStatus.COMPED:
-        return grant_holds(row, moment) or _paid_until(row, moment)
+        return grant_holds(row, moment, launch=launch) or _paid_until(row, moment)
     if status is SubscriptionStatus.PAST_DUE:
         if retry_grace is None or row.current_period_end is None:
             return True
@@ -191,6 +244,9 @@ def beta_comped_until(launch: datetime) -> datetime:
 
     Calendar months, not 365 days: launched on 1 March, free until 1 March. A launch on
     29 February ends on 28 February. Naive in, naive out.
+
+    A beta row written before the launch date is known stores no ``comped_until``; the
+    kit reads it as this date at read time (:func:`effective_comped_until`, §3.2).
     """
     return _add_months(launch, BETA_FREE_MONTHS)
 
