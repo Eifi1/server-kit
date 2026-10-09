@@ -10,6 +10,113 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+server-kit 0.7.0: the backend half of billing round 0.33 (ui-kit 0.33,
+`docs/billing-harmonization.md` §14, decisions 18–25; §14.16 wins). One shared Paddle
+client behind a provider-neutral port, the `app` tag for one account and three apps, the
+codes the routes answer before and around the provider, the notice decision, the
+deletion's cancellation and its undoing, and the test helpers that replace each app's
+fixtures. Breaking for an app that switches billing on with Paddle (below).
+
+### ⚠ BREAKING CHANGES
+
+* **billing:** switching on with `billing_provider = paddle` also needs `billing_app` (the
+  app's tag, set in code: `billing_app: str | None = "keksdose"` in the app's `Settings`)
+  and an API environment that resolves and agrees with the key: `billing_environment`, or
+  — unset — the key's prefix (`pdl_sdbx_apikey_`, `pdl_live_apikey_`). A legacy key without
+  a prefix needs `billing_environment`; a sandbox key with `billing_environment=live` (or
+  the reverse) fails at start. An app's test settings that switch billing on with Paddle
+  add `billing_app` (§14.2, §14.3).
+* **billing:** the `SubscriptionRow` protocol reads `provider_customer_id` (for
+  `at_provider`, §14.5). Every app's row has the column; a hand-made fake without it no
+  longer satisfies the protocol.
+* **billing:** `PlanChangeResponse` gains `usage` (required: `of(previous_plan, plan,
+  usage)` fills it from its third argument, as every app builds it), and `previous_plan`
+  may be `None` — an account that had no subscription (§14.12).
+
+### Added
+
+* **billing:** the provider's port and the Paddle client (§14.2), lifted from kastlan
+  c0b1a24. httpx is the new **`billing` extra** (`billing = ["httpx>=0.28.0"]`), imported
+  lazily, so `import eifi1_server_kit.billing` never needs it.
+  * **provider:** `BillingProviderClient` — `checkout_url(*, price_id, custom_data,
+    customer_id=None, locale=None)`, `portal_url(*, customer_id, subscription_id=None,
+    target="overview")` (`PortalTarget`: `overview`, `cancel`, `payment_method`),
+    `cancel(*, subscription_id, immediately=False)`, `remove_scheduled_cancel(*,
+    subscription_id)`; `NoProviderClient` (every call 503 `billing_not_configured`);
+    `billing_provider_client(settings, *, client=None)`, which never raises for the
+    settings; `sold_plan(catalogue, request, *, sold=None)` (422
+    `billing_plan_not_sold`; kastlan answered 503); `require_new_checkout(row, now)` (409
+    `billing_already_subscribed`, a payer who bought under a grant included);
+    `cancel_for_deletion(row, client)` → `CancelOutcome` and
+    `resume_after_withdrawal(row, client)` → `ResumeOutcome`, which never raise (§12.37,
+    §14.8: at the period's end, a paused subscription at once; undone through Paddle's
+    `PATCH /subscriptions/{id} {"scheduled_change": null}`); `CHECKOUT_RETURN_PARAM`,
+    `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` (§14.4).
+  * **paddle:** `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None,
+    hosted_checkout_url=None, timeout=15.0, client=None)`: the transaction with the app's
+    tag added by the client and the pay page as `checkout.url`, or the hosted checkout's
+    `?transaction_id=…&locale=…`; the portal's `cancel` and `payment_method` links; one
+    injected `httpx.AsyncClient` (else one per call); no retry; one log line per failure,
+    never the body or the key. `PaddleError(BillingError)` with `status`, `paddle_code`,
+    `paddle_detail`, `request_id`: 502 `billing_provider_unavailable`, or 503
+    `billing_not_configured` for a 401/403 (logged at ERROR); a 2xx without the fields
+    read is a 502, not kastlan's `KeyError`. `paddle_environment_of(api_key)`,
+    `PADDLE_API_BASES` (the kit's constant: no base URL setting), `PADDLE_API_VERSION`,
+    `PADDLE_TIMEOUT_SECONDS`.
+* **billing:** four codes, each with the `billing_` prefix (decision 22), in
+  `BILLING_ERROR_STATUS` and `BILLING_ERROR_DETAIL`: `billing_provider_unavailable` 502,
+  `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold`
+  422. ui-kit 0.33's `BillingErrorCode` reads the same words.
+* **billing:** settings (§14.2): `PaddleEnvironment` (`sandbox`, `live`), `billing_app`,
+  `billing_environment`, `billing_checkout_page_url` (the pay page on the app's pay host)
+  and `billing_hosted_checkout_url` (kastlan's, same variable name; wins over the pay
+  page), the URLs `https://` or `http://` on localhost; `billing_api_environment()` (503
+  when unknown or disagreeing with the key) and `verify_billing_webhook(provider, raw_body,
+  headers, *, now=None)`, the signature check with the deployment's secret AND its
+  tolerance — kastlan and Kurvenschmiede called it without `tolerance=`.
+* **billing:** the `app` tag (decision 18, §14.3): `APP_KEY = "app"`,
+  `checkout_custom_data(payer_ref, *, app=None)`, `NormalisedEvent.app`, and
+  `parse_webhook_event(provider, raw_body, *, app=None)`: given the app, another app's
+  event and an untagged one are `None` (200, never recorded or dispatched), logged — the
+  untagged at WARNING — and never matched by the provider's customer id.
+* **billing:** `BillingOverview.at_provider`, from the row's `provider_customer_id`
+  (§14.5), and `PortalRequest {target}` (`extra="forbid"`), the portal's optional body.
+* **billing:** `PlanChangeResponse.kept_beta` and `comped_until`, and `of(…, *,
+  kept_beta=False, comped_until=None)` (§14.12): what ui-kit's `usePlanChangeResult`
+  reads.
+* **billing:** notices (§12.22, §14.7): `billing_notice_due(row, now, *, launch, sent,
+  ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at,
+  days_left)` with `.key`, the row's `billing_notice_sent` marker; `BillingNoticeKind`,
+  `NOTICE_AHEAD` (7 days), `NOTICE_LATE_LIMIT` (3 days), `NOTICE_STATUSES`. A beta row's end
+  is the launch plus 12 months (kastlan's `due_notices` read the stored end only); no grant
+  notice while a paid period runs past it. `billing_notices_owed(candidates, now, *,
+  settings)` → `OwedNotice(payer, kind, ends_at, days_left)` over `NoticeCandidate`s:
+  nothing while billing is off, no deactivated account, none with a deletion request.
+* **billing.testing** (§14.9), in the wheel, not re-exported: `paddle_event(step, *,
+  payer_ref, price_id, app=None, at=None, subscription_id, customer_id, event_id=None,
+  period_end=None)` with `PADDLE_STEPS` and `PADDLE_STEP_PERIODS` — keksdose's and
+  Kurvenschmiede's five steps and the scheduled cancellation, the cancelled step without a
+  period; `sign_paddle`, `signed_paddle_event`; `post_signed` (localhost only);
+  `FakeBillingProvider` (records `checkouts`, `portals`, `cancels`, `resumes`; `fail=True`);
+  `PaddleApiFake` (an `httpx.MockTransport` handler with `fail_with` and `unreachable`) and
+  `PADDLE_API_EXAMPLES`, Paddle's documented answers.
+* The API export lists `eifi1_server_kit.billing` against §10 and §14.
+
+### Deprecated
+
+* **billing:** Lemon Squeezy (decision 25, §14.13): `BillingProvider.LEMONSQUEEZY`,
+  `map_lemonsqueezy_event`, `LEMONSQUEEZY_EVENT_KINDS`, `LEMONSQUEEZY_STATUSES`,
+  `verify_lemonsqueezy_signature`, `LEMONSQUEEZY_SIGNATURE_HEADER`, and the numeric variant
+  ids `billing_price_ids` accepts. Marked in the docstrings; still working, with no
+  runtime warning (the apps run with `error::DeprecationWarning`); removed in 0.8.
+  Kurvenschmiede's `/webhooks/lemonsqueezy` test answers 422 then.
+
+### Docs
+
+* The billing package's docstring: "one request each for checkout, portal, cancel and
+  undoing a cancel, through `billing.paddle`, only with the `billing` extra". The webhook
+  recipe uses `verify_billing_webhook` and `parse_webhook_event(…, app=…)`.
+
 ## [0.6.1] (2026-10-09)
 
 From the apps' 0.32 adoptions (kastlan, keksdose, Kurvenschmiede). Additive: no public
