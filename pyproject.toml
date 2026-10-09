@@ -1,6 +1,6 @@
 [project]
 name = "eifi1-server-kit"
-version = "0.6.1"
+version = "0.7.0"
 description = "The backend sibling of @eifi1/ui-kit: the cross-app contracts (feedback, uploads, limiter, CORS, translation review, sign-in and the account, user administration, settings, the demo, billing, mail) as pure, framework-light code."
 readme = "README.md"
 license = "MIT"
@@ -26,6 +26,11 @@ images = ["pillow>=11.0.0"]
 # their own Resend clients; the texts, the layout and the console transport need nothing.
 # The apps' floor, no ceiling.
 mail = ["httpx>=0.28.0"]
+# `billing.PaddleClient` calls Paddle Billing's API with httpx (checkout, portal, cancel and
+# undoing a cancel); the rest of billing — settings, plans, standing, webhooks, notices,
+# `billing.testing` — needs nothing, and httpx is imported lazily. The apps' floor, no
+# ceiling (billing-harmonization §14.1).
+billing = ["httpx>=0.28.0"]
 
 [project.urls]
 Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"
@@ -36,8 +41,8 @@ dev = [
     # CORSMiddleware, the same way keksdose's own test does. Held to keksdose's range
     # (<0.137) so the kit is tested against what the strictest app can install.
     "fastapi>=0.115.0,<0.143",
-    # The `mail` extra, so ResendClient is tested against httpx's MockTransport — and the
-    # client FastAPI's tests drive an app with.
+    # The `mail` and `billing` extras, so ResendClient and PaddleClient are tested against
+    # httpx's MockTransport — and the client FastAPI's tests drive an app with.
     "httpx>=0.28.0",
     "mypy>=1.18.0",
     # The `images` extra, so `ensure_decodable_image` is tested against real pictures.

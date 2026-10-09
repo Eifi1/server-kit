@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from eifi1_server_kit.billing import (
+    APP_KEY,
     LEMONSQUEEZY_EVENT_KINDS,
     LEMONSQUEEZY_STATUSES,
     PADDLE_EVENT_KINDS,
@@ -108,6 +110,14 @@ def test_the_checkout_carries_the_payer_reference() -> None:
     assert checkout_custom_data("company:7") == {PAYER_REF_KEY: "company:7"} == {"payer_ref": "company:7"}
     with pytest.raises(ValueError, match="non-empty"):
         checkout_custom_data("  ")
+
+
+def test_the_checkout_carries_the_apps_tag() -> None:
+    """§14.3: one Paddle account, three apps; the tag says whose checkout it was."""
+    assert checkout_custom_data("user:42", app="keksdose") == {"payer_ref": "user:42", APP_KEY: "keksdose"}
+    assert APP_KEY == "app"
+    with pytest.raises(ValueError, match="app tag"):
+        checkout_custom_data("user:42", app=" ")
 
 
 # --- Paddle ------------------------------------------------------------------------------
@@ -360,3 +370,52 @@ def test_a_payer_reference_must_be_a_non_empty_string() -> None:
     for custom in ({"payer_ref": ""}, {"payer_ref": 42}, {"other": "user:1"}):
         event = map_paddle_event(_bytes(_paddle(custom_data=custom)))
         assert event is not None and event.payer_ref is None
+
+
+# --- the app's tag (§14.3) ---------------------------------------------------------------
+
+
+def _tagged(app: object) -> bytes:
+    custom: dict[str, object] = {"payer_ref": "user:42"}
+    if app is not None:
+        custom["app"] = app
+    return _bytes(_paddle(custom_data=custom))
+
+
+def test_an_event_reads_the_apps_tag() -> None:
+    event = map_paddle_event(_tagged("keksdose"))
+    assert event is not None and event.app == "keksdose" and event.payer_ref == "user:42"
+    for tag in (None, "", 7):
+        untagged = map_paddle_event(_tagged(tag))
+        assert untagged is not None and untagged.app is None
+
+
+def test_the_apps_own_events_pass(caplog: pytest.LogCaptureFixture) -> None:
+    event = parse_webhook_event("paddle", _tagged("keksdose"), app="keksdose")
+    assert event is not None and event.app == "keksdose"
+    assert caplog.records == []
+
+
+def test_another_apps_event_is_dropped(caplog: pytest.LogCaptureFixture) -> None:
+    """Kurvenschmiede's user 42 is not keksdose's user 42: answered 200, never dispatched."""
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.billing"):
+        assert parse_webhook_event("paddle", _tagged("kurvenschmiede"), app="keksdose") is None
+    (record,) = caplog.records
+    assert record.levelno == logging.INFO and "'kurvenschmiede'" in record.getMessage()
+    assert "evt_01h04vsc6t5zf4vp4cby9jq6bf" in record.getMessage() and "user:42" not in record.getMessage()
+
+
+def test_an_untagged_event_is_dropped_once_the_app_is_given(caplog: pytest.LogCaptureFixture) -> None:
+    """Kurvenschmiede's review: never matched by the provider's customer id, since one
+    person may be one Paddle customer across the apps."""
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.billing"):
+        assert parse_webhook_event("paddle", _tagged(None), app="keksdose") is None
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING and "untagged" in record.getMessage()
+
+
+def test_without_an_app_every_event_passes_as_before() -> None:
+    for tag in ("kurvenschmiede", None):
+        assert parse_webhook_event("paddle", _tagged(tag)) is not None
+    # An event billing doesn't use stays None, tagged or not.
+    assert parse_webhook_event("paddle", _bytes(_paddle("transaction.completed")), app="keksdose") is None

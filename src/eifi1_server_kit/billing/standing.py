@@ -76,7 +76,9 @@ class SubscriptionSource(enum.StrEnum):
 class SubscriptionRow(Protocol):
     """What the kit reads of the app's subscription row (§3.2). An ORM row satisfies it as
     it is; the provider's ids and ``plan_code`` are the app's columns too, read where the
-    kit needs them.
+    kit needs them: ``provider_customer_id`` for the overview's ``at_provider`` (§14.5),
+    ``provider_subscription_id`` for a second checkout, a deletion's cancellation and its
+    undoing (§14.6, §14.8).
 
     Naive datetimes are read as UTC, as everywhere in the kit (kastlan's columns are naive).
     """
@@ -101,6 +103,9 @@ class SubscriptionRow(Protocol):
 
     @property
     def cancel_at_period_end(self) -> bool | None: ...
+
+    @property
+    def provider_customer_id(self) -> str | None: ...
 
     @property
     def provider_subscription_id(self) -> str | None: ...

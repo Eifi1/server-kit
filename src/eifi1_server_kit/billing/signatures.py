@@ -15,8 +15,8 @@ bytes, and the signature is over bytes.
   (``billing_signature_tolerance``).
   https://developer.paddle.com/webhooks/signature-verification (read 2026-10-08 and
   2026-10-09).
-* **Lemon Squeezy** — ``X-Signature``: the hex HMAC-SHA256 of the raw body under the
-  webhook's signing secret. It carries no timestamp, so there is no replay window to check;
+* **Lemon Squeezy** (deprecated in 0.7.0, removed in 0.8, §14.13) — ``X-Signature``: the
+  hex HMAC-SHA256 of the raw body under the webhook's signing secret. It carries no timestamp, so there is no replay window to check;
   the event store's duplicate check and the ordering guard carry that
   (:func:`~eifi1_server_kit.billing.dispatch`).
   https://docs.lemonsqueezy.com/help/webhooks/signing-requests (read 2026-10-08).
@@ -24,6 +24,9 @@ bytes, and the signature is over bytes.
 Every comparison is :func:`hmac.compare_digest` on BYTES: two ``str`` with a non-ASCII
 character raise ``TypeError`` there (keksdose's Pub/Sub lesson), which an unauthenticated
 caller could otherwise turn into a 500 at will.
+
+An app calls :meth:`~eifi1_server_kit.billing.BillingSettings.verify_billing_webhook`, which
+passes the deployment's secret and its tolerance (§14.2).
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ __all__ = [
 
 #: Paddle Billing's signature header.
 PADDLE_SIGNATURE_HEADER = "Paddle-Signature"
-#: Lemon Squeezy's signature header.
+#: Lemon Squeezy's signature header (deprecated in 0.7.0, removed in 0.8).
 LEMONSQUEEZY_SIGNATURE_HEADER = "X-Signature"
 #: Each provider's header, for :func:`verify_webhook_signature`.
 SIGNATURE_HEADERS: Mapping[BillingProvider, str] = {
@@ -106,7 +109,11 @@ def verify_paddle_signature(
 
 def verify_lemonsqueezy_signature(raw_body: bytes, header: str | None, secret: str) -> None:
     """Check a Lemon Squeezy webhook's ``X-Signature`` — the hex HMAC-SHA256 of the raw
-    body — or raise 400 ``invalid_signature``."""
+    body — or raise 400 ``invalid_signature``.
+
+    .. deprecated:: 0.7.0
+       Removed in 0.8 with the rest of Lemon Squeezy (§14.13).
+    """
     if not header:
         raise _refuse("no X-Signature header")
     if not hmac.compare_digest(_hex_hmac(secret, raw_body), header.strip().lower().encode("utf-8")):
@@ -144,7 +151,9 @@ def verify_webhook_signature(
 
     ``now`` and ``tolerance`` are Paddle's (:func:`verify_paddle_signature`); pass the
     settings' ``billing_signature_tolerance``, so a deployment widens it in its
-    environment. Lemon Squeezy's signature has no timestamp. An unknown provider is a
+    environment — or call
+    :meth:`~eifi1_server_kit.billing.BillingSettings.verify_billing_webhook`, which does
+    (§14.2). Lemon Squeezy's signature has no timestamp. An unknown provider is a
     :class:`ValueError`.
     """
     chosen = BillingProvider(provider)

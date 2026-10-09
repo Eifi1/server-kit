@@ -1,5 +1,7 @@
-"""Billing's settings (billing contract §3.1, §4, §10): off by default, on only with the
-secrets, the price ids both ways, and the standing behind the switch."""
+"""Billing's settings (billing contract §3.1, §4, §10, §14.2–§14.4): off by default, on only
+with the secrets (and with Paddle, the app's tag and an environment that agrees with the
+key), the price ids both ways, the standing behind the switch, the checkout's pages, and
+the webhook's check with the deployment's tolerance."""
 
 from __future__ import annotations
 
@@ -17,16 +19,19 @@ from eifi1_server_kit.billing import (
     BillingInterval,
     BillingProvider,
     BillingSettings,
+    PaddleEnvironment,
     PriceRef,
     SubscriptionSource,
     SubscriptionStatus,
 )
+from eifi1_server_kit.billing.testing import sign_paddle
 from tests.billing._rows import NOW, Row
 
 SECRETS: dict[str, Any] = {
     "billing_provider": "paddle",
     "billing_api_key": "pdl_live_apikey_example",
     "billing_webhook_secret": "pdl_ntfset_example",
+    "billing_app": "garden",
 }
 PRICES = {
     "PRO": {"chf": {"year": "pri_pro_chf_y", "Month": ["pri_pro_chf_m", "pri_pro_chf_m_2025"]}},
@@ -206,3 +211,115 @@ def test_price_ids_that_are_no_table_fail_at_start(environment: pytest.MonkeyPat
     environment.setenv("GARDEN_BILLING_PRICE_IDS", text)
     with pytest.raises(ValidationError, match="billing_price_ids"):
         _GardenSettings()
+
+
+# --- Paddle: the app's tag, the environment, the pages (§14.2–§14.4) --------------------------
+
+
+def test_switching_on_with_paddle_needs_the_apps_tag() -> None:
+    """§14.3: every checkout carries the app, so the webhook can drop the others' events."""
+    with pytest.raises(ValidationError, match="needs billing_app"):
+        BillingSettings(billing_enabled=True, **{**SECRETS, "billing_app": None})
+    with pytest.raises(ValidationError, match="needs billing_app"):
+        BillingSettings(billing_enabled=True, **{**SECRETS, "billing_app": "   "})  # blank is unset
+    for tag in ("Garden", "1garden", "gar den", "g" * 65):
+        with pytest.raises(ValidationError, match="billing_app"):
+            BillingSettings(billing_app=tag)
+    assert BillingSettings(billing_app=" kurven-schmiede_2 ").billing_app == "kurven-schmiede_2"
+
+
+def test_the_environment_is_read_from_the_keys_prefix() -> None:
+    """Decision 24: the key says sandbox or live; the API's address is never a setting."""
+    live = BillingSettings(billing_enabled=True, **SECRETS)
+    assert live.billing_environment is None and live.billing_api_environment() is PaddleEnvironment.LIVE
+    sandbox = BillingSettings(billing_enabled=True, **{**SECRETS, "billing_api_key": "pdl_sdbx_apikey_example"})
+    assert sandbox.billing_api_environment() is PaddleEnvironment.SANDBOX
+    named = BillingSettings(billing_enabled=True, billing_environment="live", **SECRETS)
+    assert named.billing_api_environment() is PaddleEnvironment.LIVE
+
+
+def test_a_legacy_key_needs_the_environment_named() -> None:
+    """A key from before 2025-05-06 has no prefix."""
+    legacy = {**SECRETS, "billing_api_key": "a" * 50}
+    with pytest.raises(ValidationError, match="says neither sandbox nor live"):
+        BillingSettings(billing_enabled=True, **legacy)
+    assert (
+        BillingSettings(billing_enabled=True, billing_environment="sandbox", **legacy).billing_api_environment()
+        is PaddleEnvironment.SANDBOX
+    )
+
+
+def test_a_key_of_the_other_environment_fails_at_start() -> None:
+    """A sandbox key works only against the sandbox: refused at start, not at the first checkout."""
+    with pytest.raises(ValidationError, match="is a live key, but billing_environment is sandbox"):
+        BillingSettings(billing_enabled=True, billing_environment="sandbox", **SECRETS)
+
+
+def test_with_billing_off_an_unknown_environment_is_not_configured() -> None:
+    """Switching on checks it; off, asking for it is the deployment's 503."""
+    for settings in (
+        BillingSettings(),
+        BillingSettings(billing_provider="paddle", billing_api_key="legacy"),
+        BillingSettings(billing_api_key="pdl_live_apikey_example", billing_environment="sandbox"),
+    ):
+        with pytest.raises(BillingError) as refused:
+            settings.billing_api_environment()
+        assert (refused.value.status_code, refused.value.code) == (503, BillingErrorCode.BILLING_NOT_CONFIGURED)
+    assert BillingSettings(billing_environment="sandbox").billing_api_environment() is PaddleEnvironment.SANDBOX
+
+
+def test_lemon_squeezy_needs_neither_tag_nor_environment() -> None:
+    """Deprecated (§14.13), and nothing of §14 applies to it."""
+    on = BillingSettings(
+        billing_enabled=True,
+        billing_provider="lemonsqueezy",
+        billing_api_key="ls_example",
+        billing_webhook_secret="ls_signing_example",
+    )
+    assert on.billing_app is None and on.billing_environment is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://pay.garden.example/", "http://localhost:8090/", "http://127.0.0.1/pay", "http://[::1]:5173/"],
+)
+def test_a_checkout_page_is_https_or_local(url: str) -> None:
+    settings = BillingSettings(billing_checkout_page_url=f" {url} ", billing_hosted_checkout_url=url)
+    assert settings.billing_checkout_page_url == url and settings.billing_hosted_checkout_url == url
+
+
+@pytest.mark.parametrize(
+    "url", ["http://pay.garden.example/", "ftp://pay.garden.example/", "https://", "pay.garden.example", "/pay"]
+)
+def test_a_checkout_page_elsewhere_is_refused(url: str) -> None:
+    with pytest.raises(ValidationError, match="https:// address"):
+        BillingSettings(billing_checkout_page_url=url)
+    with pytest.raises(ValidationError, match="https:// address"):
+        BillingSettings(billing_hosted_checkout_url=url)
+
+
+def test_the_webhook_is_checked_with_the_deployments_tolerance() -> None:
+    """kastlan and Kurvenschmiede left ``tolerance=`` out, so Paddle's five seconds applied."""
+    body = b'{"event_id":"evt_1"}'
+    headers = sign_paddle(body, "pdl_ntfset_example", now=1_791_460_800)
+    wide = BillingSettings(billing_signature_tolerance=60, billing_webhook_secret="pdl_ntfset_example")
+    wide.verify_billing_webhook("paddle", body, headers, now=1_791_460_830)
+    narrow = BillingSettings(billing_webhook_secret="pdl_ntfset_example")
+    with pytest.raises(BillingError, match="outside the tolerance") as refused:
+        narrow.verify_billing_webhook(BillingProvider.PADDLE, body, headers, now=1_791_460_830)
+    assert refused.value.status_code == 400
+    with pytest.raises(BillingError, match="No webhook secret"):
+        BillingSettings().verify_billing_webhook("paddle", body, headers)
+
+
+def test_the_new_variables_keep_their_names(environment: pytest.MonkeyPatch) -> None:
+    """§14.2: ``<APP>_BILLING_APP``, ``_ENVIRONMENT``, ``_CHECKOUT_PAGE_URL`` and kastlan's
+    ``_HOSTED_CHECKOUT_URL``."""
+    environment.setenv("GARDEN_BILLING_APP", "garden")
+    environment.setenv("GARDEN_BILLING_ENVIRONMENT", "sandbox")
+    environment.setenv("GARDEN_BILLING_CHECKOUT_PAGE_URL", "https://pay.garden.example/")
+    environment.setenv("GARDEN_BILLING_HOSTED_CHECKOUT_URL", "https://pay.paddle.io/checkout/hsc_01abc")
+    settings = _GardenSettings()
+    assert (settings.billing_app, settings.billing_environment) == ("garden", PaddleEnvironment.SANDBOX)
+    assert settings.billing_checkout_page_url == "https://pay.garden.example/"
+    assert settings.billing_hosted_checkout_url == "https://pay.paddle.io/checkout/hsc_01abc"

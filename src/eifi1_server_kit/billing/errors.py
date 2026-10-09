@@ -1,7 +1,7 @@
 """Billing's coded refusals: the switch, the read-only gate, configuration, the webhook's
-signature, and a plan's limit.
+signature, the provider, a checkout or portal request, and a plan's limit.
 
-``docs/billing-harmonization.md`` §2.9, §3.3, §3.4, §5 and §12.3 in ``Eifi1/ui-kit``. The
+``docs/billing-harmonization.md`` §2.9, §3.3, §3.4, §5, §12.3 and §14.2 in ``Eifi1/ui-kit``. The
 same shape as the demo's and the account's refusals: a ``code`` the page switches on, never
 the English ``detail``, answered ``{"detail": …, "code": …}`` — plus a plan limit's named
 fields — by :func:`~eifi1_server_kit.errors.install_contract_error_handlers`. Both classes
@@ -56,6 +56,22 @@ class BillingErrorCode(enum.StrEnum):
     #: The webhook's signature is missing, malformed, stale or wrong (§5): 400. Only the
     #: provider ever sees it.
     INVALID_SIGNATURE = "invalid_signature"
+    #: The provider failed a checkout, portal or cancellation request (§14.2): it didn't
+    #: answer, answered 429 or 5xx, refused the request (a 4xx other than 401/403), or
+    #: answered 2xx without the fields the kit reads: 502, "try again". A 401/403 — a wrong
+    #: key, or one without the permission — is ``billing_not_configured`` instead: the
+    #: deployment's fault, which trying again won't fix.
+    BILLING_PROVIDER_UNAVAILABLE = "billing_provider_unavailable"
+    #: A portal request for a payer the provider has no customer for (§14.5): 409. Nothing
+    #: to manage yet; the page reads the overview's ``at_provider`` and never asks, so
+    #: this answers a stale page.
+    BILLING_NOT_AT_PROVIDER = "billing_not_at_provider"
+    #: A checkout while a provider subscription runs (§14.6): 409. A second checkout would
+    #: be a second subscription, charged twice; plan changes go through the provider's
+    #: customer portal.
+    BILLING_ALREADY_SUBSCRIBED = "billing_already_subscribed"
+    #: A checkout for a plan, currency or interval the catalogue doesn't sell (§14.2): 422.
+    BILLING_PLAN_NOT_SOLD = "billing_plan_not_sold"
 
 
 #: Each code's status.
@@ -64,6 +80,10 @@ BILLING_ERROR_STATUS: Mapping[BillingErrorCode, int] = {
     BillingErrorCode.BILLING_READ_ONLY: 402,
     BillingErrorCode.BILLING_NOT_CONFIGURED: 503,
     BillingErrorCode.INVALID_SIGNATURE: 400,
+    BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE: 502,
+    BillingErrorCode.BILLING_NOT_AT_PROVIDER: 409,
+    BillingErrorCode.BILLING_ALREADY_SUBSCRIBED: 409,
+    BillingErrorCode.BILLING_PLAN_NOT_SOLD: 422,
 }
 
 #: The English ``detail`` of each code, for logs and API clients; the kit's pages show their
@@ -74,6 +94,10 @@ BILLING_ERROR_DETAIL: Mapping[BillingErrorCode, str] = {
     BillingErrorCode.BILLING_READ_ONLY: "Read-only for now: changes need an active plan",
     BillingErrorCode.BILLING_NOT_CONFIGURED: "Billing is not configured for this",
     BillingErrorCode.INVALID_SIGNATURE: "Invalid webhook signature",
+    BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE: "The payment provider is not available. Try again.",
+    BillingErrorCode.BILLING_NOT_AT_PROVIDER: "Nothing at the payment provider yet",
+    BillingErrorCode.BILLING_ALREADY_SUBSCRIBED: "A subscription is running: change it in the customer portal",
+    BillingErrorCode.BILLING_PLAN_NOT_SOLD: "This plan is not sold that way",
 }
 
 

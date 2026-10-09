@@ -41,12 +41,17 @@ UNLIMITED = PlanSpec(code="unlimited", limits={"budgets": None}, sort=2)
 
 def test_the_billing_codes_and_statuses_are_the_contracts() -> None:
     """§2.9 a switched-off billing is "not there"; §3.3 read-only is 402; a deployment
-    without the setting a request needs is 503; a bad webhook signature 400 (§5)."""
+    without the setting a request needs is 503; a bad webhook signature 400 (§5); and
+    §14.2's four, each with the ``billing_`` prefix (decision 22)."""
     assert {str(code): BILLING_ERROR_STATUS[code] for code in BillingErrorCode} == {
         "billing_disabled": 404,
         "billing_read_only": 402,
         "billing_not_configured": 503,
         "invalid_signature": 400,
+        "billing_provider_unavailable": 502,
+        "billing_not_at_provider": 409,
+        "billing_already_subscribed": 409,
+        "billing_plan_not_sold": 422,
     }
     assert set(BILLING_ERROR_DETAIL) == set(BillingErrorCode)
     # The read-only detail names no status and no owner: a guest reads it too (§12.6).

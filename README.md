@@ -13,16 +13,17 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 §7, [`docs/settings-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/settings-harmonization.md)
 §6, [`docs/landing-demo-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/landing-demo-harmonization.md)
 §6, [`docs/billing-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/billing-harmonization.md)
-§10 and [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
+§10 with §14 and [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
 §6 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
 from the `server-kit-api.json` each release carries ([Developing](#developing)).
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
-  Two optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
-  and `mail` (`httpx>=0.28`) for `mail.ResendClient` only. No JWT library: the kit builds
-  and checks claims, each app signs with its own.
+  Three optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
+  `mail` (`httpx>=0.28`) for `mail.ResendClient` only, and `billing` (`httpx>=0.28`) for
+  `billing.PaddleClient` only. No JWT library: the kit builds and checks claims, each app
+  signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
 ## Layering
@@ -131,7 +132,7 @@ each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translati
 "invalid_credentials"}` at 401, …), user administration's `AccountError` (409) and
 `RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`),
 `demo.DemoError` (403 / 404 / 429 / 503), and billing's `BillingError` (400 / 402 / 404 /
-503) and `PlanLimitError` (402). An `AccountError`'s or a `PlanLimitError`'s `extra`
+409 / 422 / 502 / 503) and `PlanLimitError` (402). An `AccountError`'s or a `PlanLimitError`'s `extra`
 fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin",
 "companies": [...]}` or `{"detail": …, "code": "plan_limit", "dimension": "budgets", "plan":
 "free", "limit": 1, "used": 1}`; a refusal's `headers` go on the answer (`DemoError`'s
@@ -445,22 +446,31 @@ address is skipped silently (`is_demo_address`). Every app passes `is_demo` to
 
 ### `eifi1_server_kit.billing`
 
-Billing, plans and payment (billing contract §10; its §12 wins over the sections above
-it). All three apps charge through a Merchant of Record — Paddle or Lemon Squeezy, not
-chosen yet, so both sit behind one interface — in CHF and EUR, with hosted checkout and a
-hosted portal only. A lapsed payer is read-only, never locked. Layer 1: the subscription
-row and `billing_events`, the routes, the provider's API client, the gate's allow-list and
-the daily notice job stay in the app; the kit sends no request.
+Billing, plans and payment (billing contract §10 and §14; its §12 wins over the sections
+above it, and §14.16 over the rest of §14). All three apps charge through a Merchant of
+Record — Paddle (decision 16), one account for the three apps — in CHF and EUR, with
+Paddle's checkout and a hosted portal only. A lapsed payer is read-only, never locked.
+Layer 1: the subscription row and `billing_events`, the routes, the gate's allow-list, the
+notice job's query, mail and trigger, and the provider seam stay in the app. The kit sends
+one request each for checkout, portal, cancel and undoing a cancel, through
+`billing.PaddleClient`, only with the **`billing` extra** (httpx, imported lazily: `import
+eifi1_server_kit.billing` never needs it). **Lemon Squeezy is deprecated** in 0.7 and goes
+in 0.8: `BillingProvider.LEMONSQUEEZY`, its mapper, statuses and signature check, and the
+numeric variant ids in `billing_price_ids`.
 
 | Area | Names |
 |---|---|
-| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy`), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`; `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch) |
+| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy` deprecated), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`, `billing_app` (the app's tag, set in code; with Paddle, required to switch on), `billing_environment` (`PaddleEnvironment`: `sandbox`, `live`; unset: the key's prefix), `billing_checkout_page_url` (the pay page), `billing_hosted_checkout_url` (wins over it); `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch), `.billing_api_environment()` (503 if unknown), `.verify_billing_webhook(provider, raw_body, headers, *, now=None)` (the secret AND the tolerance) |
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
-| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent`, `parse_webhook_event(provider, raw_body)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref)`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
-| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage)`), `SyncRefusal` |
-| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
+| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None)`, `PAYER_REF_KEY`, `APP_KEY`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
+| The provider | the `BillingProviderClient` port (`checkout_url`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
+| Paddle (the `billing` extra) | `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None, hosted_checkout_url=None, timeout=15, client=None)`, `PaddleError` (`.status`, `.paddle_code`, `.paddle_detail`, `.request_id`; 502, or 503 for a 401/403), `paddle_environment_of(api_key)`, `PADDLE_API_BASES`, `PADDLE_API_VERSION`, `PADDLE_TIMEOUT_SECONDS` |
+| Notices | `billing_notice_due(row, now, *, launch, sent, ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at, days_left)` (`.key`, the marker), `BillingNoticeKind` (`trial_ending`, `trial_ended`, `grant_ending`, `grant_ended`), `NOTICE_STATUSES`; over the app's candidates, `billing_notices_owed(candidates, now, *, settings)` → `OwedNotice(payer, kind, ends_at, days_left)` from `NoticeCandidate(payer, row, sent, deactivated, deletion_requested)` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`, with `at_provider`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`), `SyncRefusal` |
+| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
+| Test helpers | `eifi1_server_kit.billing.testing`, in the wheel, not re-exported: `paddle_event(step, *, payer_ref, price_id, app=None, …)`, `PADDLE_STEPS`, `PADDLE_STEP_PERIODS`, `sign_paddle`, `signed_paddle_event`, `post_signed` (localhost only), `FakeBillingProvider`, `PaddleApiFake`, `PADDLE_API_EXAMPLES` |
 
 **The switch is off by default**, and switching on without the provider, the API key or the
 webhook secret fails at start. While off, `GET /billing/status` answers `{billing_enabled:
@@ -473,8 +483,19 @@ from eifi1_server_kit.billing import BillingSettings
 
 class Settings(BaseSettings, DemoSettings, BillingSettings):
     model_config = SettingsConfigDict(env_prefix="KEKSDOSE_")
+    billing_app: str | None = "keksdose"  # the app's tag: in code, not per deployment
     # KEKSDOSE_BILLING_PRICE_IDS='{"pro": {"CHF": {"year": "pri_01…"}, "EUR": {"year": "pri_01…"}}}'
+    # KEKSDOSE_BILLING_CHECKOUT_PAGE_URL=https://pay.keksdose.app/
 ```
+
+**Switching on with Paddle also needs the app's tag and an environment** that resolves
+and agrees with the API key: `billing_environment` (`sandbox`, `live`), or — unset — the
+key's prefix (`pdl_sdbx_apikey_`, `pdl_live_apikey_`; a key from before 2025-05-06 has
+none and needs the setting). A sandbox key against the live API fails at start, not at
+the first checkout, and the API's address is the kit's constant, never a setting.
+`.env.example` lists `<APP>_BILLING_APP` (as "set in code"), `<APP>_BILLING_ENVIRONMENT`,
+`<APP>_BILLING_CHECKOUT_PAGE_URL` and `<APP>_BILLING_HOSTED_CHECKOUT_URL` (kastlan's name).
+The two URLs are `https://`, or `http://` on localhost.
 
 **An empty billing variable is an unset one**: `KEKSDOSE_BILLING_LAUNCH_AT=` is no launch
 date and `KEKSDOSE_BILLING_PRICE_IDS=` no price ids, so an `.env` template can list every
@@ -552,11 +573,9 @@ end — and switching billing on does not require one.
 async def paddle_webhook(request: Request, session=Depends(system_session)) -> Response:
     settings.require_billing_enabled()  # 404
     raw = await request.body()
-    verify_webhook_signature(
-        "paddle", raw, request.headers, settings.billing_webhook_key(), tolerance=settings.billing_signature_tolerance
-    )  # 400
+    settings.verify_billing_webhook("paddle", raw, request.headers)  # 400; the secret AND the tolerance
     try:
-        event = parse_webhook_event("paddle", raw)  # None: not used
+        event = parse_webhook_event("paddle", raw, app=settings.billing_app)  # None: not used, or not ours
         result = (
             None
             if event is None
@@ -597,6 +616,100 @@ to write. Unknown and duplicate events answer 200, poison 200 and a log line, a 
 settings don't know 503, anything else 500, so the provider retries. The event table sits
 outside tenant RLS: a webhook writes rows for any payer.
 
+**One Paddle account, three apps** (decision 18): Paddle's notification destinations can't
+filter by product or custom data, so every app's webhook receives every app's events.
+Every checkout carries `{"payer_ref": …, "app": <billing_app>}` (the kit's client adds the
+tag itself), and `parse_webhook_event(…, app=settings.billing_app)` answers `None` — 200,
+never recorded or dispatched — for another app's event and, once `app` is given, for an
+untagged one (logged at WARNING): it is never matched by the provider's customer id, since
+one person may be one Paddle customer across the apps and `user:42` repeats between
+keksdose and Kurvenschmiede.
+
+**The provider** is one client behind one port, built from the settings, behind a
+**module-level seam** — a deletion's cancellation runs in the service layer, where a
+FastAPI override can't reach — which the tests replace with `FakeBillingProvider`:
+
+```python
+def billing_client() -> BillingProviderClient:  # the app's seam
+    return billing_provider_client(get_settings(), client=shared_http_client)
+
+
+@router.post("/billing/checkout", response_model=CheckoutAnswer)
+async def checkout(body: CheckoutRequest, payer: Payer = Depends(current_payer)) -> CheckoutAnswer:
+    settings.require_billing_enabled()  # 404
+    sold_plan(PLANS, body, sold=SOLD)  # 422 billing_plan_not_sold
+    row = await row_of(payer)
+    require_new_checkout(row, now())  # 409 billing_already_subscribed: change plans in the portal
+    url = await billing_client().checkout_url(
+        price_id=settings.billing_price_id(body.plan, body.currency, body.interval),  # 503
+        custom_data=checkout_custom_data(payer_ref(payer), app=settings.billing_app),
+        customer_id=row.provider_customer_id,
+    )  # 502 billing_provider_unavailable
+    return CheckoutAnswer(url=url)
+
+
+@router.post("/billing/portal", response_model=CheckoutAnswer)
+async def portal(body: PortalRequest | None = None, payer: Payer = Depends(current_payer)) -> CheckoutAnswer:
+    settings.require_billing_enabled()
+    row = await row_of(payer)
+    return CheckoutAnswer(
+        url=await billing_client().portal_url(
+            customer_id=row.provider_customer_id,  # None: 409 billing_not_at_provider
+            subscription_id=row.provider_subscription_id,
+            target=(body or PortalRequest()).target,  # overview, cancel, payment_method
+        )
+    )
+```
+
+The checkout opens on the kit's pay page on the app's pay host
+(`billing_checkout_page_url`, `https://pay.<app domain>/`, sent as the transaction's
+`checkout.url`), or on a Paddle hosted checkout (`billing_hosted_checkout_url`: every
+sandbox, live only with Paddle's approval). No success URL is ever on the request; the way
+back is `?checkout=done` on the subscription page (`checkout_return_url(app_base_url,
+path)`), the pay page's `successUrl` or the hosted checkout's redirect. The overview's
+`at_provider` says whether a provider customer exists: without one the page shows a
+caption in place of "Payment and invoices" and "Cancel", and never asks for the portal.
+Paddle failing is 502 `billing_provider_unavailable` ("try again"); a 401/403 — a wrong
+key, or one without transaction, customer-portal-session and subscription write — 503
+`billing_not_configured`. Each failure is logged once with the method, path, status,
+Paddle's code and request id, never the body or the key; nothing is retried, since a
+transaction is not idempotent.
+
+**A second checkout while subscribed** is refused, 409 `billing_already_subscribed` —
+including a payer who bought while a grant held, whose row keeps `comped` but carries the
+provider's link and a period still running; one set to cancel at its period's end doesn't
+block. **At a deletion request** `cancel_for_deletion(row, billing_client())` cancels at
+the period's end (a paused subscription — `expired` — at once) and never raises: `None`
+(nothing to cancel), `"cancelled"`, or `"failed"` with an ERROR "cancel it by hand"; put
+the outcome in the request's audit detail. **At a reactivation**, only where that detail
+says `"cancelled"`, `resume_after_withdrawal(row, billing_client())` removes the scheduled
+cancellation (Paddle's `PATCH /subscriptions/{id} {"scheduled_change": null}`); a
+subscription cancelled at once or past its period isn't resumed — the payer subscribes
+again.
+
+**Trial and grant end notices** (§12.22) are each app's daily job; the kit decides only
+which payer is owed which notice. `billing_notice_due(row, now, launch=…, sent=…)`
+answers `BillingNotice(kind, ends_at, days_left)` — `…_ending` from 7 days before the end,
+`…_ended` from the end until 3 days after (a missed `…_ending` is skipped) — for the
+cardless trial and for a grant (a beta row's end is the launch plus 12 months; no notice
+while a paid period runs past the grant), or `None`, also when `sent` is the notice's
+`key`. The job: nothing while billing is off; rows with `status IN NOTICE_STATUSES`, read
+with the RLS bypass; no deactivated account and none with a deletion request; the app's
+own mail per kind and locale; then `row.billing_notice_sent = notice.key`
+(`VARCHAR(64) NULL`) once `send` returned True, committed per row.
+`billing_notices_owed(candidates, now, settings=settings)` is the same decision over
+`NoticeCandidate`s, the switch and the skipped accounts included. The trigger — a token
+in `X-Jobs-Token`, never the query string — is the app's; the kit has no helper for it.
+
+**`eifi1_server_kit.billing.testing`** ships in the wheel for the apps' tests and local
+CLIs (stdlib only; the API fake imports httpx when used) and replaces each app's fixture
+builder and signer: `signed_paddle_event("checkout", secret=…, payer_ref=…, price_id=…,
+app=…)` gives the raw body and its `Paddle-Signature`, for every step of a subscription's
+life including the scheduled cancellation; `post_signed(url, raw, headers)` posts it to
+localhost only; `FakeBillingProvider` records the port's calls (and fails on demand), and
+`PaddleApiFake` is Paddle's API as an `httpx.MockTransport` answering Paddle's documented
+examples.
+
 ### `eifi1_server_kit.mail`
 
 The **`mail` extra** (`httpx`) for `ResendClient` only; the rest needs nothing.
@@ -632,10 +745,10 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.6.1/eifi1_server_kit-0.6.1-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.7.0/eifi1_server_kit-0.7.0-py3-none-any.whl"
 ```
 
-With the image guard or the Resend client, name the extra: `"eifi1-server-kit[images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"`.
+With the image guard, the Resend client or the Paddle client, name the extra: `"eifi1-server-kit[billing,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,images,mail]`, keksdose `[billing,images]`, Kurvenschmiede `[billing,mail]`).
 
 The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
 binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each

@@ -8,7 +8,7 @@ user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
 :class:`~eifi1_server_kit.user_admin.RosterQueryError` 422, the settings rule's
 :class:`~eifi1_server_kit.settings.PatchNullError` 422, the demo's
 :class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503, and billing's
-:class:`~eifi1_server_kit.billing.BillingError` 400 / 402 / 404 / 503 and
+:class:`~eifi1_server_kit.billing.BillingError` 400 / 402 / 404 / 409 / 422 / 502 / 503 and
 :class:`~eifi1_server_kit.billing.PlanLimitError` 402).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module

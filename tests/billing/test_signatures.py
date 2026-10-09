@@ -23,6 +23,7 @@ from eifi1_server_kit.billing import (
     verify_paddle_signature,
     verify_webhook_signature,
 )
+from eifi1_server_kit.billing.testing import sign_paddle
 
 SECRET = "pdl_ntfset_01gkpjp8bkm3tm53kdgkx6sms7_example"
 BODY = b'{"event_id":"evt_01","event_type":"subscription.updated","data":{"id":"sub_01"}}'
@@ -52,6 +53,14 @@ def test_a_paddle_signature_passes() -> None:
     verify_paddle_signature(BODY, f" ts={TS} ; h1={_h1().upper()} ", SECRET, now=TS + 5)
     # During a secret rotation there is more than one h1; any match passes.
     verify_paddle_signature(BODY, f"ts={TS};h1={'0' * 64};h1={_h1()};h2=future", SECRET, now=TS - 5)
+
+
+def test_the_kits_signer_is_the_docs_recipe() -> None:
+    """``billing.testing.sign_paddle`` (§14.9), against the recipe written out above."""
+    assert sign_paddle(BODY, SECRET, now=TS) == {
+        "Paddle-Signature": f"ts={TS};h1={_h1()}",
+        "Content-Type": "application/json",
+    }
 
 
 @pytest.mark.parametrize(
