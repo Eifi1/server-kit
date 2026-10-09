@@ -10,6 +10,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.7.0] (2026-10-10)
+
 server-kit 0.7.0: the backend half of billing round 0.33 (ui-kit 0.33,
 `docs/billing-harmonization.md` §14, decisions 18–25; §14.16 wins). One shared Paddle
 client behind a provider-neutral port, the `app` tag for one account and three apps, the
