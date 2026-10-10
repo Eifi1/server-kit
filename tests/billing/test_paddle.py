@@ -24,6 +24,7 @@ from eifi1_server_kit.billing import (
     PaddleEnvironment,
     PaddleError,
     paddle_environment_of,
+    paddle_locale,
 )
 from eifi1_server_kit.billing.testing import PADDLE_API_EXAMPLES, PaddleApiFake
 
@@ -147,6 +148,42 @@ async def test_with_a_hosted_checkout_the_transaction_opens_on_paddles_page() ->
     assert await plain.checkout_url(price_id="pri_1", custom_data={}) == (
         f"https://pay.paddle.io/checkout/hsc_01abc?theme=dark&transaction_id={TXN}"
     )
+
+
+@pytest.mark.parametrize(
+    ("locale", "paddle"),
+    [
+        ("de-CH", "de"),
+        ("de", "de"),
+        ("de-AT", "de"),
+        ("DE_ch", "de"),
+        ("en", "en"),
+        ("en-GB", "en"),
+        ("fr", "fr"),
+        ("fr-CA", "fr"),
+        ("it", "it"),
+        ("es", "es"),
+        ("zh", "zh-Hans"),
+        ("zh-TW", "zh-Hans"),
+        ("zh-Hans", "zh-Hans"),
+        ("hu", "en"),  # Paddle has no Hungarian
+        ("pt-BR", "en"),  # a language the kit doesn't ship
+        (" ", "en"),
+    ],
+)
+def test_the_buyers_language_is_paddles_checkout_locale(locale: str, paddle: str) -> None:
+    """ui-kit's ``paddleLocale`` (``src/billing/pay-page.ts``), the same map server-side."""
+    assert paddle_locale(locale) == paddle
+
+
+async def test_a_hosted_checkout_gets_paddles_locale_not_the_apps() -> None:
+    """keksdose's 0.33 report: the client sent the app's ``de-CH`` as it was."""
+    client, _ = _client(hosted_checkout_url="https://pay.paddle.io/checkout/hsc_01abc")
+    for locale, paddle in (("de-CH", "de"), ("zh", "zh-Hans"), ("hu", "en")):
+        url = await client.checkout_url(price_id="pri_1", custom_data={}, locale=locale)
+        assert url == f"https://pay.paddle.io/checkout/hsc_01abc?transaction_id={TXN}&locale={paddle}"
+    blank = await client.checkout_url(price_id="pri_1", custom_data={}, locale="  ")
+    assert blank == f"https://pay.paddle.io/checkout/hsc_01abc?transaction_id={TXN}"
 
 
 @pytest.mark.parametrize(

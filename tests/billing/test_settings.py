@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from eifi1_server_kit.billing import (
@@ -226,6 +226,65 @@ def test_switching_on_with_paddle_needs_the_apps_tag() -> None:
         with pytest.raises(ValidationError, match="billing_app"):
             BillingSettings(billing_app=tag)
     assert BillingSettings(billing_app=" kurven-schmiede_2 ").billing_app == "kurven-schmiede_2"
+
+
+def test_an_apps_own_tag_field_keeps_the_rule(environment: pytest.MonkeyPatch) -> None:
+    """keksdose's 0.33 report: the README's ``billing_app: str | None = "keksdose"``
+    redeclares the field, and the subclass's plain ``str`` dropped the mixin's pattern, so
+    ``"Not Valid!"`` passed. The mixin's model validator checks it whatever the field's
+    type — a default included, which a field's own rule never is."""
+
+    class Settings(BillingSettings):
+        billing_app: str | None = "Not Valid!"
+
+    with pytest.raises(ValidationError, match="billing_app is the app's tag"):
+        Settings()
+    for tag in ("Garden", "1garden", "gar den", " garden ", "g" * 65):
+        with pytest.raises(ValidationError, match="billing_app is the app's tag"):
+            Settings(billing_app=tag)
+
+    class Keksdose(BillingSettings):
+        billing_app: str | None = "keksdose"
+
+    assert Keksdose().billing_app == "keksdose"
+    assert Keksdose(billing_app=None).billing_app is None
+    assert Keksdose(billing_app="").billing_app == "keksdose"  # blank is unset: the default
+
+    class GardenApp(_GardenSettings):
+        billing_app: str | None = "garden"
+
+    environment.setenv("GARDEN_BILLING_APP", "Not Valid!")
+    with pytest.raises(ValidationError, match="billing_app is the app's tag"):
+        GardenApp()
+
+
+def _constructed(**fields: Any) -> BillingSettings:
+    """Built without validation, as a test's ``model_construct``: the fields as given."""
+    return BillingSettings.model_construct(**fields)
+
+
+def test_the_provider_and_the_environment_are_read_by_value() -> None:
+    """kastlan's 0.33 report: compared by identity, an app's field typed ``str`` holding
+    ``"paddle"`` skipped Paddle's checks at start, and a plain ``"sandbox"`` disagreed with
+    the sandbox key it names."""
+
+    class Settings(BillingSettings):
+        billing_provider: str | None = "paddle"  # type: ignore[assignment]
+
+    with pytest.raises(ValidationError, match="needs billing_app"):
+        Settings(billing_enabled=True, **{**SECRETS, "billing_provider": "paddle", "billing_app": None})
+    assert Settings(billing_enabled=True, **SECRETS).billing_provider == "paddle"
+
+    key = SecretStr("pdl_sdbx_apikey_example")
+    constructed = _constructed(billing_environment="sandbox", billing_api_key=key)
+    assert constructed.billing_api_environment() is PaddleEnvironment.SANDBOX
+    other = _constructed(billing_environment="live", billing_api_key=key)
+    with pytest.raises(BillingError, match="is a sandbox key, but billing_environment is live"):
+        other.billing_api_environment()
+    unknown = _constructed(billing_environment="production")
+    with pytest.raises(BillingError, match="sandbox or live, not 'production'") as refused:
+        unknown.billing_api_environment()
+    assert refused.value.code is BillingErrorCode.BILLING_NOT_CONFIGURED
 
 
 def test_the_environment_is_read_from_the_keys_prefix() -> None:

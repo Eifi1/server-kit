@@ -113,6 +113,20 @@ def test_render_message_escapes_everything_but_the_text_half() -> None:
     assert text == f'Hi <a href="https://evil.example">Reset here</a>,\n\nBody & more\n\nChoose <b>: {LINK}\n\nBye'
 
 
+@pytest.mark.parametrize("lang", ["fr", "fr-CH", "FR_ca"])
+def test_render_message_sets_the_french_space_before_the_colon(lang: str) -> None:
+    """keksdose's 0.33 report: French takes a no-break space (U+00A0) before the colon, as
+    ui-kit's French catalogue writes it; the HTML half has no colon to set."""
+    html, text = render_message(subject="s", lang=lang, intro="i", body="b", cta="Choisir", link=LINK, outro="o")
+    assert f"\n\nChoisir\u00a0: {LINK}\n\n" in text
+    assert "\u00a0" not in html
+    for other in ("en", "de-CH", "it", "es", "hu", "zh-Hans"):
+        _, plain = render_message(subject="s", lang=other, intro="i", body="b", cta="Choose", link=LINK, outro="o")
+        assert f"\n\nChoose: {LINK}\n\n" in plain and "\u00a0" not in plain
+    french = render_mail("fr-CH", RESET, link=LINK, name="Ada", hours=1)
+    assert f"Choisir\u00a0: {LINK}" in french.text
+
+
 @pytest.mark.parametrize("link", ["javascript:alert(1)", "/relative", "", 'ftp://x"'])
 def test_render_message_refuses_a_link_that_is_not_http(link: str) -> None:
     with pytest.raises(ValueError, match="http"):

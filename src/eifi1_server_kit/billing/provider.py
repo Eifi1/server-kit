@@ -111,8 +111,9 @@ class BillingProviderClient(Protocol):
     ) -> str:
         """The provider's checkout for one price (quantity 1), carrying ``custom_data``
         (:func:`~eifi1_server_kit.billing.checkout_custom_data`; the client adds its app
-        tag) and the payer's customer when known. ``locale`` reaches only a hosted
-        checkout."""
+        tag) and the payer's customer when known. ``locale`` — the buyer's, as the app
+        stores it (``de-CH``) — reaches only a hosted checkout, as Paddle names it
+        (:func:`~eifi1_server_kit.billing.paddle_locale`)."""
         ...
 
     async def portal_url(
@@ -196,7 +197,8 @@ def billing_provider_client(
     deletion's cancellation is owed even after billing was switched off.
     """
     key = settings.billing_api_key
-    if settings.billing_provider is not BillingProvider.PADDLE or key is None or not key.get_secret_value().strip():
+    # By value: an app's subclass may type the field ``str``, and a test may set the plain text.
+    if settings.billing_provider != BillingProvider.PADDLE or key is None or not key.get_secret_value().strip():
         return NoProviderClient()
     try:
         environment = settings.billing_api_environment()
@@ -310,7 +312,20 @@ async def cancel_for_deletion(row: SubscriptionRow, client: BillingProviderClien
     return "cancelled"
 
 
-async def resume_after_withdrawal(row: SubscriptionRow, client: BillingProviderClient) -> ResumeOutcome | None:
+#: Paddle's refusals of ``scheduled_change: null`` that leave nothing to resume
+#: (developer.paddle.com/errors/subscriptions, read 2026-10-10): the subscription has
+#: ended (``subscription_update_when_canceled``: a cancelled subscription "can't be
+#: reinstated"), or a scheduled change Paddle won't take
+#: (``subscription_scheduled_change_invalid_update``, which for a ``null`` can only mean
+#: there is none). Paddle's docs don't say what the ``null`` does when nothing is
+#: scheduled; the kit reads it as an update setting the field to the value it has — a 200,
+#: as its ``PaddleApiFake`` answers — and a refusal of it as nothing to resume too.
+_NOTHING_TO_RESUME = frozenset({"subscription_update_when_canceled", "subscription_scheduled_change_invalid_update"})
+
+
+async def resume_after_withdrawal(
+    row: SubscriptionRow, client: BillingProviderClient, now: datetime | None = None
+) -> ResumeOutcome | None:
     """Undo the cancellation a deletion request scheduled, when the account comes back
     (§12.37, §14.8): an operator's reactivation that cancels a pending deletion, or a
     person's own withdrawal where the app has one. The provider's
@@ -321,27 +336,40 @@ async def resume_after_withdrawal(row: SubscriptionRow, client: BillingProviderC
     **Only the cancellation the deletion made:** call it only when the request's audit
     detail recorded ``"cancelled"`` for this row (:func:`cancel_for_deletion`). A payer who
     had cancelled in the portal before asking to leave (the request answered ``None``)
-    isn't subscribed again.
+    isn't subscribed again. That audit is the check, not the row's
+    ``cancel_at_period_end``: :func:`cancel_for_deletion` doesn't set it — only Paddle's
+    ``subscription.updated`` does, which may not have arrived yet, and never arrives with
+    billing switched off (the webhook answers 404) — so the row may still read "not
+    cancelled" while Paddle has the cancellation scheduled. Removing nothing is harmless:
+    the provider is asked whenever the subscription hasn't ended.
 
-    * ``None``: nothing to undo — no ``provider_subscription_id``, ``cancel_at_period_end``
-      not set, the subscription ``canceled`` or ``expired``, or its period over. A
-      subscription cancelled at once (it was paused) or past its period can't be
-      reinstated (Paddle: a cancelled subscription "can't be reinstated"); the payer
-      subscribes again through a new checkout.
+    * ``None``: nothing to undo — no ``provider_subscription_id``, the subscription
+      ``canceled`` or ``expired``, its period over at ``now`` (default: the current time),
+      or Paddle answering that it has ended. A subscription cancelled at once (it was
+      paused) or past its period can't be reinstated (Paddle: a cancelled subscription
+      "can't be reinstated"); the payer subscribes again through a new checkout.
     * ``"resumed"``, or ``"failed"``: it **never raises**. A failure is logged at ERROR —
       "remove the scheduled cancellation by hand" — and goes into the reactivation's audit
       detail (``provider_resume``).
     """
     subscription_id = row.provider_subscription_id
-    if subscription_id is None or not row.cancel_at_period_end:
+    if subscription_id is None:
         return None
     if SubscriptionStatus(row.status) in (SubscriptionStatus.CANCELED, SubscriptionStatus.EXPIRED):
         return None
-    if row.current_period_end is not None and datetime.now(UTC) >= _aware(row.current_period_end):
+    moment = datetime.now(UTC) if now is None else _aware(now)
+    if row.current_period_end is not None and moment >= _aware(row.current_period_end):
         return None
     try:
         await client.remove_scheduled_cancel(subscription_id=subscription_id)
-    except Exception:
+    except Exception as exc:
+        from eifi1_server_kit.billing.paddle import PaddleError
+
+        if isinstance(exc, PaddleError) and exc.paddle_code in _NOTHING_TO_RESUME:
+            logger.info(
+                "billing: nothing to resume for the subscription %s (Paddle: %s)", subscription_id, exc.paddle_code
+            )
+            return None
         logger.exception(
             "billing: could not resume the subscription %s after a withdrawn deletion — "
             "remove the scheduled cancellation by hand",

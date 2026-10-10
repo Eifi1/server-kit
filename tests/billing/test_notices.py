@@ -3,6 +3,7 @@ notice, when, and once."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -138,21 +139,51 @@ def test_no_grant_notice_while_the_payer_already_pays_past_it() -> None:
 
 def test_the_payers_owed_a_notice() -> None:
     """§14.7: (payer, kind, ends_at, days_left) for the app's mail; the marker to store."""
+    ada, eva = _trial(), _grant(source="beta", comped_until=None)  # eva: the launch's end
     candidates = [
-        NoticeCandidate("ada", _trial()),
+        NoticeCandidate("ada", ada),
         NoticeCandidate("bea", _trial(), sent="trial_ending:2026-11-07T09:00Z"),  # told already
         NoticeCandidate("cem", _trial(), deactivated=True),  # a deactivated account is sent nothing
         NoticeCandidate("dan", _trial(), deletion_requested=True),  # leaving: nothing either
-        NoticeCandidate("eva", _grant(source="beta", comped_until=None)),  # the launch's end
+        NoticeCandidate("eva", eva),
         NoticeCandidate("fay", Row(status="active", source="provider")),
     ]
     owed = billing_notices_owed(candidates, END - 2 * DAY, settings=BillingSettings(billing_launch_at=LAUNCH, **ON))
     assert owed == [
-        OwedNotice("ada", BillingNoticeKind.TRIAL_ENDING, END, 2),
-        OwedNotice("eva", BillingNoticeKind.GRANT_ENDING, END, 2),
+        OwedNotice("ada", BillingNoticeKind.TRIAL_ENDING, END, 2, ada),
+        OwedNotice("eva", BillingNoticeKind.GRANT_ENDING, END, 2, eva),
     ]
     assert [notice.key for notice in owed] == ["trial_ending:2026-11-07T09:00Z", "grant_ending:2026-11-07T09:00Z"]
     assert (owed[0].payer, owed[0].kind, owed[0].ends_at, owed[0].days_left) == ("ada", "trial_ending", END, 2)
+
+
+@dataclass
+class _AppRow(Row):
+    """An app's own row: the kit's columns and the marker column the kit never names."""
+
+    billing_notice_sent: str | None = None
+
+
+def test_an_owed_notice_hands_the_apps_row_back() -> None:
+    """keksdose's 0.33 report: the row came back only inside ``payer`` (``(user, row)``),
+    to set the marker on. It is the candidate's row itself, typed as the app's, so the
+    marker is set on it — mypy checks ``billing_notice_sent`` here."""
+    row = _AppRow(trial_ends_at=END)
+    (owed,) = billing_notices_owed([NoticeCandidate("ada", row)], END - DAY, settings=BillingSettings(**ON))
+    assert owed.row is row and owed.payer == "ada"
+    owed.row.billing_notice_sent = owed.key
+    assert row.billing_notice_sent == "trial_ending:2026-11-07T09:00Z"
+    assert (
+        billing_notices_owed(
+            [NoticeCandidate("ada", row, sent=row.billing_notice_sent)], END - DAY, settings=BillingSettings(**ON)
+        )
+        == []
+    )
+    # Unnamed, the row's type is the kit's protocol: an app's own annotation still reads.
+    typed: list[NoticeCandidate[str]] = [NoticeCandidate("bea", _trial())]
+    assert [notice.payer for notice in billing_notices_owed(typed, END - DAY, settings=BillingSettings(**ON))] == [
+        "bea"
+    ]
 
 
 def test_nothing_is_owed_while_billing_is_off() -> None:
@@ -164,7 +195,9 @@ def test_the_window_can_be_the_apps() -> None:
     owed = billing_notices_owed(
         [NoticeCandidate(1, _trial())], END - 10 * DAY, settings=BillingSettings(**ON), ahead=14 * DAY
     )
-    assert owed == [OwedNotice(1, BillingNoticeKind.TRIAL_ENDING, END, 10)]
+    assert [(notice.payer, notice.kind, notice.days_left) for notice in owed] == [
+        (1, BillingNoticeKind.TRIAL_ENDING, 10)
+    ]
     late = billing_notices_owed(
         [NoticeCandidate(1, _trial())], END + 5 * DAY, settings=BillingSettings(**ON), late_limit=7 * DAY
     )

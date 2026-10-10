@@ -10,6 +10,72 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+server-kit 0.7.1: a patch from the apps' 0.33 / 0.7 adoption reports (kastlan, keksdose).
+No public name is removed or renamed. Three shapes grow where an app may notice:
+`OwedNotice` carries a fifth field, `row` (a hand-built one — a test's expected value —
+passes the row too, and unpacking it into four names no longer works);
+`PlanChangeResponse(…)` built directly needs `comped_until` (`of()` fills it, as every app
+builds it); and `resume_after_withdrawal` asks the provider for a row that doesn't say
+`cancel_at_period_end`.
+
+### Fixed
+
+* **billing:** `resume_after_withdrawal` undoes the deletion's cancellation before Paddle's
+  webhook, and with billing off. It answered `None` unless the row said
+  `cancel_at_period_end`, which `cancel_for_deletion` never sets — only Paddle's
+  `subscription.updated` does, and the webhook answers 404 while billing is off — so a
+  reactivation before that webhook left the cancellation scheduled at Paddle while the
+  app's audit said "cancelled" and the reactivation recorded nothing to undo. It now asks
+  the provider whenever the row has a provider subscription that hasn't ended (not
+  `canceled` or `expired`, its period not over); the request's audit stays the check that
+  the deletion made the cancellation (§12.37, §14.8). Removing nothing is harmless:
+  `scheduled_change: null` sets the field to what it is; Paddle refusing it as a
+  subscription that has ended (`subscription_update_when_canceled`) or a scheduled change
+  it won't take (`subscription_scheduled_change_invalid_update`) is `None`, logged at INFO,
+  and any other failure stays `"failed"` at ERROR. A third argument, `now=None` (the
+  current time), reads the period as `require_new_checkout` does. From keksdose's 0.33
+  report.
+* **billing:** the provider and Paddle's environment are compared by value, not identity:
+  `billing_provider_client`, the switch-on check and `verify_webhook_signature` read
+  `BillingProvider.PADDLE` and the plain text `"paddle"` alike, and
+  `billing_api_environment()` a plain `"sandbox"` or `"live"` (an unknown one is 503
+  `billing_not_configured`). Settings holding the text — a test's `monkeypatch.setattr`
+  or `model_construct`, or an app's field typed `str` — got `NoProviderClient`, skipped
+  Paddle's checks at start, or refused a sandbox key against `"sandbox"`. From kastlan's
+  0.33 report.
+* **billing:** `billing_app`'s shape (lowercase, a letter first) holds where the app sets
+  its tag as the README shows, `billing_app: str | None = "keksdose"`: redeclaring the
+  field replaced the mixin's annotation and its pattern with it, so `"Not Valid!"` passed.
+  A model validator on the mixin checks it whatever the field's type, the subclass's
+  default included. From keksdose's 0.33 report.
+* **billing:** a hosted checkout's `locale` is Paddle's, not the app's: `PaddleClient`
+  sent the app's `de-CH` as it was. It sends `paddle_locale(locale)` (below); a blank
+  locale sends none. The pay page maps its own `lang` (ui-kit's `payPageUrl`). From
+  keksdose's 0.33 report.
+* **billing:** `PlanChangeResponse.comped_until` is required though it may be `null`: it
+  is always sent, and its default made the generated TypeScript optional (keksdose
+  redeclared it). From keksdose's 0.33 report.
+* **mail:** `render_message`'s plain-text link line sets French's no-break space (U+00A0,
+  as ui-kit's French catalogue) before the colon — `Choisir\u00a0: https://…` — for any
+  French `lang` (`fr`, `fr-CH`); every other language keeps the plain colon. From
+  keksdose's 0.33 report.
+
+### Added
+
+* **billing:** `paddle_locale(kit_locale)`, ui-kit's `paddleLocale` server-side: the kit's
+  language → Paddle's checkout locale (`de-CH` → `de`, `zh` → `zh-Hans`, `hu` → `en`,
+  Paddle having no Hungarian; the others as they are), any tag read as the kit reads it
+  (`de-AT` the one German, `zh-TW` the one Chinese) and one the kit doesn't ship English.
+* **billing:** `AdminPlan` `{code, limits, sort}` (`.from_spec(plan)`) and
+  `admin_plans_out(catalogue)` for `GET /admin/plans` (§14.12), lifted from keksdose: every
+  plan of the catalogue in `sort` order, the ones not sold any more included, no prices —
+  the operator's plan picker and the roster's plan filter. From keksdose's 0.33 report.
+* **billing:** `OwedNotice.row`, the candidate's subscription row, so the notice job sets
+  `owed.row.billing_notice_sent = owed.key` without carrying `(user, row)` as the payer.
+  `NoticeCandidate` and `OwedNotice` take the row's type as a second parameter, inferred
+  from `row` and defaulting to `SubscriptionRow` (`NoticeCandidate[User]` still reads), so
+  the row comes back as the app's own. From keksdose's 0.33 report.
+
 ## [0.7.0] (2026-10-10)
 
 server-kit 0.7.0: the backend half of billing round 0.33 (ui-kit 0.33,

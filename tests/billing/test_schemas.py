@@ -10,6 +10,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from eifi1_server_kit.billing import (
+    AdminPlan,
     BillingCurrency,
     BillingInterval,
     BillingOverview,
@@ -26,6 +27,7 @@ from eifi1_server_kit.billing import (
     SubscriptionSource,
     SubscriptionStatus,
     SyncRefusal,
+    admin_plans_out,
     plan_catalogue,
     plans_out,
 )
@@ -274,6 +276,38 @@ def test_a_plan_change_answer_carries_what_the_result_lines_read() -> None:
     assert first.model_dump(mode="json")["comped_until"] == "2027-01-31T22:59:59Z"
     kept = PlanChangeResponse.of("free", PRO, {"budgets": 1}, kept_beta=True)
     assert kept.kept_beta and kept.comped_until is None
+
+
+def test_a_plan_change_answer_always_carries_the_grants_end() -> None:
+    """keksdose's 0.33 report: ``comped_until`` is always sent, so it is required though it
+    may be null — the generated TypeScript marks it required (keksdose redeclared it)."""
+    schema = PlanChangeResponse.model_json_schema()
+    assert "comped_until" in schema["required"] and "kept_beta" not in schema["required"]
+    assert PlanChangeResponse.of("free", PRO, {}).comped_until is None
+    with pytest.raises(ValidationError, match="comped_until"):
+        PlanChangeResponse.model_validate(
+            {"previous_plan": "free", "plan": "pro", "limits": {}, "over_limit": False, "usage": {}}
+        )
+
+
+def test_the_operators_plans_are_the_whole_catalogue_without_prices() -> None:
+    """§14.12 ``GET /admin/plans``: keksdose's ``AdminPlan`` — code, limits (null for
+    unlimited) and order, a plan not sold any more included, never a price."""
+    retired = PlanSpec(code="legacy", limits={"budgets": None}, sort=1)
+    by_hand = {
+        "pro": PlanSpec(code="pro", limits={"budgets": 5}, prices={("CHF", "year"): 3000}, sort=1),
+        "legacy": retired,
+        "free": FREE,
+    }
+    plans = admin_plans_out(by_hand)
+    assert json.loads(TypeAdapter(list[AdminPlan]).dump_json(plans)) == [
+        {"code": "free", "limits": {"budgets": 1}, "sort": 0},
+        {"code": "legacy", "limits": {"budgets": None}, "sort": 1},
+        {"code": "pro", "limits": {"budgets": 5}, "sort": 1},
+    ]
+    assert AdminPlan.from_spec(PRO) == AdminPlan(code="PRO", limits={"budgets": 5}, sort=0)
+    assert set(AdminPlan.model_json_schema()["required"]) == {"code", "limits", "sort"}
+    assert admin_plans_out(plan_catalogue([FREE, PRO])) == [AdminPlan.from_spec(FREE), AdminPlan.from_spec(PRO)]
 
 
 def test_a_sync_refusal_names_the_refused_changes() -> None:
