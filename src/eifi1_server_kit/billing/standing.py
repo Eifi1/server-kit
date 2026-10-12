@@ -52,8 +52,8 @@ class SubscriptionStatus(enum.StrEnum):
     PAST_DUE = "past_due"
     #: The provider ended the subscription (Paddle's ``canceled``). Not in good standing.
     CANCELED = "canceled"
-    #: It ran out: Lemon Squeezy's ``expired`` and ``unpaid``, a paused collection, or a
-    #: trial or grant the app's daily job wrote off. Not in good standing.
+    #: It ran out: a paused collection (Paddle's ``paused``), or a trial or grant the app's
+    #: daily job wrote off. Not in good standing.
     EXPIRED = "expired"
     #: Free, by an operator's grant or the beta's 12 months, until ``comped_until`` — or for
     #: good without one (the operator's own admin accounts, §12.8).
@@ -199,7 +199,7 @@ def in_good_standing(
       one the launch plus 12 months, given ``launch`` (the settings'
       ``billing_launch_at``); without ``launch`` such a row has no end, as in 0.6.0.
     * ``past_due`` — yes: the provider retries, and moves it on when it gives up (Paddle to
-      ``canceled`` or ``paused``, Lemon Squeezy after 4 retries over 2 weeks to ``unpaid``).
+      ``canceled`` or ``paused``).
       With ``retry_grace``, also no later than ``current_period_end`` plus the grace — a
       backstop for a provider event that never arrived.
     * ``canceled``, ``expired`` — no.

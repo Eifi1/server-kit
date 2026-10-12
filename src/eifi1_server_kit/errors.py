@@ -9,7 +9,8 @@ user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
 :class:`~eifi1_server_kit.settings.PatchNullError` 422, the demo's
 :class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503, and billing's
 :class:`~eifi1_server_kit.billing.BillingError` 400 / 402 / 404 / 409 / 422 / 502 / 503 and
-:class:`~eifi1_server_kit.billing.PlanLimitError` 402).
+:class:`~eifi1_server_kit.billing.PlanLimitError` 402, and a token route's
+:class:`~eifi1_server_kit.jobs.JobsTokenError` 401).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -48,6 +49,7 @@ from eifi1_server_kit.auth.errors import AuthError
 from eifi1_server_kit.billing.errors import BillingError, PlanLimitError
 from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.feedback.errors import FeedbackError
+from eifi1_server_kit.jobs import JobsTokenError
 from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.translation_review.scope import (
     TranslationAccessError,
@@ -78,6 +80,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     DemoError,
     BillingError,
     PlanLimitError,
+    JobsTokenError,
 )
 
 

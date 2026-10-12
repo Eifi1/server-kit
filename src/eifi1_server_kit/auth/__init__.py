@@ -11,6 +11,8 @@ the reference, cited ``file`` per rule.
   invitation, email change) and the session's claims;
 * :mod:`~eifi1_server_kit.auth.limits` — :class:`AuthLimiters`, with the per-address
   delay that never locks out;
+* :mod:`~eifi1_server_kit.auth.passwords` — :func:`absent_account_check`, the dummy hash an
+  address with no account is checked against, so it costs what one with an account costs;
 * :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes, with the account's text size
   and contrast (``docs/text-size-harmonization.md`` §6);
 * :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes.
@@ -53,6 +55,7 @@ from eifi1_server_kit.auth.limits import (
     LoginFailureThrottle,
     login_failure_delay,
 )
+from eifi1_server_kit.auth.passwords import ABSENT_ACCOUNT_SECRET_BYTES, absent_account_check
 from eifi1_server_kit.auth.schemas import (
     CONTRAST_MODES,
     DEFAULT_LOCALE,
@@ -109,6 +112,7 @@ from eifi1_server_kit.auth.tokens import (
 )
 
 __all__ = [
+    "ABSENT_ACCOUNT_SECRET_BYTES",
     "ACCESS_TOKEN_EXPIRE_MINUTES",
     "ACCESS_TOKEN_LIFETIME",
     "ACCESS_TOKEN_TYPE",
@@ -174,6 +178,7 @@ __all__ = [
     "TwoFactorChallenge",
     "UserResponse",
     "UtcDateTime",
+    "absent_account_check",
     "access_claims",
     "addresses_for_reset",
     "challenge_claims",

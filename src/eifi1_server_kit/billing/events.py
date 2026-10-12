@@ -1,4 +1,4 @@
-"""The providers' webhook events, normalised to one vocabulary.
+"""The provider's webhook events, normalised to one vocabulary.
 
 ``docs/billing-harmonization.md`` §5 in ``Eifi1/ui-kit``: "server-kit maps each provider's
 events to one vocabulary … The app applies those. Supporting a second provider is a new
@@ -8,11 +8,12 @@ mapper, not new app code." A mapper reads the raw body (after its signature pass
 dropped (§5). A body it cannot read is a :class:`PoisonEventError`: answered 2xx and logged,
 because a retry would bring the same bytes.
 
-**The kind says what happened; the snapshot says where the subscription stands.** Both
-providers send the whole subscription with every subscription event, so the app writes the
+**The kind says what happened; the snapshot says where the subscription stands.** Paddle
+sends the whole subscription with every subscription event, so the app writes the
 snapshot's fields (:func:`~eifi1_server_kit.billing.row_changes`) and uses the kind only for
-its log and its notices. ``payment_failed`` from Lemon Squeezy is the exception: its body is
-an invoice, so it carries no status (``status`` ``None``) and changes nothing but the link.
+its log and its notices. An event without a status (``status`` ``None``) is a notice: it
+changes nothing but the link. No Paddle event is one; the dispatch keeps the rule for a
+mapper that answers one.
 
 **One Paddle account sells for all three apps** (decision 18, §14.3), and Paddle's
 notification destinations can't filter by product or custom data: every app's webhook
@@ -22,23 +23,23 @@ receives every app's subscription events. So every checkout carries the app's ta
 once ``app`` is given, an untagged one too — never matched by the provider's customer id,
 since one person may be one Paddle customer across the apps.
 
-.. deprecated:: 0.7.0
-   Lemon Squeezy (:func:`map_lemonsqueezy_event`, :data:`LEMONSQUEEZY_EVENT_KINDS`,
-   :data:`LEMONSQUEEZY_STATUSES`) is deprecated and goes in 0.8 (decision 25, §14.13).
+.. versionchanged:: 0.8.0
+   Lemon Squeezy's mapper (``map_lemonsqueezy_event``, ``LEMONSQUEEZY_EVENT_KINDS``,
+   ``LEMONSQUEEZY_STATUSES``) is gone, deprecated since 0.7.0 (decision 25, §14.13).
 
-=========================  ===================================  ================================
-kind                       Paddle Billing                       Lemon Squeezy
-=========================  ===================================  ================================
-``subscription_started``   ``subscription.created``,            ``subscription_created``
+=========================  ===================================
+kind                       Paddle Billing
+=========================  ===================================
+``subscription_started``   ``subscription.created``,
                            ``subscription.imported``
-``subscription_updated``   ``subscription.updated``,            ``subscription_updated``,
-                           ``.activated``, ``.trialing``,       ``_resumed``, ``_paused``,
-                           ``.resumed``, ``.paused``            ``_unpaused``
-``subscription_canceled``  ``subscription.updated`` with a      ``subscription_cancelled``
+``subscription_updated``   ``subscription.updated``,
+                           ``.activated``, ``.trialing``,
+                           ``.resumed``, ``.paused``
+``subscription_canceled``  ``subscription.updated`` with a
                            scheduled ``cancel``
-``subscription_expired``   ``subscription.canceled``            ``subscription_expired``
-``payment_failed``         ``subscription.past_due``            ``subscription_payment_failed``
-=========================  ===================================  ================================
+``subscription_expired``   ``subscription.canceled``
+``payment_failed``         ``subscription.past_due``
+=========================  ===================================
 
 ``subscription_canceled`` means the payer cancelled and the subscription runs to its
 period's end (``cancel_at_period_end``); ``subscription_expired`` that it has ended. Paddle
@@ -46,14 +47,12 @@ has no event of its own for a scheduled cancellation, so its ``subscription.upda
 ``scheduled_change.action == "cancel"`` is promoted — and repeats if the subscription
 changes again before it ends: compare with the row's ``cancel_at_period_end`` to notice the
 change once. Transaction events (Paddle's ``transaction.payment_failed`` fires on a declined
-checkout card too, with no subscription yet) and Lemon Squeezy's other payment events are
-not used: the subscription events carry the state.
+checkout card too, with no subscription yet) are not used: the subscription events carry
+the state.
 
 Statuses, the provider's word to the row's (§3.2): Paddle ``active``, ``trialing``,
-``past_due``, ``canceled``, and ``paused`` → ``expired``; Lemon Squeezy ``on_trial`` →
-``trialing``, ``active``, ``past_due``, ``unpaid`` and ``paused`` and ``expired`` →
-``expired``, and ``cancelled`` → ``active`` with ``cancel_at_period_end`` (its docs: "still
-technically active" until ``ends_at``). An unknown status is poison, never a guess.
+``past_due``, ``canceled``, and ``paused`` → ``expired``. An unknown status is poison, never
+a guess.
 
 Read on 2026-10-08:
 
@@ -63,17 +62,12 @@ Read on 2026-10-08:
   https://developer.paddle.com/build/subscriptions/provision-access-webhooks ("dedupe on
   ``event_id``", "compare ``occurred_at``"),
   https://developer.paddle.com/build/transactions/custom-data (checkout ``custom_data`` is
-  copied to the subscription);
-* https://docs.lemonsqueezy.com/help/webhooks/event-types,
-  https://docs.lemonsqueezy.com/help/webhooks/webhook-requests (``meta.event_name``,
-  ``meta.custom_data``; no event id), https://docs.lemonsqueezy.com/api/subscriptions/the-subscription-object
-  (statuses, ``renews_at``, ``ends_at``, ``cancelled``).
+  copied to the subscription).
 """
 
 from __future__ import annotations
 
 import enum
-import hashlib
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -88,8 +82,6 @@ from eifi1_server_kit.billing.standing import SubscriptionStatus
 
 __all__ = [
     "APP_KEY",
-    "LEMONSQUEEZY_EVENT_KINDS",
-    "LEMONSQUEEZY_STATUSES",
     "PADDLE_EVENT_KINDS",
     "PADDLE_STATUSES",
     "PAYER_REF_KEY",
@@ -98,7 +90,6 @@ __all__ = [
     "NormalisedEvent",
     "PoisonEventError",
     "checkout_custom_data",
-    "map_lemonsqueezy_event",
     "map_paddle_event",
     "parse_webhook_event",
 ]
@@ -135,9 +126,8 @@ def checkout_custom_data(payer_ref: str, *, app: str | None = None) -> dict[str,
     ``{"payer_ref": "user:42", "app": "keksdose"}`` (or ``"company:7"``, ``"kastlan"``).
 
     Paddle keeps a checkout's ``custom_data`` on the transaction and copies it to the
-    subscription it creates, so every subscription event carries it; Lemon Squeezy sends a
-    checkout's ``checkout_data.custom`` as ``meta.custom_data`` with every subscription
-    event. The reference is the app's own and opaque to the provider — never an address.
+    subscription it creates, so every subscription event carries it. The reference is the
+    app's own and opaque to the provider — never an address.
     Flat, because Paddle's dashboard shows nested custom data badly.
 
     ``app`` is the settings' ``billing_app`` (§14.3): on one Paddle account every app's
@@ -161,8 +151,8 @@ class PoisonEventError(ValueError):
     5xx would make the provider redeliver the same bytes, for days (Paddle retries 60 times
     over 3 days).
 
-    The message names the field, never a value: Lemon Squeezy's attributes carry the
-    buyer's name and address, so a log line must never quote the body.
+    The message names the field, never a value: a provider's body may carry the buyer's
+    name and address, so a log line must never quote it.
     """
 
 
@@ -176,28 +166,26 @@ class NormalisedEvent(BaseModel):
 
     A field that is ``None`` is one the event does not carry: leave the row's value. A
     SNAPSHOT (``status`` set) is the subscription's whole state at ``occurred_at``; a notice
-    (``status`` ``None``, Lemon Squeezy's ``payment_failed``) only says something happened.
+    (``status`` ``None``) only says something happened.
     """
 
     model_config = ConfigDict(frozen=True)
 
     provider: BillingProvider
-    #: Unique per provider: Paddle's ``evt_…``; for Lemon Squeezy, which sends no event id,
-    #: the SHA-256 of the raw body — a redelivery resends the same body.
+    #: Unique per provider: Paddle's ``evt_…``.
     event_id: str = Field(min_length=1)
     #: The provider's own event name (``subscription.updated``), for the event store's
     #: ``type`` and the log.
     provider_type: str
     kind: EventKind
-    #: When it happened, for the ordering guard (§5): Paddle's ``occurred_at``; Lemon
-    #: Squeezy's ``updated_at`` of the object sent.
+    #: When it happened, for the ordering guard (§5): Paddle's ``occurred_at``.
     occurred_at: UtcDateTime
     #: The provider's customer id (Paddle ``ctm_…``).
     customer_ref: str | None = None
     #: The provider's subscription id (Paddle ``sub_…``).
     subscription_ref: str | None = None
-    #: The price the subscription runs on: Paddle's first recurring item's ``pri_…``, Lemon
-    #: Squeezy's variant id. The settings say which plan it is.
+    #: The price the subscription runs on: Paddle's first recurring item's ``pri_…``. The
+    #: settings say which plan it is.
     plan_price_id: str | None = None
     #: The row's new status; ``None`` on a notice.
     status: SubscriptionStatus | None = None
@@ -255,13 +243,14 @@ def _text(parent: Mapping[str, Any], key: str, where: str) -> str:
 
 
 def _ref(parent: Mapping[str, Any], key: str, where: str) -> str | None:
-    """An id that may be a string or a JSON number (Lemon Squeezy's), or absent."""
+    """An id, a non-empty string, or absent. A JSON number is no id since 0.8 took Lemon
+    Squeezy's numeric ones with it (§14.13)."""
     value = parent.get(key)
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, str | int) or value == "":
+    if not isinstance(value, str) or not value:
         raise PoisonEventError(f"{where} is not an id")
-    return str(value)
+    return value
 
 
 def _instant(parent: Mapping[str, Any], key: str, where: str, *, optional: bool = False) -> datetime | None:
@@ -367,97 +356,9 @@ def map_paddle_event(raw_body: bytes) -> NormalisedEvent | None:
     )
 
 
-# --- Lemon Squeezy -----------------------------------------------------------------------
-
-#: Lemon Squeezy's subscription events and their kinds; any other event is not used.
-#: Deprecated in 0.7.0, removed in 0.8 (§14.13).
-LEMONSQUEEZY_EVENT_KINDS: Mapping[str, EventKind] = {
-    "subscription_created": EventKind.SUBSCRIPTION_STARTED,
-    "subscription_updated": EventKind.SUBSCRIPTION_UPDATED,
-    "subscription_resumed": EventKind.SUBSCRIPTION_UPDATED,
-    "subscription_paused": EventKind.SUBSCRIPTION_UPDATED,
-    "subscription_unpaused": EventKind.SUBSCRIPTION_UPDATED,
-    "subscription_cancelled": EventKind.SUBSCRIPTION_CANCELED,
-    "subscription_expired": EventKind.SUBSCRIPTION_EXPIRED,
-    "subscription_payment_failed": EventKind.PAYMENT_FAILED,
-}
-
-#: Lemon Squeezy's subscription statuses and the row's. ``cancelled`` is still running
-#: until ``ends_at``, so it stays ``active`` with ``cancel_at_period_end``. Deprecated in
-#: 0.7.0, removed in 0.8 (§14.13).
-LEMONSQUEEZY_STATUSES: Mapping[str, SubscriptionStatus] = {
-    "on_trial": SubscriptionStatus.TRIALING,
-    "active": SubscriptionStatus.ACTIVE,
-    "past_due": SubscriptionStatus.PAST_DUE,
-    "unpaid": SubscriptionStatus.EXPIRED,
-    "paused": SubscriptionStatus.EXPIRED,
-    "cancelled": SubscriptionStatus.ACTIVE,
-    "expired": SubscriptionStatus.EXPIRED,
-}
-
-
-def _check_type(data: Mapping[str, Any], expected: str) -> None:
-    kind = data.get("type")
-    if kind is not None and kind != expected:
-        raise PoisonEventError(f"data.type is not {expected}")
-
-
-def map_lemonsqueezy_event(raw_body: bytes) -> NormalisedEvent | None:
-    """A Lemon Squeezy webhook as a :class:`NormalisedEvent`; ``None`` for an event billing
-    doesn't use; :class:`PoisonEventError` for a body it cannot read.
-
-    .. deprecated:: 0.7.0
-       Removed in 0.8 with the rest of Lemon Squeezy (§14.13).
-
-    The body is JSON:API: ``{meta: {event_name, custom_data?}, data: {type, id,
-    attributes}}``. A subscription's attributes carry ``status``, ``customer_id``,
-    ``variant_id``, ``cancelled``, ``renews_at``, ``ends_at`` and ``updated_at``;
-    ``subscription_payment_failed`` sends a ``subscription-invoices`` object instead, with
-    ``subscription_id`` and ``customer_id`` but no status.
-
-    The event id is the body's SHA-256: Lemon Squeezy documents no event id, and a retry
-    (it retries three times, after 5, 25 and 125 seconds) resends the event.
-    """
-    payload = _json_object(raw_body)
-    meta = _object(payload, "meta", "meta")
-    name = _text(meta, "event_name", "meta.event_name")
-    kind = LEMONSQUEEZY_EVENT_KINDS.get(name)
-    if kind is None:
-        return None
-    data = _object(payload, "data", "data")
-    attributes = _object(data, "attributes", "data.attributes")
-    event: dict[str, Any] = {
-        "provider": BillingProvider.LEMONSQUEEZY,
-        "event_id": hashlib.sha256(raw_body).hexdigest(),
-        "provider_type": name,
-        "kind": kind,
-        "occurred_at": _instant(attributes, "updated_at", "data.attributes.updated_at"),
-        "customer_ref": _ref(attributes, "customer_id", "data.attributes.customer_id"),
-        "custom_data": _custom(meta.get("custom_data")),
-    }
-    if kind is EventKind.PAYMENT_FAILED:
-        _check_type(data, "subscription-invoices")
-        event["subscription_ref"] = _ref(attributes, "subscription_id", "data.attributes.subscription_id")
-        return NormalisedEvent.model_validate(event)
-    _check_type(data, "subscriptions")
-    raw_status = _text(attributes, "status", "data.attributes.status")
-    ended = raw_status in ("cancelled", "expired")
-    event |= {
-        "subscription_ref": _ref(data, "id", "data.id"),
-        "plan_price_id": _ref(attributes, "variant_id", "data.attributes.variant_id"),
-        "status": _status(LEMONSQUEEZY_STATUSES, raw_status, "data.attributes.status"),
-        "current_period_end": _instant(
-            attributes, "ends_at" if ended else "renews_at", "data.attributes.renews_at/ends_at", optional=True
-        ),
-        "cancel_at_period_end": attributes.get("cancelled") is True or raw_status == "cancelled",
-    }
-    return NormalisedEvent.model_validate(event)
-
-
 #: The mapper per provider: a second provider is a new entry, not new app code (§5).
 WEBHOOK_MAPPERS: Mapping[BillingProvider, Callable[[bytes], NormalisedEvent | None]] = {
     BillingProvider.PADDLE: map_paddle_event,
-    BillingProvider.LEMONSQUEEZY: map_lemonsqueezy_event,
 }
 
 

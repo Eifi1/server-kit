@@ -10,6 +10,95 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+server-kit 0.8.0: the backend half of round 0.34 (ui-kit 0.34), from the apps' 0.33 / 0.7
+adoption reports and Kurvenschmiede's server-kit asks of 2026-10 (S2, S3, S5). Lemon
+Squeezy goes, as 0.7 announced (decision 25, §14.13) — breaking for anything that still
+names it, and no app sells through it. The rest is additive: the dummy hash for an
+address with no account, the two account notices' words, the scheduler's token route as a
+module, and `content_disposition`'s `fallback=`. One header changes where an app may
+notice: the plain `filename=` of a name with a letter outside ASCII (below, Fixed).
+
+### ⚠ BREAKING CHANGES
+
+* **billing:** Lemon Squeezy is gone (decision 25, §14.13; deprecated since 0.7.0):
+  `BillingProvider.LEMONSQUEEZY`, `map_lemonsqueezy_event`, `LEMONSQUEEZY_EVENT_KINDS`,
+  `LEMONSQUEEZY_STATUSES`, `verify_lemonsqueezy_signature` and
+  `LEMONSQUEEZY_SIGNATURE_HEADER`. `BillingProvider` is `paddle` alone, and
+  `WEBHOOK_MAPPERS` and `SIGNATURE_HEADERS` hold Paddle only. `"lemonsqueezy"` is no
+  provider: `<APP>_BILLING_PROVIDER=lemonsqueezy` fails at start, `parse_webhook_event` and
+  `verify_webhook_signature` raise `ValueError` for it as for `"stripe"`, and a route that
+  types its path parameter as `BillingProvider` answers 422 for `/webhooks/lemonsqueezy`.
+  The three apps read that parameter as text and answer 404 for any provider but their
+  own, so their routes don't change; keksdose's test posting to `/webhooks/lemonsqueezy`
+  still gets its 404. Switching billing on with a provider other than Paddle — an app's
+  `billing_provider` field typed `str` and holding another name — now fails at start: it
+  switched on without Paddle's checks before.
+* **billing:** a price id is text. `billing_price_ids` refuses a JSON number (Lemon
+  Squeezy's numeric variant ids: `{"year": 12345}` read as `"12345"` until now), and a
+  webhook whose `customer_id` is a number is poison (`PoisonEventError`, answered 200) —
+  no Paddle id is one.
+* **mail:** the account-deletion mail's word is `account_deletion`
+  (`AccountNoticeKind.ACCOUNT_DELETION`, below), keksdose's. Breaking for an app on
+  adoption, not for the kit's surface: kastlan's `kind="deletion"` and Kurvenschmiede's
+  `deletion_request` become `account_deletion`, in their log lines and in Resend's
+  `Idempotency-Key`, and a log query or alert on the old word moves with it.
+
+### Added
+
+* **auth:** `absent_account_check(hash_password, verify_password, *, cost=None)`, the
+  check for an address with no account (auth §5.2, KS S3): one verify against a dummy
+  hash, then `False`, always, so an unknown address costs what a known one does
+  (Kurvenschmiede measured 3.7 ms against 262.2 ms before its own). Built from the app's
+  own two functions — the kit hashes nothing — and holding the rules the three apps each
+  kept in their own way: the dummy hashes a random secret
+  (`secrets.token_urlsafe(ABSENT_ACCOUNT_SECRET_BYTES)`, 32, keksdose's), never a string in
+  a source file (kastlan's); it is built lazily, at the first unknown address, and again
+  whenever `cost()` changes (Kurvenschmiede's per-cost cache), so it is at the cost the real
+  rows are checked at; and it goes through the app's own `verify_password`, so an over-long
+  password is refused without hashing on both paths. In `auth.passwords`, re-exported from
+  `eifi1_server_kit.auth`. Lifted from keksdose `auth_service.py:129-140`.
+* **mail:** `AccountNoticeKind` — `email_change_notice` (to the old address, user-admin
+  §6.2; the three apps' word already) and `account_deletion` (the answer to a deletion
+  request, §6.4) — the `kind` for the two account mails that carry no one-time token (KS
+  S5). Not `MailKind`, which is `user_admin`'s word for the mail an admin sends again.
+  `Mailer.send`'s docstring names every kind: `OneTimeTokenKind`, `AccountNoticeKind`,
+  `BillingNoticeKind`.
+* **jobs:** a new module for the scheduler's token routes (billing §14.7), lifted from
+  kastlan's and Kurvenschmiede's `ops_router.py`: `require_jobs_token(token)`, the FastAPI
+  dependency (`Depends(require_jobs_token(lambda: settings.jobs_token))`; the setting read
+  at every call; Starlette's `Request`, so the kit still doesn't import FastAPI), over
+  `check_jobs_token(presented, expected)` — `X-Jobs-Token` (`JOBS_TOKEN_HEADER`) compared
+  in constant time on bytes, a `SecretStr` or text setting, blank is unset — and
+  `JobsTokenError` (401 for a missing or wrong token and for none set, the last logged at
+  WARNING: the apps' one answer). `JobsSettings`, a mixin, holds `jobs_token: SecretStr |
+  None` (`<APP>_JOBS_TOKEN`). `JobsTokenError` joins `CONTRACT_ERRORS`, so
+  `install_contract_error_handlers` answers it 401, not an app's `ValueError` 400. The API
+  export lists `eifi1_server_kit.jobs` against billing §14.7.
+* **uploads:** `content_disposition(…, *, fallback=None)` (KS S2, part 2): the plain
+  `filename=` an app would rather offer — `curve-12.csv`, a record's id — narrowed as the
+  original would be; `filename*` keeps the original either way.
+
+### Fixed
+
+* **uploads:** `content_disposition`'s plain `filename=` writes no `?` (KS S2, part 1;
+  round 0.34 B2): accents fold (NFKD, the combining marks dropped:
+  `Débattement-à-gauche.csv` → `Debattement-a-gauche.csv`, 0.7 wrote
+  `D?battement-?-gauche.csv`), and what is still not safe ASCII — `ß`, `Ø`, a CJK name, and
+  Windows' `<>:/|?*` — becomes `_` (`停车扫描-轮廓-1.csv` → `____-__-1.csv`). `?` is one of
+  the nine characters Windows refuses in a file name, and a reader that takes only
+  `filename=` (`curl -J`) wrote what it said. Quotes, backslashes and control characters
+  are dropped as before; the cut to 100 characters comes after the folding. The browser's
+  name, `filename*`, is unchanged; ui-kit 0.34's `filenameFromDisposition` reads it first.
+
+### Docs
+
+* **billing:** the docstrings, the README and the events table speak Paddle only; a
+  notice (`status` `None`) stays the dispatch's rule for a mapper that answers one, though
+  no Paddle event is one. `NoProviderClient` is no longer "a provider the kit has no
+  client for": with billing on, the provider is Paddle.
+* **auth:** the README's sign-in recipe calls `check_absent(password)` for an unknown
+  address.
+
 ## [0.7.1] (2026-10-12)
 
 server-kit 0.7.1: a patch from the apps' 0.33 / 0.7 adoption reports (kastlan, keksdose).

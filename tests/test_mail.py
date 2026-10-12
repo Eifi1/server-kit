@@ -9,9 +9,11 @@ import sys
 import httpx
 import pytest
 
+from eifi1_server_kit.auth import OneTimeTokenKind
 from eifi1_server_kit.mail import (
     FALLBACK_LOCALES,
     RESEND_ENDPOINT,
+    AccountNoticeKind,
     ConsoleMailer,
     Mailer,
     MailMessage,
@@ -166,6 +168,24 @@ async def test_the_console_mailer_logs_the_link(caplog: pytest.LogCaptureFixture
     with caplog.at_level(logging.WARNING, logger="eifi1_server_kit.mail"):
         assert await loud.send("ada@example.com", message)
     assert caplog.records[0].levelno == logging.WARNING
+
+
+def test_the_account_notices_have_their_words() -> None:
+    """KS S5: the two account mails with no token. ``email_change_notice`` is the three
+    apps' word already; the deletion mail is keksdose's ``account_deletion`` (kastlan sent
+    ``deletion``, Kurvenschmiede ``deletion_request``). No word repeats a token's."""
+    assert [str(kind) for kind in AccountNoticeKind] == ["email_change_notice", "account_deletion"]
+    assert not {str(kind) for kind in AccountNoticeKind} & {str(kind) for kind in OneTimeTokenKind}
+
+
+async def test_a_notice_is_sent_and_logged_under_its_word(caplog: pytest.LogCaptureFixture) -> None:
+    """The kind is what an operator greps the logs and Resend's ``Idempotency-Key`` for."""
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
+        assert await ConsoleMailer().send("ada@example.com", MESSAGE, kind=AccountNoticeKind.ACCOUNT_DELETION)
+    assert "[email:console] account_deletion to=" in caplog.text
+    resend = _Resend(200)
+    assert await resend.client().send("ada@example.com", MESSAGE, kind=AccountNoticeKind.EMAIL_CHANGE_NOTICE)
+    assert resend.requests[0].headers["Idempotency-Key"].startswith("email_change_notice-")
 
 
 class _Resend:

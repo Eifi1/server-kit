@@ -139,8 +139,8 @@ class BillingProviderClient(Protocol):
 class NoProviderClient:
     """No provider client for this deployment — no provider, no key, or an environment the
     settings can't name: every call is 503 ``billing_not_configured``, the deployment's
-    fault. Billing switched on can only reach it with a provider the kit has no client for
-    (the deprecated Lemon Squeezy, §14.13); with billing off the routes answer 404 first.
+    fault. Billing switched on never reaches it for want of a provider: since 0.8 Paddle is
+    the one the settings take (§14.13); with billing off the routes answer 404 first.
 
     ``reason`` is the refusal's detail, for the log; the page reads the code.
     """
