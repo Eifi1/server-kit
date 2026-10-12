@@ -32,7 +32,12 @@ Scheduler HTTP job, keksdose's Cloud Run Job, a local CLI)::
         return sent
 
 :func:`billing_notices_owed` is the same decision over the app's candidates, the switch and
-the skipped accounts included, for an app that gathers them first.
+the skipped accounts included, for an app that gathers them first; each :class:`OwedNotice`
+hands the candidate's row back, typed as the app's, for the marker::
+
+    for owed in billing_notices_owed(candidates, now, settings=settings):
+        if await mailer.send(owed.payer.email, notice_mail(owed.payer.locale, owed), kind=str(owed.kind)):
+            owed.row.billing_notice_sent = owed.key
 
 **The marker** is a column on each app's subscription row, ``billing_notice_sent
 VARCHAR(64) NULL``, holding the last notice's :attr:`BillingNotice.key`: the job is then
@@ -196,24 +201,31 @@ def billing_notice_due(
     return notice
 
 
-class NoticeCandidate[PayerT](NamedTuple):
+class NoticeCandidate[PayerT, RowT: SubscriptionRow = SubscriptionRow](NamedTuple):
     """One payer the app's notice job considers (§14.7): the app's own ``payer`` (a user,
     a company, or whatever it mails from), the payer's subscription ``row``, and whether
     the account is ``deactivated`` or has a ``deletion_requested`` — both are sent nothing
     (keksdose's and Kurvenschmiede's rule; kastlan's company flagged for deletion, or
-    without an active admin). ``sent`` is the row's ``billing_notice_sent``."""
+    without an active admin). ``sent`` is the row's ``billing_notice_sent``.
+
+    ``RowT`` is the app's own row type, inferred from ``row``: :class:`OwedNotice` hands
+    the row back as that type, so the app sets its marker column on it. Unnamed it is
+    :class:`~eifi1_server_kit.billing.SubscriptionRow` (``NoticeCandidate[User]``).
+    """
 
     payer: PayerT
-    row: SubscriptionRow
+    row: RowT
     sent: str | None = None
     deactivated: bool = False
     deletion_requested: bool = False
 
 
-class OwedNotice[PayerT](NamedTuple):
+class OwedNotice[PayerT, RowT: SubscriptionRow = SubscriptionRow](NamedTuple):
     """A notice owed to a payer: :class:`NoticeCandidate`'s ``payer`` and the
     :class:`BillingNotice`'s fields — the ``(payer, kind, ends_at, days_left)`` the app
-    turns into its mail."""
+    turns into its mail — and the candidate's ``row``, the app's own, to store the marker
+    on once the mail went out (``owed.row.billing_notice_sent = owed.key``) without
+    carrying the row in ``payer`` (keksdose's 0.33 report)."""
 
     payer: PayerT
     kind: BillingNoticeKind
@@ -221,6 +233,8 @@ class OwedNotice[PayerT](NamedTuple):
     ends_at: datetime
     #: Whole days from now to ``ends_at``, rounded down; 0 from the end on.
     days_left: int
+    #: The candidate's subscription row, as the app handed it over (0.7.1).
+    row: RowT
 
     @property
     def key(self) -> str:
@@ -228,22 +242,23 @@ class OwedNotice[PayerT](NamedTuple):
         return BillingNotice(self.kind, self.ends_at, self.days_left).key
 
 
-def billing_notices_owed[PayerT](
-    candidates: Iterable[NoticeCandidate[PayerT]],
+def billing_notices_owed[PayerT, RowT: SubscriptionRow](
+    candidates: Iterable[NoticeCandidate[PayerT, RowT]],
     now: datetime,
     *,
     settings: BillingSettings,
     ahead: timedelta = NOTICE_AHEAD,
     late_limit: timedelta = NOTICE_LATE_LIMIT,
-) -> list[OwedNotice[PayerT]]:
+) -> list[OwedNotice[PayerT, RowT]]:
     """The notices owed at ``now`` among ``candidates``, in their order (§14.7): nothing
     while billing is off (``settings.billing_enabled``), no deactivated account and none
     with a deletion request, and for the rest :func:`billing_notice_due` with the
     settings' ``billing_launch_at`` and each candidate's ``sent`` marker. Pure: the app
-    sends each mail and stores :attr:`OwedNotice.key` once it went out."""
+    sends each mail and stores :attr:`OwedNotice.key` on :attr:`OwedNotice.row` once it
+    went out."""
     if not settings.billing_enabled:
         return []
-    owed: list[OwedNotice[PayerT]] = []
+    owed: list[OwedNotice[PayerT, RowT]] = []
     for candidate in candidates:
         if candidate.deactivated or candidate.deletion_requested:
             continue
@@ -256,5 +271,5 @@ def billing_notices_owed[PayerT](
             late_limit=late_limit,
         )
         if notice is not None:
-            owed.append(OwedNotice(candidate.payer, *notice))
+            owed.append(OwedNotice(candidate.payer, *notice, candidate.row))
     return owed

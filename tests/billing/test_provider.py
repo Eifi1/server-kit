@@ -10,12 +10,14 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from eifi1_server_kit.billing import (
     CHECKOUT_RETURN_PARAM,
     CHECKOUT_RETURN_VALUE,
     BillingError,
     BillingErrorCode,
+    BillingProvider,
     BillingProviderClient,
     BillingSettings,
     CheckoutRequest,
@@ -110,6 +112,27 @@ async def test_paddle_with_a_key_is_the_kits_client_on_the_settings() -> None:
     assert str(paddle.requests[-1].url) == "https://sandbox-api.paddle.com/transactions"
     assert paddle.sent["custom_data"] == {"payer_ref": "user:1", "app": "garden"}
     assert paddle.sent["checkout"] == {"url": "https://pay.garden.example/"}
+
+
+def test_the_provider_is_read_by_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """kastlan's 0.33 report: a settings object holding the plain text ``"paddle"`` — set
+    by a test's ``monkeypatch`` or ``model_construct``, or an app's field typed ``str`` —
+    got :class:`NoProviderClient`, compared by identity with the enum."""
+    key = SecretStr("pdl_sdbx_apikey_example")
+    fields: dict[str, Any] = {"billing_provider": "paddle", "billing_api_key": key}
+    constructed = BillingSettings.model_construct(**fields)
+    assert constructed.billing_provider == "paddle" and type(constructed.billing_provider) is str
+    assert isinstance(billing_provider_client(constructed), PaddleClient)
+    patched = BillingSettings(billing_api_key="pdl_sdbx_apikey_example")
+    monkeypatch.setattr(patched, "billing_provider", "paddle")
+    assert isinstance(billing_provider_client(patched), PaddleClient)
+    monkeypatch.setattr(patched, "billing_provider", "lemonsqueezy")
+    assert isinstance(billing_provider_client(patched), NoProviderClient)
+    # And the enum, as the environment parses it.
+    assert isinstance(
+        billing_provider_client(BillingSettings(billing_provider=BillingProvider.PADDLE, billing_api_key=key)),
+        PaddleClient,
+    )
 
 
 def test_a_hosted_checkout_reaches_the_client() -> None:
@@ -248,17 +271,61 @@ async def test_a_failed_cancellation_never_blocks_the_deletion(caplog: pytest.Lo
 
 
 def _cancelled(**fields: Any) -> Row:
-    """Cancelled for the period's end, which is still ahead (the helper reads the clock)."""
-    return _subscribed(**({"cancel_at_period_end": True, "current_period_end": datetime.now(UTC) + 30 * DAY} | fields))
+    """Cancelled for the period's end, as Paddle's ``subscription.updated`` writes it."""
+    return _subscribed(**({"cancel_at_period_end": True} | fields))
+
+
+def _paddle(paddle: PaddleApiFake, **fields: Any) -> BillingProviderClient:
+    """The deployment's client on Paddle's API fake; billing off unless ``fields`` say."""
+    settings = BillingSettings(billing_provider="paddle", billing_api_key="pdl_sdbx_apikey_example", **fields)
+    return billing_provider_client(settings, client=httpx.AsyncClient(transport=paddle.transport))
 
 
 async def test_a_withdrawn_deletion_removes_the_scheduled_cancellation() -> None:
-    """§12.37: an operator's reactivation, or a withdrawn request."""
+    """§12.37: an operator's reactivation, or a withdrawn request — after the webhook wrote
+    the cancellation onto the row."""
     provider = FakeBillingProvider()
-    assert await resume_after_withdrawal(_cancelled(), provider) == "resumed"
-    assert await resume_after_withdrawal(_cancelled(status="comped", source="beta"), provider) == "resumed"
-    assert await resume_after_withdrawal(_cancelled(current_period_end=None), provider) == "resumed"
+    assert await resume_after_withdrawal(_cancelled(), provider, NOW) == "resumed"
+    assert await resume_after_withdrawal(_cancelled(status="comped", source="beta"), provider, NOW) == "resumed"
+    assert await resume_after_withdrawal(_cancelled(current_period_end=None), provider, NOW) == "resumed"
     assert provider.resumes == [{"subscription_id": "sub_1"}] * 3
+
+
+async def test_a_reactivation_before_the_webhook_is_undone_too() -> None:
+    """keksdose's 0.33 report: :func:`cancel_for_deletion` never sets
+    ``cancel_at_period_end`` — Paddle's ``subscription.updated`` does — so a reactivation
+    before that webhook found "not cancelled" on the row and answered ``None``, while the
+    request's audit said ``"cancelled"`` and Paddle still had the cancellation scheduled."""
+    provider = FakeBillingProvider()
+    row = _subscribed()
+    assert await cancel_for_deletion(row, provider) == "cancelled"
+    assert not row.cancel_at_period_end  # the webhook hasn't come yet
+    assert await resume_after_withdrawal(row, provider, NOW) == "resumed"
+    assert provider.resumes == [{"subscription_id": "sub_1"}]
+
+
+async def test_a_reactivation_with_billing_off_reaches_paddle() -> None:
+    """Switched off, the webhook answers 404: the row never learns of the cancellation, and
+    the deletion's cancellation and its undoing still reach Paddle (§14.8)."""
+    paddle = PaddleApiFake()
+    client = _paddle(paddle)
+    row = _subscribed()
+    assert await cancel_for_deletion(row, client) == "cancelled"
+    assert await resume_after_withdrawal(row, client, NOW) == "resumed"
+    resume = paddle.requests[-1]
+    assert (resume.method, str(resume.url)) == ("PATCH", "https://sandbox-api.paddle.com/subscriptions/sub_1")
+    assert paddle.sent == {"scheduled_change": None}
+
+
+async def test_nothing_scheduled_is_harmless() -> None:
+    """Paddle's docs don't say what ``scheduled_change: null`` does when nothing is
+    scheduled: setting the field to the value it has answers 200 (the fake's
+    ``update_subscription``), and the subscription runs on. Refused instead, it is nothing
+    to resume — not a failure for an operator to chase."""
+    paddle = PaddleApiFake()
+    assert await resume_after_withdrawal(_subscribed(), _paddle(paddle), NOW) == "resumed"
+    paddle.fail_with(400, "subscription_scheduled_change_invalid_update")
+    assert await resume_after_withdrawal(_subscribed(), _paddle(paddle), NOW) is None
 
 
 @pytest.mark.parametrize(
@@ -266,23 +333,58 @@ async def test_a_withdrawn_deletion_removes_the_scheduled_cancellation() -> None
     [
         Row(),
         _cancelled(provider_subscription_id=None),
-        _subscribed(),  # not set to cancel: the payer never asked, or it was undone already
+        _subscribed(provider_subscription_id=None),
         _cancelled(status="canceled"),  # cancelled at once, or ended: can't be reinstated
+        _subscribed(status="canceled"),
         _cancelled(status="expired"),
-        _subscribed(cancel_at_period_end=True, current_period_end=datetime(2026, 1, 1)),  # its period is over
+        _cancelled(current_period_end=NOW - DAY),  # its period is over
+        _subscribed(current_period_end=NOW),
     ],
 )
 async def test_nothing_to_undo_is_none(row: Row) -> None:
     provider = FakeBillingProvider()
-    assert await resume_after_withdrawal(row, provider) is None
+    assert await resume_after_withdrawal(row, provider, NOW) is None
     assert provider.resumes == []
 
 
-async def test_a_failed_resume_is_logged_for_the_operator(caplog: pytest.LogCaptureFixture) -> None:
+async def test_an_ended_subscription_paddle_refuses_is_nothing_to_undo(caplog: pytest.LogCaptureFixture) -> None:
+    """Ended at Paddle before its webhook reached the row: Paddle refuses the update
+    (``subscription_update_when_canceled``), which is nothing to resume, logged at INFO."""
+    paddle = PaddleApiFake()
+    paddle.fail_with(400, "subscription_update_when_canceled")
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.billing"):
+        assert await resume_after_withdrawal(_cancelled(), _paddle(paddle), NOW) is None
+    assert [record.levelno for record in caplog.records if record.name == "eifi1_server_kit.billing"][
+        -1
+    ] == logging.INFO
+    assert "nothing to resume for the subscription sub_1" in caplog.text
+
+
+async def test_the_period_is_read_at_now_or_the_clock() -> None:
+    """``now``, as :func:`require_new_checkout` takes it; unset, the current time. A naive
+    end or ``now`` is read as UTC."""
+    provider = FakeBillingProvider()
+    ends = _cancelled(current_period_end=datetime(2026, 11, 1))
+    assert await resume_after_withdrawal(ends, provider, datetime(2026, 10, 31, 23, 0)) == "resumed"
+    assert await resume_after_withdrawal(ends, provider, datetime(2026, 11, 1, tzinfo=UTC)) is None
+    running = _cancelled(current_period_end=datetime.now(UTC) + 30 * DAY)
+    assert await resume_after_withdrawal(running, provider) == "resumed"
+    assert await resume_after_withdrawal(_cancelled(current_period_end=datetime(2026, 1, 1)), provider) is None
+    assert len(provider.resumes) == 2
+
+
+@pytest.mark.parametrize("failure", [(500, "internal_error"), (400, "subscription_locked_renewal"), (502, None)])
+async def test_a_failed_resume_is_logged_for_the_operator(
+    failure: tuple[int, str | None], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Any other refusal leaves the cancellation in place: "failed", for the operator."""
     with caplog.at_level(logging.ERROR, logger="eifi1_server_kit.billing"):
-        assert await resume_after_withdrawal(_cancelled(), FakeBillingProvider(fail=True)) == "failed"
+        assert await resume_after_withdrawal(_cancelled(), FakeBillingProvider(fail=True), NOW) == "failed"
     (record,) = caplog.records
     assert "remove the scheduled cancellation by hand" in record.getMessage()
+    paddle = PaddleApiFake()
+    paddle.fail_with(*failure)
+    assert await resume_after_withdrawal(_cancelled(), _paddle(paddle), NOW) == "failed"
 
 
 # --- the way back (§14.4) ------------------------------------------------------------------

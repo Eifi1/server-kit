@@ -460,15 +460,15 @@ numeric variant ids in `billing_price_ids`.
 
 | Area | Names |
 |---|---|
-| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy` deprecated), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`, `billing_app` (the app's tag, set in code; with Paddle, required to switch on), `billing_environment` (`PaddleEnvironment`: `sandbox`, `live`; unset: the key's prefix), `billing_checkout_page_url` (the pay page), `billing_hosted_checkout_url` (wins over it); `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch), `.billing_api_environment()` (503 if unknown), `.verify_billing_webhook(provider, raw_body, headers, *, now=None)` (the secret AND the tolerance) |
+| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy` deprecated), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`, `billing_app` (the app's tag, set in code — lowercase, a letter first, checked even where the app's subclass redeclares the field as `str`; with Paddle, required to switch on), `billing_environment` (`PaddleEnvironment`: `sandbox`, `live`; unset: the key's prefix), `billing_checkout_page_url` (the pay page), `billing_hosted_checkout_url` (wins over it); `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch), `.billing_api_environment()` (503 if unknown), `.verify_billing_webhook(provider, raw_body, headers, *, now=None)` (the secret AND the tolerance) |
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
 | Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None)`, `PAYER_REF_KEY`, `APP_KEY`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
-| The provider | the `BillingProviderClient` port (`checkout_url`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
-| Paddle (the `billing` extra) | `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None, hosted_checkout_url=None, timeout=15, client=None)`, `PaddleError` (`.status`, `.paddle_code`, `.paddle_detail`, `.request_id`; 502, or 503 for a 401/403), `paddle_environment_of(api_key)`, `PADDLE_API_BASES`, `PADDLE_API_VERSION`, `PADDLE_TIMEOUT_SECONDS` |
-| Notices | `billing_notice_due(row, now, *, launch, sent, ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at, days_left)` (`.key`, the marker), `BillingNoticeKind` (`trial_ending`, `trial_ended`, `grant_ending`, `grant_ended`), `NOTICE_STATUSES`; over the app's candidates, `billing_notices_owed(candidates, now, *, settings)` → `OwedNotice(payer, kind, ends_at, days_left)` from `NoticeCandidate(payer, row, sent, deactivated, deletion_requested)` |
-| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`, with `at_provider`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`), `SyncRefusal` |
+| The provider | the `BillingProviderClient` port (`checkout_url`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
+| Paddle (the `billing` extra) | `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None, hosted_checkout_url=None, timeout=15, client=None)`, `PaddleError` (`.status`, `.paddle_code`, `.paddle_detail`, `.request_id`; 502, or 503 for a 401/403), `paddle_environment_of(api_key)`, `paddle_locale(kit_locale)` (ui-kit's `paddleLocale`: `de-CH` → `de`, `zh` → `zh-Hans`, `hu` → `en`; a hosted checkout's `locale`), `PADDLE_API_BASES`, `PADDLE_API_VERSION`, `PADDLE_TIMEOUT_SECONDS` |
+| Notices | `billing_notice_due(row, now, *, launch, sent, ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at, days_left)` (`.key`, the marker), `BillingNoticeKind` (`trial_ending`, `trial_ended`, `grant_ending`, `grant_ended`), `NOTICE_STATUSES`; over the app's candidates, `billing_notices_owed(candidates, now, *, settings)` → `OwedNotice(payer, kind, ends_at, days_left, row)` (the candidate's row, typed as the app's) from `NoticeCandidate(payer, row, sent, deactivated, deletion_requested)` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`, with `at_provider`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`; `comped_until` required, may be `null`), `AdminPlan` (`.from_spec(plan)`) and `admin_plans_out(catalogue)` for `GET /admin/plans`, `SyncRefusal` |
 | Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
 | Test helpers | `eifi1_server_kit.billing.testing`, in the wheel, not re-exported: `paddle_event(step, *, payer_ref, price_id, app=None, …)`, `PADDLE_STEPS`, `PADDLE_STEP_PERIODS`, `sign_paddle`, `signed_paddle_event`, `post_signed` (localhost only), `FakeBillingProvider`, `PaddleApiFake`, `PADDLE_API_EXAMPLES` |
 
@@ -538,7 +538,10 @@ units — ui-kit's `PlanPrices`, so `BillingPlan.prices` takes them as they are
 `PlanIntervalPrices` name every key, so openapi-typescript generates `{CHF?: {month?:
 number; year?: number}; EUR?: …}` — ui-kit's type, no cast. A combination the plan doesn't
 sell is left out, never `0`, and unlimited is `null`. The names and feature lines are the page's, from
-the app's i18n by `code`.
+the app's i18n by `code`. **`GET /admin/plans`** (admins only, whatever the switch says)
+answers `admin_plans_out(PLANS)`: an `AdminPlan` `{code, limits, sort}` per plan, the
+ones not sold any more included and no prices — the operator's plan picker and the
+roster's plan filter.
 
 **Whose standing**: the payer's, not the caller's — keksdose's budget owner, Kurvenschmiede's
 row owner (the creator's for a create), kastlan's acting company. No row means always in
@@ -683,9 +686,10 @@ the period's end (a paused subscription — `expired` — at once) and never rai
 (nothing to cancel), `"cancelled"`, or `"failed"` with an ERROR "cancel it by hand"; put
 the outcome in the request's audit detail. **At a reactivation**, only where that detail
 says `"cancelled"`, `resume_after_withdrawal(row, billing_client())` removes the scheduled
-cancellation (Paddle's `PATCH /subscriptions/{id} {"scheduled_change": null}`); a
-subscription cancelled at once or past its period isn't resumed — the payer subscribes
-again.
+cancellation (Paddle's `PATCH /subscriptions/{id} {"scheduled_change": null}`) — whatever
+the row's `cancel_at_period_end` says, which only Paddle's webhook sets (not yet arrived,
+or refused while billing is off); a subscription cancelled at once, past its period, or
+one Paddle answers has ended isn't resumed (`None`) — the payer subscribes again.
 
 **Trial and grant end notices** (§12.22) are each app's daily job; the kit decides only
 which payer is owed which notice. `billing_notice_due(row, now, launch=…, sent=…)`
@@ -698,7 +702,8 @@ with the RLS bypass; no deactivated account and none with a deletion request; th
 own mail per kind and locale; then `row.billing_notice_sent = notice.key`
 (`VARCHAR(64) NULL`) once `send` returned True, committed per row.
 `billing_notices_owed(candidates, now, settings=settings)` is the same decision over
-`NoticeCandidate`s, the switch and the skipped accounts included. The trigger — a token
+`NoticeCandidate`s, the switch and the skipped accounts included; each `OwedNotice` hands
+the candidate's row back for the marker (`owed.row.billing_notice_sent = owed.key`). The trigger — a token
 in `X-Jobs-Token`, never the query string — is the app's; the kit has no helper for it.
 
 **`eifi1_server_kit.billing.testing`** ships in the wheel for the apps' tests and local
@@ -722,7 +727,8 @@ the key it chose. `render_mail(user.locale, texts, link=…, name=…, hours=…
 and renders it. It fills `{placeholders}` on the template only and lays the mail out with
 `render_message`, which HTML-escapes every part, the subject included, so a name with
 markup stays text. The link must be http(s) and is escaped in the `href` too. →
-`MailMessage(subject, text, html)`.
+`MailMessage(subject, text, html)`. The plain text's link line is `{cta}: {link}`, with
+the no-break space French sets before the colon (`Choisir\u00a0: …`).
 
 The HTML is a **whole document**: `<!doctype html><html lang="…"><head><meta
 charset="utf-8"><title>{subject}</title></head><body>…</body></html>`. The `lang` is the
@@ -745,7 +751,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.7.0/eifi1_server_kit-0.7.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.7.1/eifi1_server_kit-0.7.1-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client or the Paddle client, name the extra: `"eifi1-server-kit[billing,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,images,mail]`, keksdose `[billing,images]`, Kurvenschmiede `[billing,mail]`).

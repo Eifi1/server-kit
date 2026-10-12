@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import enum
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Annotated, Any, NamedTuple, Self
@@ -146,8 +147,9 @@ def _page_url(value: str) -> str:
 
 
 _PageUrl = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500), AfterValidator(_page_url)]
-#: The app's tag: lowercase, a letter first, as a plan code (``keksdose``).
-_AppTag = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
+#: The app's tag's shape: lowercase, a letter first, as a plan code (``keksdose``).
+_APP_TAG_PATTERN = r"^[a-z][a-z0-9_-]{0,63}$"
+_AppTag = Annotated[str, StringConstraints(strip_whitespace=True, pattern=_APP_TAG_PATTERN)]
 
 
 class BillingSettings(BaseModel):
@@ -223,7 +225,8 @@ class BillingSettings(BaseModel):
     #: (:func:`~eifi1_server_kit.billing.parse_webhook_event`'s ``app``). Set as the DEFAULT
     #: in the app's ``Settings`` subclass (``billing_app: str | None = "keksdose"``), not per
     #: deployment; ``<APP>_BILLING_APP`` exists but is listed as "set in code". Lowercase, a
-    #: letter first. Required to switch on with Paddle.
+    #: letter first — checked again after the fields (:meth:`_the_apps_tag_is_a_tag`), so
+    #: the subclass's plain ``str`` keeps the rule. Required to switch on with Paddle.
     billing_app: _AppTag | None = None
     #: Paddle's API, ``sandbox`` or ``live`` (decision 24). Unset: read from the API key's
     #: prefix (``pdl_sdbx_apikey_`` / ``pdl_live_apikey_``); a legacy key, from before
@@ -257,6 +260,18 @@ class BillingSettings(BaseModel):
         }
 
     @model_validator(mode="after")
+    def _the_apps_tag_is_a_tag(self) -> Self:
+        """``billing_app``'s shape, whatever the field's type: the app sets its tag by
+        REDECLARING the field (``billing_app: str | None = "keksdose"``), and that
+        annotation replaces the mixin's, its pattern with it — keksdose's 0.33 report, where
+        ``"Not Valid!"`` passed. A model validator stays the mixin's; a default is checked
+        too, which a field's own rule isn't."""
+        tag = self.billing_app
+        if tag is not None and not re.fullmatch(_APP_TAG_PATTERN, tag):
+            raise ValueError(f"billing_app is the app's tag: lowercase, a letter first ({tag!r})")
+        return self
+
+    @model_validator(mode="after")
     def _switching_on_needs_the_secrets(self) -> Self:
         if self.billing_enabled:
             missing = [
@@ -270,7 +285,7 @@ class BillingSettings(BaseModel):
             ]
             if missing:
                 raise ValueError(f"billing_enabled needs {', '.join(missing)}")
-            if self.billing_provider is BillingProvider.PADDLE:
+            if self.billing_provider == BillingProvider.PADDLE:  # by value: a subclass's ``str`` too
                 self._paddle_can_switch_on()
         self._price_index()  # an id standing for two combinations is refused here, at start
         return self
@@ -347,13 +362,21 @@ class BillingSettings(BaseModel):
         of_key = (
             None if self.billing_api_key is None else paddle_environment_of(self.billing_api_key.get_secret_value())
         )
-        environment = self.billing_environment or of_key
+        # By value: a subclass's ``str`` field, or a test's ``model_construct``, holds the text.
+        try:
+            named = None if self.billing_environment is None else PaddleEnvironment(self.billing_environment)
+        except ValueError:
+            raise BillingError(
+                BillingErrorCode.BILLING_NOT_CONFIGURED,
+                f"billing_environment is sandbox or live, not {self.billing_environment!r}",
+            ) from None
+        environment = named or of_key
         if environment is None:
             raise BillingError(
                 BillingErrorCode.BILLING_NOT_CONFIGURED,
                 "Set billing_environment: the API key's prefix says neither sandbox nor live (a key from before 2025-05-06)",
             )
-        if of_key is not None and of_key is not environment:
+        if of_key is not None and of_key != environment:
             raise BillingError(
                 BillingErrorCode.BILLING_NOT_CONFIGURED,
                 f"The API key is a {of_key} key, but billing_environment is {environment}",

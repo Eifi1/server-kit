@@ -177,12 +177,13 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
     ttl = members["eifi1_server_kit.auth", "RESET_TTL"]
     assert ttl["kind"] == "constant" and ttl["signature"] == "RESET_TTL = timedelta(hours=1)"
     assert ttl["doc"].startswith("A password-reset link")
-    # 0.7's billing: the port, the Paddle client, the notices; generic named tuples keep their parameter.
+    # 0.7's billing: the port, the Paddle client, the notices; generic named tuples keep their
+    # parameters, a bound and a default included (0.7.1's row).
     assert members["eifi1_server_kit.billing", "BillingProviderClient"]["kind"] == "protocol"
     assert members["eifi1_server_kit.billing", "PaddleError"]["signature"] == "class PaddleError(BillingError)"
     owed = members["eifi1_server_kit.billing", "OwedNotice"]
-    assert owed["signature"] == "class OwedNotice[PayerT](NamedTuple)"
-    assert [field["name"] for field in owed["fields"]] == ["payer", "kind", "ends_at", "days_left"]
+    assert owed["signature"] == "class OwedNotice[PayerT, RowT: SubscriptionRow = SubscriptionRow](NamedTuple)"
+    assert [field["name"] for field in owed["fields"]] == ["payer", "kind", "ends_at", "days_left", "row"]
     assert members["eifi1_server_kit.billing", "PortalTarget"]["signature"].startswith("PortalTarget = Literal[")
     # A constant re-exported from another module is found where it is assigned.
     assert members["eifi1_server_kit.user_admin", "LIKE_ESCAPE"]["signature"] == 'LIKE_ESCAPE = "\\\\"'

@@ -54,6 +54,7 @@ __all__ = [
     "PaddleClient",
     "PaddleError",
     "paddle_environment_of",
+    "paddle_locale",
 ]
 
 logger = logging.getLogger("eifi1_server_kit.billing")
@@ -80,6 +81,41 @@ _PORTAL_TARGETS: frozenset[str] = frozenset(get_args(PortalTarget))
 _PORTAL_LINKS: Mapping[str, str] = types.MappingProxyType(
     {"cancel": "cancel_subscription", "payment_method": "update_subscription_payment_method"}
 )
+
+
+#: The kit's seven languages (ui-kit's ``KitLanguageCode``), in ui-kit's order.
+_KIT_LANGUAGES = ("de-CH", "en", "es", "fr", "it", "hu", "zh")
+#: The kit's language → Paddle's checkout locale: ui-kit's ``PADDLE_LOCALES``
+#: (``src/billing/pay-page.ts``), so a hosted checkout speaks what the pay page does.
+#: Paddle's checkout locales (read 2026-10-09): ar, zh-Hans, zh-TW, da, nl, en, fr, de,
+#: it, ja, ko, no, pl, pt, pt-BR, tr, ru, es, sv — no Hungarian, so a Hungarian buyer gets
+#: English always, not Paddle's guess from the browser.
+_PADDLE_LOCALES: Mapping[str, str] = types.MappingProxyType(
+    {"en": "en", "de-CH": "de", "fr": "fr", "it": "it", "es": "es", "zh": "zh-Hans", "hu": "en"}
+)
+
+
+def _kit_language_of(tag: str) -> str | None:
+    """The kit language ``tag`` names, or ``None`` — ui-kit's ``kitLanguageOf``: exact
+    first, ignoring case and reading ``_`` as ``-``; then by language, so every German is
+    ``de-CH``, every Chinese ``zh``, and any regional form its base (``fr-CA`` → ``fr``)."""
+    lower = tag.strip().replace("_", "-").lower()
+    if not lower:
+        return None
+    exact = next((code for code in _KIT_LANGUAGES if code.lower() == lower), None)
+    if exact is not None:
+        return exact
+    language = lower.split("-", 1)[0]
+    return next((code for code in _KIT_LANGUAGES if code.split("-", 1)[0].lower() == language), None)
+
+
+def paddle_locale(kit_locale: str) -> str:
+    """The kit's locale → Paddle's checkout locale, as ui-kit's ``paddleLocale``:
+    ``de-CH`` → ``de``, ``zh`` → ``zh-Hans``, ``hu`` → ``en`` (Paddle has no Hungarian),
+    the others as they are. Any tag is read as the kit reads it (``de-AT`` and ``de`` are
+    the one German, ``zh-TW`` the one Chinese); one the kit doesn't ship is English.
+    :class:`PaddleClient` sends it as a hosted checkout's ``locale``."""
+    return _PADDLE_LOCALES[_kit_language_of(kit_locale) or "en"]
 
 
 def paddle_environment_of(api_key: str) -> PaddleEnvironment | None:
@@ -164,7 +200,8 @@ class PaddleClient:
     * ``checkout_page_url`` — the kit's pay page on the app's pay host (§14.4), sent as the
       transaction's ``checkout.url``; unset, the account's default payment link.
     * ``hosted_checkout_url`` — a Paddle hosted checkout's launch URL; it wins over the
-      pay page: the checkout answers it with ``?transaction_id=…`` (and ``&locale=…``).
+      pay page: the checkout answers it with ``?transaction_id=…`` (and ``&locale=…``,
+      the buyer's language as Paddle names it, :func:`paddle_locale`).
     * ``client`` — an ``httpx.AsyncClient`` the app owns and closes; without it each call
       opens and closes its own (as :class:`~eifi1_server_kit.mail.ResendClient`).
     """
@@ -213,9 +250,11 @@ class PaddleClient:
         """Create the checkout's transaction — ``POST /transactions`` with one ``price_id``
         (quantity 1), ``custom_data`` plus the app's tag, the payer's ``customer_id`` when
         known, and the pay page as ``checkout.url`` — and answer the URL that opens it:
-        with a hosted checkout, ``<hosted>?transaction_id=<txn>`` (``&locale=<locale>`` when
-        given); otherwise the transaction's ``checkout.url``, the pay page plus
-        ``?_ptxn=<txn>``. A 2xx without the id or the URL is a :class:`PaddleError` (502).
+        with a hosted checkout, ``<hosted>?transaction_id=<txn>`` (and, when ``locale`` is
+        given, ``&locale=`` its :func:`paddle_locale`: the app's ``de-CH`` is Paddle's
+        ``de``); otherwise the transaction's ``checkout.url``, the pay page plus
+        ``?_ptxn=<txn>`` — the pay page maps the language itself (ui-kit's ``payPageUrl``).
+        A 2xx without the id or the URL is a :class:`PaddleError` (502).
         """
         data: dict[str, str] = dict(custom_data)
         if self._app is not None:
@@ -230,7 +269,8 @@ class PaddleClient:
         if transaction_id is None:
             raise _malformed("POST", "/transactions", answer, "data.id")
         if self._hosted_checkout_url:
-            query = {"transaction_id": transaction_id, **({"locale": locale} if locale else {})}
+            language = paddle_locale(locale) if locale and locale.strip() else None
+            query = {"transaction_id": transaction_id, **({"locale": language} if language else {})}
             joiner = "&" if "?" in self._hosted_checkout_url else "?"
             return f"{self._hosted_checkout_url}{joiner}{urlencode(query)}"
         checkout = answer.data.get("checkout")

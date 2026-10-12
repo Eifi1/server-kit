@@ -158,7 +158,7 @@ def verify_webhook_signature(
     """
     chosen = BillingProvider(provider)
     header = _header(headers, SIGNATURE_HEADERS[chosen])
-    if chosen is BillingProvider.PADDLE:
+    if chosen == BillingProvider.PADDLE:
         verify_paddle_signature(raw_body, header, secret, now=now, tolerance=tolerance)
     else:
         verify_lemonsqueezy_signature(raw_body, header, secret)

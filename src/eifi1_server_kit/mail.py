@@ -77,6 +77,10 @@ SUPPORT_LOCAL_PART = "support"
 #: A language tag as ``<html lang>`` takes it (BCP 47's shape: ``de-CH``, ``en``,
 #: ``zh-Hans``) — checked, because it is written into an attribute.
 _LANG_TAG = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
+#: What goes before the colon of the plain text's link line, per language: French sets a
+#: no-break space (U+00A0) before it, as ui-kit's French catalogue does (``Mixte\u00a0:``);
+#: every other language none.
+_BEFORE_COLON: Mapping[str, str] = {"fr": "\u00a0"}
 
 
 def _language(tag: str) -> str:
@@ -147,20 +151,26 @@ def render_message(
     the server minted. Unlike keksdose it is escaped inside the ``href`` too: ``&amp;`` in
     an attribute IS ``&`` to every HTML parser, so a query string survives, and a link can
     no longer close the attribute.
+
+    The plain text's link line is ``{cta}: {link}``, typeset for ``lang``: French takes a
+    no-break space before the colon (``Choisir\u00a0: https://…``), every other language
+    none.
     """
     if not link.startswith(("https://", "http://")):
         raise ValueError(f"a mail link is http(s): {link[:40]!r}")
+    tag = _lang_attribute(lang)
     content = (
         f"<p>{escape(intro)}</p><p>{escape(body)}</p>"
         f'<p><a href="{escape(link, quote=True)}">{escape(cta)}</a></p>'
         f'<p style="color:#64748b;font-size:12px">{escape(outro)}</p>'
     )
     html = (
-        f'<!doctype html><html lang="{escape(_lang_attribute(lang), quote=True)}">'
+        f'<!doctype html><html lang="{escape(tag, quote=True)}">'
         f'<head><meta charset="utf-8"><title>{escape(subject)}</title></head>'
         f"<body>{content}</body></html>"
     )
-    text = f"{intro}\n\n{body}\n\n{cta}: {link}\n\n{outro}"
+    colon = _BEFORE_COLON.get(_language(tag).lower(), "") + ":"
+    text = f"{intro}\n\n{body}\n\n{cta}{colon} {link}\n\n{outro}"
     return html, text
 
 

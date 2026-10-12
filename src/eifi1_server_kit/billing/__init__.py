@@ -36,15 +36,17 @@ a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy is dep
   (:func:`cancel_for_deletion`, :func:`resume_after_withdrawal`); the checkout's way back
   (:func:`checkout_return_url`);
 * :mod:`~eifi1_server_kit.billing.paddle` — :class:`PaddleClient`, Paddle Billing's API
-  (the ``billing`` extra), and :class:`PaddleError`;
+  (the ``billing`` extra), :class:`PaddleError`, and the buyer's language as Paddle's
+  checkout names it (:func:`paddle_locale`);
 * :mod:`~eifi1_server_kit.billing.notices` — which payer is owed a trial or grant end
   notice (:func:`billing_notice_due`);
 * :mod:`~eifi1_server_kit.billing.webhooks` — the event-store port, the pure
   :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
   policy;
 * :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, the plans
-  (:class:`PlanOut` with :class:`PlanPrices`, :func:`plans_out`), checkout, the operator's plan change, and a sync
-  reply's refused changes;
+  (:class:`PlanOut` with :class:`PlanPrices`, :func:`plans_out`), checkout, the operator's plans
+  (:class:`AdminPlan`, :func:`admin_plans_out`) and plan change, and a sync reply's refused
+  changes;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -98,6 +100,7 @@ from eifi1_server_kit.billing.paddle import (
     PaddleClient,
     PaddleError,
     paddle_environment_of,
+    paddle_locale,
 )
 from eifi1_server_kit.billing.plans import (
     CURRENCY_EXPONENTS,
@@ -130,6 +133,7 @@ from eifi1_server_kit.billing.provider import (
     sold_plan,
 )
 from eifi1_server_kit.billing.schemas import (
+    AdminPlan,
     BillingOverview,
     BillingStatus,
     CheckoutAnswer,
@@ -141,6 +145,7 @@ from eifi1_server_kit.billing.schemas import (
     PlanPrices,
     PortalRequest,
     SyncRefusal,
+    admin_plans_out,
     plans_out,
 )
 from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PaddleEnvironment, PriceRef
@@ -202,6 +207,7 @@ __all__ = [
     "SIGNATURE_HEADERS",
     "TRIAL_LENGTH",
     "WEBHOOK_MAPPERS",
+    "AdminPlan",
     "BillingCurrency",
     "BillingError",
     "BillingErrorCode",
@@ -248,6 +254,7 @@ __all__ = [
     "SubscriptionStatus",
     "SyncRefusal",
     "WebhookAnswer",
+    "admin_plans_out",
     "beta_comped_until",
     "billing_notice_due",
     "billing_notices_owed",
@@ -268,6 +275,7 @@ __all__ = [
     "minor_to_decimal",
     "normalize_plan",
     "paddle_environment_of",
+    "paddle_locale",
     "parse_webhook_event",
     "plan_catalogue",
     "plans_out",

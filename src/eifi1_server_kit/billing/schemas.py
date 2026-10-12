@@ -40,6 +40,7 @@ from eifi1_server_kit.billing.standing import (
 from eifi1_server_kit.billing.standing import in_good_standing as _in_good_standing
 
 __all__ = [
+    "AdminPlan",
     "BillingOverview",
     "BillingStatus",
     "CheckoutAnswer",
@@ -51,6 +52,7 @@ __all__ = [
     "PlanPrices",
     "PortalRequest",
     "SyncRefusal",
+    "admin_plans_out",
     "plans_out",
 ]
 
@@ -230,8 +232,45 @@ def plans_out(catalogue: Mapping[str, PlanSpec]) -> list[PlanOut]:
     Every currency the plans are sold in: the page picks the payer's — the overview's
     ``currency`` (§12.18) — and offers the switch where a plan has more than one.
     """
-    ordered = sorted(catalogue.values(), key=lambda plan: (plan.sort, plan.code))
-    return [PlanOut.from_spec(plan) for plan in ordered]
+    return [PlanOut.from_spec(plan) for plan in _in_order(catalogue)]
+
+
+def _in_order(catalogue: Mapping[str, PlanSpec]) -> list[PlanSpec]:
+    return sorted(catalogue.values(), key=lambda plan: (plan.sort, plan.code))
+
+
+class AdminPlan(BaseModel):
+    """One plan of ``GET /admin/plans`` (§14.12): ``{code, limits, sort}`` — the
+    catalogue's code, its limits (``null`` for unlimited) and its order, what the
+    operator's plan picker and the roster's plan filter are built from, with the names
+    from the app's i18n. Lifted from keksdose (``schemas/admin.py``). Build the list with
+    :func:`admin_plans_out`.
+
+    **No prices**: they are the payer's (``GET /billing/plans``, :class:`PlanOut`), and
+    this answers whatever the billing switch says — an operator grants plans with billing
+    off too. Every plan of the catalogue, the ones not sold any more included: the
+    accounts on them keep them.
+    """
+
+    code: PlanCode
+    limits: dict[str, int | None]
+    sort: int
+
+    @classmethod
+    def from_spec(cls, plan: PlanSpec) -> Self:
+        """``plan`` for the operator: its code, limits and order."""
+        return cls(code=plan.code, limits=dict(plan.limits), sort=plan.sort)
+
+
+def admin_plans_out(catalogue: Mapping[str, PlanSpec]) -> list[AdminPlan]:
+    """The answer to ``GET /admin/plans`` (§14.12): every plan of ``catalogue`` as
+    :class:`AdminPlan`, in :func:`plans_out`'s order (``sort``, then the code)::
+
+        @router.get("/admin/plans", response_model=list[AdminPlan])
+        async def list_plans() -> list[AdminPlan]:     # admins only: the router's gate
+            return admin_plans_out(PLANS)
+    """
+    return [AdminPlan.from_spec(plan) for plan in _in_order(catalogue)]
 
 
 class CheckoutRequest(BaseModel):
@@ -346,8 +385,10 @@ class PlanChangeResponse(BaseModel):
     usage: dict[str, int]
     #: A running beta grant kept its beta (§12.34): only the plan changed.
     kept_beta: bool = False
-    #: The grant's end as the change wrote it; ``None``: no end, or no grant.
-    comped_until: UtcDateTime | None = None
+    #: The grant's end as the change wrote it; ``None``: no end, or no grant. Required
+    #: though it may be ``None`` (no default): it is always sent, so the generated
+    #: TypeScript marks it required (keksdose's 0.33 report). :meth:`of` fills it.
+    comped_until: UtcDateTime | None
 
     @classmethod
     def of(
