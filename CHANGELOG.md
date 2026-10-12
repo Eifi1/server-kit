@@ -10,6 +10,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.7.1] (2026-10-12)
+
 server-kit 0.7.1: a patch from the apps' 0.33 / 0.7 adoption reports (kastlan, keksdose).
 No public name is removed or renamed. Three shapes grow where an app may notice:
 `OwedNotice` carries a fifth field, `row` (a hand-built one — a test's expected value —
