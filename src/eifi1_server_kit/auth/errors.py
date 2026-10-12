@@ -31,7 +31,7 @@ class AuthErrorCode(enum.StrEnum):
     #: expired, for an app that does not tell expiry apart.
     TOKEN_INVALID = "token_invalid"
     #: A one-time link that WAS valid and ran out: the page says "expired, ask for a new
-    #: one" instead of "invalid" (ui-kit 0.29.1; keksdose's verification and reset steps
+    #: one" instead of "invalid" (ui-kit 0.30.0; keksdose's verification and reset steps
     #: tell the two apart). Only the link's holder can learn it existed, so it is no
     #: oracle.
     TOKEN_EXPIRED = "token_expired"

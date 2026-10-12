@@ -1,5 +1,5 @@
 """Billing, plans and payment, as code (``docs/billing-harmonization.md`` §10 and §14 in
-``Eifi1/ui-kit``; its §12 wins over the sections above it, and §14.16 over the rest of §14).
+``Eifi1/ui-kit``; since ui-kit 0.34 the contract's body carries every settled amendment).
 
 Layer 1, like the rest of the kit: pure functions, Pydantic models and ports — no tables and
 no routes, and one request each for checkout, portal, cancel and undoing a cancel, through
