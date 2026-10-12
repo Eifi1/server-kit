@@ -21,6 +21,7 @@ from eifi1_server_kit.user_admin import (
     DeletionRequest,
     EmailChangeConfirm,
     EmailChangeRequest,
+    GroupRef,
     InvitationCreate,
     InvitationRow,
     InvitationStatus,
@@ -203,8 +204,33 @@ def test_admin_action_row() -> None:
         )
     )
     assert row.action is AdminAction.ERASE and row.detail == {} and row.actor is None
+    assert row.target_group_id is None and row.target_group is None
     # 0.5.1: an app's own action is kept as written, not refused.
     assert AdminActionRow(id=1, at=NOW, action="dance").action == "dance"
+
+
+def test_a_group_ref_reads_the_apps_group() -> None:
+    """§11.4: joined as PersonRef is — an ORM team, or kastlan's company by its id."""
+    team = SimpleNamespace(id=7, name="Workshop", members=[])
+    assert GroupRef.model_validate(team) == GroupRef(id=7, name="Workshop")
+    assert GroupRef().model_dump() == {"id": None, "name": None}
+    row = AdminActionRow.model_validate(
+        SimpleNamespace(
+            id=9,
+            at=NOW,
+            action="plan",
+            actor_id=1,
+            target_user_id=None,
+            target_email=None,
+            detail={"from": "free", "to": "pro"},
+            company_id=5,
+            target_group_id=5,  # kastlan fills it from company_id when it reads the row
+            actor=None,
+            target_group=SimpleNamespace(id=5, name="Example AG"),
+        )
+    )
+    assert row.action is AdminAction.PLAN and row.target_group == GroupRef(id=5, name="Example AG")
+    assert row.model_dump()["target_group"] == {"id": 5, "name": "Example AG"}
 
 
 def test_email_change() -> None:

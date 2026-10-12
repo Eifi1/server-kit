@@ -54,6 +54,7 @@ __all__ = [
     "DeletionRequest",
     "EmailChangeConfirm",
     "EmailChangeRequest",
+    "GroupRef",
     "InvitationCreate",
     "InvitationRow",
     "InvitationStatus",
@@ -256,12 +257,31 @@ class PersonRef(BaseModel):
     last_name: str = ""
 
 
+class GroupRef(BaseModel):
+    """A group a row names (§11.4): a Kurvenschmiede team, a kastlan company, a keksdose
+    budget. Joined by the app as :class:`PersonRef` is, from the live group — else, for
+    a group that no longer exists, from its ``group_delete`` row's ``target_group_name``
+    (decision 6); kastlan's from ``company_id``. ``name`` ``None``: nothing left to say,
+    and the page reads "a deleted team"."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int | None = None
+    name: str | None = None
+
+
 class AdminActionRow(BaseModel):
     """One row of ``GET /admin/actions?limit=&offset=&target=``, newest first (§4.3): the
-    table's columns, plus the actor joined for display.
+    table's columns, plus the actor and the group joined for display.
 
     ``actor_id`` is ``None`` for the erasure job; ``target_user_id`` for an invitation and
     after an erasure, when ``target_email`` is scrubbed too. ``company_id`` is kastlan's.
+    ``target_group_id`` (0.8, §11.3) is the group a ``group_*`` row is about, or a
+    ``membership_*`` or invitation row happened in; ui-kit's log takes ``target_group`` as
+    the entry's ``target`` for the first and as its ``group`` for the second (§11.4). The
+    ``group_delete`` row's ``target_group_name`` is not a field of its own: it is read
+    back through ``target_group``. The group is not a filter: ``?target=`` stays a
+    person's.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -277,7 +297,9 @@ class AdminActionRow(BaseModel):
     target_email: str | None = None
     detail: Annotated[dict[str, Any], BeforeValidator(_dict_or_empty)] = Field(default_factory=dict)
     company_id: int | None = None
+    target_group_id: int | None = None
     actor: PersonRef | None = None
+    target_group: GroupRef | None = None
 
 
 # --- §5: invitations -------------------------------------------------------------------

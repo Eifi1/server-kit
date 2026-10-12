@@ -61,13 +61,21 @@ def test_account_error_carries_its_code_status_and_extra_fields() -> None:
 
 def test_the_levels_are_the_contracts_table() -> None:
     """§4.2: type_email for deactivate, erase and transfer (and the user's own deletion,
-    whose body types the address, §6.4); acknowledge for a forced password change, a role
-    and a plan (billing §6)."""
+    whose body types the address, §6.4); acknowledge for a forced password change, a role,
+    a plan (billing §6) and deleting a group (§11.2 decision 5)."""
     assert set(CONFIRMATION_LEVELS) == set(AdminAction)
     typed = {action for action, level in CONFIRMATION_LEVELS.items() if level is TYPE_EMAIL}
     acknowledged = {action for action, level in CONFIRMATION_LEVELS.items() if level is ACKNOWLEDGE}
     assert typed == {AdminAction.DEACTIVATE, AdminAction.ERASE, AdminAction.TRANSFER, AdminAction.DELETION_REQUEST}
-    assert acknowledged == {AdminAction.PASSWORD_CHANGE_REQUIRE, AdminAction.ROLE, AdminAction.PLAN}
+    assert acknowledged == {
+        AdminAction.PASSWORD_CHANGE_REQUIRE,
+        AdminAction.ROLE,
+        AdminAction.PLAN,
+        AdminAction.GROUP_DELETE,
+    }
+    # §11.3: the other four group words are none; no group's action is type_email.
+    for word in ("group_create", "group_rename", "membership_add", "membership_role", "membership_remove"):
+        assert confirmation_level(word) is NONE, word
     assert confirmation_level("mail_reset") is NONE
     # keksdose's own word since 0.30, so its stored rows read as the kit's action.
     assert AdminAction("plan") is AdminAction.PLAN and confirmation_level("plan") is ACKNOWLEDGE
@@ -163,3 +171,25 @@ def test_require_confirmation() -> None:
     assert _code("type_email", confirm_email=" Ada@Example.com") is None
     with pytest.raises(ValueError):
         require_confirmation("maybe", target_email="ada@example.com")
+
+
+def _group_code(level: ConfirmationLevel | str, **kwargs: object) -> AccountErrorCode | None:
+    try:
+        require_confirmation(level, target_email=None, **kwargs)  # type: ignore[arg-type]
+    except AccountError as exc:
+        return exc.code
+    return None
+
+
+def test_require_confirmation_for_a_group() -> None:
+    """KS 10 (§11.8): ``target_email=None`` is a group, which has no address to type."""
+    required = AccountErrorCode.CONFIRMATION_REQUIRED
+    assert _group_code(NONE) is None
+    # acknowledge: the tick alone — a typed address can match nothing, so it counts for nothing
+    assert _group_code(ACKNOWLEDGE, acknowledged=True) is None
+    assert _group_code(ACKNOWLEDGE) is required
+    assert _group_code(ACKNOWLEDGE, confirm_email="ada@example.com") is required
+    # type_email: a programming error, whatever the request carries
+    for kwargs in ({}, {"acknowledged": True}, {"confirm_email": "ada@example.com"}):
+        with pytest.raises(ValueError, match="a group has none"):
+            require_confirmation(TYPE_EMAIL, target_email=None, **kwargs)
