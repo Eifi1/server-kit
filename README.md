@@ -809,7 +809,9 @@ binary, so uv cannot fetch a git source inside a Docker build (keksdose's findin
 tag `v*` runs `.github/workflows/release.yml`, which builds the wheel with the full gate and
 attaches it to the GitHub Release; uv.lock pins its hash. To try a change locally without
 touching an app's `pyproject.toml` or `uv.lock`, run its suite with the kit overlaid:
-`uv run --with ../server-kit pytest`.
+`uv run --with-editable ../server-kit pytest`. Editable, not `--with ../server-kit`: uv
+caches the wheel it builds from a path until the kit's `pyproject.toml` changes, so an edit
+made after the first run would not be what gets tested (Kurvenschmiede's S6).
 
 ## Adopting layer 1
 
