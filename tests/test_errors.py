@@ -55,6 +55,7 @@ CODED: dict[str, tuple[AuthError | AccountError | BillingError, int]] = {
     "taken": (AuthError(AuthErrorCode.EMAIL_TAKEN, "That address has an account"), 409),
     "token": (AuthError(AuthErrorCode.TOKEN_INVALID), 400),
     "expired": (AuthError(AuthErrorCode.TOKEN_EXPIRED), 400),
+    "session_ended": (AuthError(AuthErrorCode.SESSION_ENDED), 401),
     "last_admin": (AccountError(AccountErrorCode.LAST_ADMIN), 409),
     "mismatch": (AccountError(AccountErrorCode.CONFIRMATION_MISMATCH), 409),
     "billing_off": (BillingError(BillingErrorCode.BILLING_DISABLED), 404),

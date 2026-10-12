@@ -57,6 +57,16 @@ notice: the plain `filename=` of a name with a letter outside ASCII (below, Fixe
   rows are checked at; and it goes through the app's own `verify_password`, so an over-long
   password is refused without hashing on both paths. In `auth.passwords`, re-exported from
   `eifi1_server_kit.auth`. Lifted from keksdose `auth_service.py:129-140`.
+* **auth:** the refresh's coded refusal (auth §11, decision 7; ui-kit 0.34's
+  `attachSessionRefresh`): `AuthErrorCode.SESSION_ENDED` — `"session_ended"`, 401, "This
+  session has ended. Please sign in again." (Kurvenschmiede's `TokenRefusal.ENDED`) — for
+  every definitive refusal of `POST /auth/refresh`: an unknown, expired or revoked token,
+  a deactivated account, a required password change. The client decides by the status,
+  so an app that has not switched keeps working; each app switches its refusals together
+  (keksdose's five, Kurvenschmiede's `TokenRefusedError`, kastlan's token and session
+  checks). And `RefreshRequest {refresh_token}` in `auth.schemas`, the body each app
+  defined for itself, with no length rule: an empty token is the route's 401, never a 422,
+  which the client would read as transient.
 * **mail:** `AccountNoticeKind` — `email_change_notice` (to the old address, user-admin
   §6.2; the three apps' word already) and `account_deletion` (the answer to a deletion
   request, §6.4) — the `kind` for the two account mails that carry no one-time token (KS
@@ -77,6 +87,28 @@ notice: the plain `filename=` of a name with a letter outside ASCII (below, Fixe
 * **uploads:** `content_disposition(…, *, fallback=None)` (KS S2, part 2): the plain
   `filename=` an app would rather offer — `curve-12.csv`, a record's id — narrowed as the
   original would be; `filename*` keeps the original either way.
+* **user_admin:** groups in the audit (user-admin §11, KS S1; ui-kit 0.34's
+  `AdminActionLog groupNoun`). One vocabulary for both kits: "group" in the words, each
+  app's noun — team, company, budget — only in the labels.
+  * `AdminAction` gains `group_create`, `group_rename`, `group_delete`, `membership_add`
+    and `membership_role` (§11.3). `CONFIRMATION_LEVELS` gives `group_delete`
+    `acknowledge` (decision 5) and the other four `none`, so a `levels` answer built from
+    every entry grows by five. A `match` over `AdminAction` that ends in `assert_never`
+    adds the five.
+  * `admin_action_record(…, target_group_id=None, target_group_name=None)`: each key only
+    when given, as `company_id`, so a table without the columns (kastlan's, keksdose's)
+    takes the record as it is. `target_group_name`, a deleted group's name (decision 6),
+    is written on its `group_delete` row only and beside its `target_group_id`; anywhere
+    else it is a `ValueError`. The columns are the app's, nullable and with no foreign key.
+  * `GroupRef {id, name}` and `AdminActionRow.target_group_id` / `.target_group`, joined by
+    the app as `actor` is: from the live group, else from its `group_delete` row's stamp
+    (kastlan: from `company_id`).
+  * `require_confirmation(…, target_email: str | None)` (KS 10): `None` is a group, which
+    has no address — `none` passes, `acknowledge` passes on `acknowledged` alone (and is
+    `confirmation_required` without it), `type_email` raises `ValueError`.
+  * An app writes no group row before it pins 0.8: a schema whose `action` is typed
+    `AdminAction` (Kurvenschmiede's `AdminActionOut`) refuses a word it doesn't know when
+    the row is read, so `GET /admin/actions` would answer 500 (KS 19).
 
 ### Fixed
 
@@ -96,6 +128,12 @@ notice: the plain `filename=` of a name with a letter outside ASCII (below, Fixe
   notice (`status` `None`) stays the dispatch's rule for a mapper that answers one, though
   no Paddle event is one. `NoProviderClient` is no longer "a provider the kit has no
   client for": with billing on, the provider is Paddle.
+* **auth:** `auth.tokens` states what a refresh answers (auth §11.6): every definitive
+  refusal is `401 session_ended`, never a 403; the route's own failure (a database error,
+  a timeout) stays a 5xx, never a 401; and a signed-in endpoint answers 401 only about the
+  session, never for a wrong input — a wrong current password or 2FA code is a 400, or the
+  client's replay signs the user out over a typo (kastlan moves `POST /auth/2fa/disable`
+  to 400 before it adopts).
 * **auth:** the README's sign-in recipe calls `check_absent(password)` for an unknown
   address.
 

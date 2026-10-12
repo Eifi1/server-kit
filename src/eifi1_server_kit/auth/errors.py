@@ -35,10 +35,19 @@ class AuthErrorCode(enum.StrEnum):
     #: tell the two apart). Only the link's holder can learn it existed, so it is no
     #: oracle.
     TOKEN_EXPIRED = "token_expired"
+    #: Every definitive refusal of ``POST /auth/refresh`` (auth §11.2, decision 7): the
+    #: refresh token is unknown, malformed, expired or no refresh token at all; the
+    #: cut-off or the session row revoked it; the account is deactivated or must choose a
+    #: new password. The session is over, and ui-kit's ``attachSessionRefresh`` signs the
+    #: user out. The client decides by the STATUS — what may answer it, and what must not,
+    #: is :mod:`~eifi1_server_kit.auth.tokens`' "Refreshing a session".
+    SESSION_ENDED = "session_ended"
 
 
 #: Each code's status. The token codes are ``400`` as keksdose answers a bad reset or
-#: verification link today; the page tells them apart by ``code``, not by status.
+#: verification link today; the page tells them apart by ``code``, not by status. A
+#: refresh's refusal is ``401``, never ``403``: the three apps' refresh routes already
+#: answer so (auth §11.1).
 AUTH_ERROR_STATUS: Mapping[AuthErrorCode, int] = {
     AuthErrorCode.INVALID_CREDENTIALS: 401,
     AuthErrorCode.REGISTRATION_CLOSED: 403,
@@ -47,6 +56,7 @@ AUTH_ERROR_STATUS: Mapping[AuthErrorCode, int] = {
     AuthErrorCode.INVITATION_EXPIRED: 400,
     AuthErrorCode.TOKEN_INVALID: 400,
     AuthErrorCode.TOKEN_EXPIRED: 400,
+    AuthErrorCode.SESSION_ENDED: 401,
 }
 
 #: The English ``detail`` of each code, keksdose's words where it had them. The pages
@@ -59,6 +69,8 @@ AUTH_ERROR_DETAIL: Mapping[AuthErrorCode, str] = {
     AuthErrorCode.INVITATION_EXPIRED: "This invitation has expired",
     AuthErrorCode.TOKEN_INVALID: "This link is invalid or has expired",
     AuthErrorCode.TOKEN_EXPIRED: "This link has expired",
+    # Kurvenschmiede's ``TokenRefusal.ENDED`` (``auth_service.py:187``).
+    AuthErrorCode.SESSION_ENDED: "This session has ended. Please sign in again.",
 }
 
 

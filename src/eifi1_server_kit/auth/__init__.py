@@ -8,7 +8,7 @@ the reference, cited ``file`` per rule.
 * :mod:`~eifi1_server_kit.auth.accounts` — the address and its tag, invitations, the
   registration gate, names, erasure identifiers;
 * :mod:`~eifi1_server_kit.auth.tokens` — one-time tokens (reset, verification,
-  invitation, email change) and the session's claims;
+  invitation, email change), the session's claims, and what a refresh answers;
 * :mod:`~eifi1_server_kit.auth.limits` — :class:`AuthLimiters`, with the per-address
   delay that never locks out;
 * :mod:`~eifi1_server_kit.auth.passwords` — :func:`absent_account_check`, the dummy hash an
@@ -75,6 +75,7 @@ from eifi1_server_kit.auth.schemas import (
     PasswordChangeChallenge,
     PersonName,
     ProfileUpdate,
+    RefreshRequest,
     RegisterRequest,
     TextSize,
     TokenResponse,
@@ -171,6 +172,7 @@ __all__ = [
     "PasswordChangeChallenge",
     "PersonName",
     "ProfileUpdate",
+    "RefreshRequest",
     "RegisterRequest",
     "RegistrationDecision",
     "TextSize",

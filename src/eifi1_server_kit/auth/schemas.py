@@ -193,6 +193,21 @@ class TokenResponse[UserT = Any](BaseModel):
     expires_at: UtcDateTime | None = None
 
 
+class RefreshRequest(BaseModel):
+    """``POST /auth/refresh {refresh_token}`` (auth §6.2, §11; keksdose, kastlan and
+    Kurvenschmiede ``RefreshRequest``, field for field).
+
+    The token is plain text, with no length rule: an empty or malformed one is the
+    route's ``401 {code: "session_ended"}``, never a 422. ui-kit's
+    ``attachSessionRefresh`` reads a 422 as a client fault that a sign-out would not mend
+    (transient), so a 422 here would leave a device that holds a broken token signed in,
+    refreshing at every request. What the route answers is
+    :mod:`~eifi1_server_kit.auth.tokens`' "Refreshing a session".
+    """
+
+    refresh_token: str
+
+
 class TwoFactorChallenge(BaseModel):
     """The password was right; the second factor is next (§5.1; keksdose
     ``TwoFactorChallengeResponse``) → ``POST /auth/login/2fa {challenge_token, code}``."""
