@@ -11,11 +11,14 @@ entry in the Conventional Commit; this file is assembled from them at release.
 ## [Unreleased]
 
 server-kit 0.8.0: the backend half of round 0.34 (ui-kit 0.34), from the apps' 0.33 / 0.7
-adoption reports and Kurvenschmiede's server-kit asks of 2026-10 (S2, S3, S5). Lemon
+adoption reports and Kurvenschmiede's server-kit asks of 2026-10 (S1, S2, S3, S5). Lemon
 Squeezy goes, as 0.7 announced (decision 25, §14.13) — breaking for anything that still
 names it, and no app sells through it. The rest is additive: the dummy hash for an
 address with no account, the two account notices' words, the scheduler's token route as a
-module, and `content_disposition`'s `fallback=`. One header changes where an app may
+module, `content_disposition`'s `fallback=`, and the server halves of two contracts settled
+after the apps' reviews — session refresh (ui-kit `docs/auth-harmonization.md` §11:
+`session_ended`, `RefreshRequest`) and groups in the audit (`docs/user-admin-harmonization.md`
+§11: five action words, `target_group_id`, `GroupRef`, a deleted group's kept name). One header changes where an app may
 notice: the plain `filename=` of a name with a letter outside ASCII (below, Fixed).
 
 ### ⚠ BREAKING CHANGES
