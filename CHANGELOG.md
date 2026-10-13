@@ -10,6 +10,18 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.9.0] (2026-10-13)
+
+server-kit 0.9.0: the backend half of round 0.36 (ui-kit 0.36), two contracts settled after the
+three apps' reviews. **Notifications** (`docs/notifications-harmonization.md`) get their layer 1:
+app-declared types with an in-app and an e-mail switch, quiet hours, the digest period, push
+shapes and outcomes, and a signed one-click unsubscribe, which `mail` now carries as RFC 8058
+headers and a footer line. **Layer 2** begins (`docs/server-services-harmonization.md`): the
+feedback service behind ports, its router factory (the new `fastapi` extra) and the shared
+erasure — about 160, 225 and 185 lines out of keksdose, kastlan and Kurvenschmiede. Nothing is
+removed. One typing change: `render_mail` takes a typed `unsubscribe=`, so a `**Mapping[str, str]`
+splat into it no longer type-checks (no app does this).
+
 ### Added — notifications (round 0.36, `docs/notifications-harmonization.md`)
 
 * **notifications:** layer 1 of the notifications round (settings §6.4): pure rules and models, no
