@@ -35,6 +35,17 @@ either:
 
 Dates and enums are written as their ISO string and value, so the result is ready for a
 JSON column.
+
+**A group** (§11, round 0.34) is a column, ``target_group_id``, not a key in ``detail``:
+the group a ``group_*`` row is about, or that a ``membership_*`` or invitation row
+happened in. The log joins its name when it is read, as it joins a person's. The one name
+a row ever stores is a deleted group's, on its own ``group_delete`` row,
+``target_group_name`` (decision 6): without it the row that records the deletion could
+never say which group went. It is a stamp "as written", as ``target_email`` is, so no old
+row is rewritten at the deletion, and it adds no personal data — an app keeps its group
+names in plaintext and never erases them; an erasure scrubs people, not groups. Both
+columns are the app's (Kurvenschmiede's), nullable and with **no foreign key**, so a
+deleted group keeps its rows as an erased person does.
 """
 
 from __future__ import annotations
@@ -136,15 +147,17 @@ def admin_action_record(
     target_email: str | None,
     detail: Mapping[str, object] | None = None,
     company_id: int | None = None,
+    target_group_id: int | None = None,
+    target_group_name: str | None = None,
     now: datetime,
 ) -> dict[str, Any]:
     """The fields of one ``admin_actions`` row (§4.3), for the app's model:
     ``AdminActionModel(**record)``.
 
     ``{"at", "actor_id", "action", "target_user_id", "target_email", "detail"}`` — plus
-    ``"company_id"`` when one is given (kastlan's company admins; its platform actions and
-    every other app leave it out, so a table without the column takes the record as it
-    is). No ``id``: the database assigns it.
+    ``"company_id"``, ``"target_group_id"`` and ``"target_group_name"`` each only when it
+    is given (kastlan's company admins; Kurvenschmiede's groups), so a table without the
+    column takes the record as it is. No ``id``: the database assigns it.
 
     * ``action`` — an :class:`~eifi1_server_kit.user_admin.AdminAction` or its value,
       stored as the plain string — or the app's own action (``"reseed_demo"``), kept as
@@ -158,6 +171,13 @@ def admin_action_record(
     * ``target_email`` — the address as it was at the time, normalised; kept so an
       invitation's row names its invitee.
     * ``detail`` — checked by :func:`audit_detail`.
+    * ``target_group_id`` — the group the row is about (``group_*``) or happened in
+      (``membership_*``, ``invite``, ``invite_resend``, ``invite_revoke``) (§11.3).
+      kastlan passes none: its ``company_id`` already names the company, and it fills the
+      read's group from that.
+    * ``target_group_name`` — the name a group had, on its ``group_delete`` row only, and
+      with its ``target_group_id`` (decision 6); anywhere else a :class:`ValueError`. Kept
+      as written: the log reads it back for a group that no longer exists.
     * ``now`` — stored as given, so an app with naive UTC columns (kastlan) passes a
       naive one.
     """
@@ -175,6 +195,15 @@ def admin_action_record(
         "target_email": None if target_email is None else normalise_email(target_email),
         "detail": audit_detail(detail),
     }
+    if target_group_name is not None and (stored != AdminAction.GROUP_DELETE or target_group_id is None):
+        raise ValueError(
+            "target_group_name is a deleted group's name, written on its group_delete row only, "
+            "beside its target_group_id (decision 6)"
+        )
     if company_id is not None:
         record["company_id"] = company_id
+    if target_group_id is not None:
+        record["target_group_id"] = target_group_id
+    if target_group_name is not None:
+        record["target_group_name"] = target_group_name
     return record

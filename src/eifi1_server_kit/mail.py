@@ -26,6 +26,11 @@ here; kastlan built its own on the same shape.
   **Sending never raises**: a sign-up must not fail because a provider is down, and every
   link can be asked for again. ``send`` answers whether the mail went; the caller decides
   who is told.
+* **A word for every mail** — the ``kind`` it is sent and logged under, which an
+  operator greps three apps' logs for: a mail with a one-time link by its token's
+  :class:`~eifi1_server_kit.auth.OneTimeTokenKind`, billing's notices by
+  :class:`~eifi1_server_kit.billing.BillingNoticeKind`, and the two account notices with
+  no token by :class:`AccountNoticeKind`.
 
 Not here yet: ``List-Unsubscribe`` and anything else a NOTIFICATION mail needs — that is
 the notifications round. These are transactional mails the recipient asked for.
@@ -34,6 +39,7 @@ the notifications round. These are transactional mails the recipient asked for.
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import re
 import uuid
@@ -50,6 +56,7 @@ __all__ = [
     "RESEND_ENDPOINT",
     "SUPPORT_LOCAL_PART",
     "TIMEOUT_SECONDS",
+    "AccountNoticeKind",
     "ConsoleMailer",
     "MailMessage",
     "MailText",
@@ -232,15 +239,41 @@ def render_mail(
     return text.render(link=link, lang=lang, **values)
 
 
+class AccountNoticeKind(enum.StrEnum):
+    """The account mails that carry no one-time token, as the ``kind`` they are sent and
+    logged under (KS S5): each TELLS an address something rather than asking it to prove
+    anything, so :class:`~eifi1_server_kit.auth.OneTimeTokenKind` has no word for them.
+    Not ``MailKind``, which is :mod:`~eifi1_server_kit.user_admin`'s word for the mail an
+    admin sends again.
+
+    The user-admin contract requires both of every app with an email change and an
+    account deletion::
+
+        await mailer.send(user.email, message, kind=AccountNoticeKind.ACCOUNT_DELETION)
+    """
+
+    #: To the OLD address when an account asks for a new one (user-admin §6.2): told,
+    #: never handed the link. keksdose (``email_change_service.py:176``), kastlan
+    #: (``account_service.py:126``) and Kurvenschmiede already send it under this word.
+    EMAIL_CHANGE_NOTICE = "email_change_notice"
+    #: The answer to the account's own deletion request (user-admin §6.4) — when it will
+    #: be deleted, and how to undo it. keksdose's word (``account_deletion_service.py:279``);
+    #: kastlan sent ``deletion`` and Kurvenschmiede ``deletion_request``.
+    ACCOUNT_DELETION = "account_deletion"
+
+
 class Mailer(Protocol):
     """What sends a mail: :class:`ResendClient`, :class:`ConsoleMailer`, or a test's fake."""
 
     async def send(self, to: str, message: MailMessage, *, kind: str = "other") -> bool:
         """Send one mail; whether it went out. Never raises.
 
-        ``kind`` (``verification``, ``password_reset``, ``invitation``) is what the mail
-        is FOR — a small enum fit for a log line or a metric label, which the recipient's
-        address never is.
+        ``kind`` is what the mail is FOR — a small enum fit for a log line or a metric
+        label, which the recipient's address never is: a
+        :class:`~eifi1_server_kit.auth.OneTimeTokenKind` (``verification``,
+        ``password_reset``, ``invitation``, ``email_change``), an
+        :class:`AccountNoticeKind` (``email_change_notice``, ``account_deletion``) or a
+        :class:`~eifi1_server_kit.billing.BillingNoticeKind`.
         """
         ...
 

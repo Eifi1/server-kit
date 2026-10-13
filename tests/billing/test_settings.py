@@ -35,7 +35,7 @@ SECRETS: dict[str, Any] = {
 }
 PRICES = {
     "PRO": {"chf": {"year": "pri_pro_chf_y", "Month": ["pri_pro_chf_m", "pri_pro_chf_m_2025"]}},
-    "team": {"EUR": {"year": 12345}},
+    "team": {"EUR": {"year": "pri_team_eur_y"}},
 }
 
 
@@ -65,16 +65,16 @@ def test_switching_on_requires_the_provider_and_the_secrets() -> None:
 def test_an_app_inherits_it_or_reads_its_own_fields() -> None:
     class Settings(BillingSettings):
         billing_enabled: bool = True
-        billing_provider: BillingProvider | None = BillingProvider.LEMONSQUEEZY
+        billing_provider: BillingProvider | None = BillingProvider.PADDLE
 
     with pytest.raises(ValidationError, match="billing_api_key, billing_webhook_secret"):
         Settings()
 
     class Own:
         billing_enabled = False
-        billing_webhook_secret = "ls_signing_secret"
+        billing_webhook_secret = "pdl_ntfset_own"
 
-    assert BillingSettings.model_validate(Own(), from_attributes=True).billing_webhook_key() == "ls_signing_secret"
+    assert BillingSettings.model_validate(Own(), from_attributes=True).billing_webhook_key() == "pdl_ntfset_own"
     with pytest.raises(BillingError, match="No webhook secret") as refused:
         BillingSettings().billing_webhook_key()
     assert refused.value.status_code == 503
@@ -90,14 +90,14 @@ def test_the_price_ids_are_normalised_and_looked_up_both_ways() -> None:
                 BillingInterval.MONTH: ["pri_pro_chf_m", "pri_pro_chf_m_2025"],
             }
         },
-        "team": {BillingCurrency.EUR: {BillingInterval.YEAR: ["12345"]}},
+        "team": {BillingCurrency.EUR: {BillingInterval.YEAR: ["pri_team_eur_y"]}},
     }
     assert settings.billing_price_id("Pro", "CHF", "month") == "pri_pro_chf_m"
-    assert settings.billing_price_id("team", BillingCurrency.EUR, BillingInterval.YEAR) == "12345"
+    assert settings.billing_price_id("team", BillingCurrency.EUR, BillingInterval.YEAR) == "pri_team_eur_y"
     assert settings.billing_price_ref("pri_pro_chf_m_2025") == PriceRef(
         "pro", BillingCurrency.CHF, BillingInterval.MONTH
     )
-    assert settings.billing_plan_for_price("12345") == "team"
+    assert settings.billing_plan_for_price("pri_team_eur_y") == "team"
     assert settings.billing_price_ref("pri_unknown") is None and settings.billing_plan_for_price("pri_unknown") is None
 
 
@@ -120,6 +120,8 @@ def test_a_checkout_without_a_price_id_is_not_configured(plan: str, currency: st
         {"pro": {"CHF": {"year": []}}},
         {"pro": {"CHF": {"year": ""}}},
         {"pro": {"CHF": {"year": True}}},
+        {"pro": {"CHF": {"year": 12345}}},  # Lemon Squeezy's numeric variant ids went in 0.8
+        {"pro": {"CHF": {"year": ["pri_1", 12345]}}},
         {"pro": {"USD": {"year": "pri_1"}}},
         {"pro plan": {"CHF": {"year": "pri_1"}}},
     ],
@@ -188,25 +190,26 @@ def test_an_empty_variable_is_an_unset_one(environment: pytest.MonkeyPatch) -> N
 
 def test_the_variables_are_read_as_json_and_normalised(environment: pytest.MonkeyPatch) -> None:
     environment.setenv("GARDEN_BILLING_ENABLED", "true")
-    environment.setenv("GARDEN_BILLING_PROVIDER", "lemonsqueezy")
-    environment.setenv("GARDEN_BILLING_API_KEY", "ls_test_example")
-    environment.setenv("GARDEN_BILLING_WEBHOOK_SECRET", "ls_signing_example")
+    environment.setenv("GARDEN_BILLING_PROVIDER", "paddle")
+    environment.setenv("GARDEN_BILLING_API_KEY", "pdl_sdbx_apikey_example")
+    environment.setenv("GARDEN_BILLING_WEBHOOK_SECRET", "pdl_ntfset_example")
+    environment.setenv("GARDEN_BILLING_APP", "garden")
     environment.setenv("GARDEN_BILLING_SIGNATURE_TOLERANCE", "60")
     environment.setenv("GARDEN_BILLING_LAUNCH_AT", "2026-11-01T00:00:00Z")
-    environment.setenv("GARDEN_BILLING_PRICE_IDS", '{"Pro": {"chf": {"Year": 12345, "month": ["v_2", "v_1"]}}}')
+    environment.setenv("GARDEN_BILLING_PRICE_IDS", '{"Pro": {"chf": {"Year": "pri_y", "month": ["pri_m2", "pri_m1"]}}}')
     settings = _GardenSettings()
-    assert settings.billing_enabled and settings.billing_provider is BillingProvider.LEMONSQUEEZY
+    assert settings.billing_enabled and settings.billing_provider is BillingProvider.PADDLE
     assert settings.billing_signature_tolerance == 60.0
     assert settings.billing_launch_at == datetime(2026, 11, 1, tzinfo=UTC)
-    assert settings.billing_price_id("pro", "CHF", "year") == "12345"
-    assert settings.billing_price_ref("v_1") == PriceRef("pro", BillingCurrency.CHF, BillingInterval.MONTH)
+    assert settings.billing_price_id("pro", "CHF", "year") == "pri_y"
+    assert settings.billing_price_ref("pri_m1") == PriceRef("pro", BillingCurrency.CHF, BillingInterval.MONTH)
     # An app that reads its own fields gets the same, typed already.
     assert BillingSettings.model_validate(settings, from_attributes=True).billing_price_ids == (
         settings.billing_price_ids
     )
 
 
-@pytest.mark.parametrize("text", ["{", '{"pro": {"CHF": {"year": ""}}}', "[]"])
+@pytest.mark.parametrize("text", ["{", '{"pro": {"CHF": {"year": ""}}}', '{"pro": {"CHF": {"year": 12345}}}', "[]"])
 def test_price_ids_that_are_no_table_fail_at_start(environment: pytest.MonkeyPatch, text: str) -> None:
     environment.setenv("GARDEN_BILLING_PRICE_IDS", text)
     with pytest.raises(ValidationError, match="billing_price_ids"):
@@ -327,15 +330,18 @@ def test_with_billing_off_an_unknown_environment_is_not_configured() -> None:
     assert BillingSettings(billing_environment="sandbox").billing_api_environment() is PaddleEnvironment.SANDBOX
 
 
-def test_lemon_squeezy_needs_neither_tag_nor_environment() -> None:
-    """Deprecated (§14.13), and nothing of §14 applies to it."""
-    on = BillingSettings(
-        billing_enabled=True,
-        billing_provider="lemonsqueezy",
-        billing_api_key="ls_example",
-        billing_webhook_secret="ls_signing_example",
-    )
-    assert on.billing_app is None and on.billing_environment is None
+def test_lemon_squeezy_is_no_provider() -> None:
+    """Gone in 0.8 (decision 25, §14.13): the settings refuse its name, switched on or off,
+    and an app's own ``str`` field holding it — or any provider but Paddle — fails at start."""
+    with pytest.raises(ValidationError, match="billing_provider"):
+        BillingSettings(billing_provider="lemonsqueezy")
+
+    class Settings(BillingSettings):
+        billing_provider: str | None = "lemonsqueezy"  # type: ignore[assignment]
+
+    assert Settings().billing_provider == "lemonsqueezy"  # off: nothing reads it
+    with pytest.raises(ValidationError, match="billing_provider is paddle, the one provider the kit speaks"):
+        Settings(billing_enabled=True, **{**SECRETS, "billing_provider": "lemonsqueezy"})
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,7 @@ from eifi1_server_kit.auth import (
     LoginRequest,
     PasswordChangeChallenge,
     ProfileUpdate,
+    RefreshRequest,
     RegisterRequest,
     TokenResponse,
     TwoFactorChallenge,
@@ -280,6 +281,7 @@ def test_the_profile_update_writes_them_alone_and_never_clears_them() -> None:
         (AuthErrorCode.INVITATION_EXPIRED, 400),
         (AuthErrorCode.TOKEN_INVALID, 400),
         (AuthErrorCode.TOKEN_EXPIRED, 400),
+        (AuthErrorCode.SESSION_ENDED, 401),
     ],
 )
 def test_auth_errors_carry_their_code_and_status(code: AuthErrorCode, status_code: int) -> None:
@@ -295,3 +297,23 @@ def test_auth_error_takes_the_wire_value_too() -> None:
     assert error.code is AuthErrorCode.EMAIL_TAKEN and str(error) == "Email already registered"
     with pytest.raises(ValueError, match="not a valid AuthErrorCode"):
         AuthError("nope")  # type: ignore[arg-type]
+
+
+def test_a_refresh_refusal_is_session_ended_a_401() -> None:
+    """auth §11.2, decision 7: every definitive refusal of ``/auth/refresh`` is one coded
+    401, in Kurvenschmiede's words (``TokenRefusal.ENDED``)."""
+    error = AuthError(AuthErrorCode.SESSION_ENDED)
+    assert (error.status_code, str(error.code)) == (401, "session_ended")
+    assert str(error) == "This session has ended. Please sign in again."
+    assert str(AuthError(AuthErrorCode.SESSION_ENDED, "Wrong token type")) == "Wrong token type"
+
+
+def test_the_refresh_request_takes_any_text() -> None:
+    """``{refresh_token}``, as the three apps had it. No length rule: an empty token is the
+    route's 401, never a 422, which the client would read as transient (auth §11.2)."""
+    assert RefreshRequest(refresh_token="eyJ.x.y").refresh_token == "eyJ.x.y"
+    assert RefreshRequest.model_validate({"refresh_token": ""}).refresh_token == ""
+    with pytest.raises(ValidationError):
+        RefreshRequest.model_validate({})
+    with pytest.raises(ValidationError):
+        RefreshRequest.model_validate({"refresh_token": None})

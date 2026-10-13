@@ -3,7 +3,6 @@ payloads shaped as their docs show them. Synthetic people only."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -13,8 +12,6 @@ import pytest
 
 from eifi1_server_kit.billing import (
     APP_KEY,
-    LEMONSQUEEZY_EVENT_KINDS,
-    LEMONSQUEEZY_STATUSES,
     PADDLE_EVENT_KINDS,
     PADDLE_STATUSES,
     PAYER_REF_KEY,
@@ -25,7 +22,6 @@ from eifi1_server_kit.billing import (
     PoisonEventError,
     SubscriptionStatus,
     checkout_custom_data,
-    map_lemonsqueezy_event,
     map_paddle_event,
     parse_webhook_event,
 )
@@ -56,35 +52,6 @@ def _paddle(event_type: str = "subscription.updated", **data: Any) -> dict[str, 
     }
 
 
-def _lemon(event_name: str = "subscription_updated", **attributes: Any) -> dict[str, Any]:
-    """A Lemon Squeezy webhook (docs.lemonsqueezy.com/help/webhooks/example-payloads)."""
-    return {
-        "meta": {"event_name": event_name, "custom_data": {"payer_ref": "user:1"}},
-        "data": {
-            "type": "subscriptions",
-            "id": "1",
-            "attributes": {
-                "store_id": 1,
-                "customer_id": 7,
-                "order_id": 1,
-                "product_id": 1,
-                "variant_id": 12345,
-                "user_name": "Ada Example",
-                "user_email": "ada@example.com",
-                "status": "active",
-                "cancelled": False,
-                "trial_ends_at": None,
-                "renews_at": "2027-10-08T00:00:00.000000Z",
-                "ends_at": None,
-                "created_at": "2026-10-08T09:00:00.000000Z",
-                "updated_at": "2026-10-08T09:00:01.000000Z",
-                "test_mode": True,
-                **attributes,
-            },
-        },
-    }
-
-
 def _bytes(payload: object) -> bytes:
     return json.dumps(payload).encode()
 
@@ -101,9 +68,8 @@ def test_the_vocabulary_is_the_contracts() -> None:
         "subscription_canceled",
         "subscription_expired",
     ]
-    assert set(WEBHOOK_MAPPERS) == set(BillingProvider)
+    assert set(WEBHOOK_MAPPERS) == set(BillingProvider) == {BillingProvider.PADDLE}
     assert set(PADDLE_STATUSES) == {"active", "trialing", "past_due", "paused", "canceled"}
-    assert set(LEMONSQUEEZY_STATUSES) == {"on_trial", "active", "past_due", "unpaid", "paused", "cancelled", "expired"}
 
 
 def test_the_checkout_carries_the_payer_reference() -> None:
@@ -226,6 +192,8 @@ def test_other_paddle_events_are_not_used(event_type: str) -> None:
         (_bytes(_paddle(status=None)), "data.status"),
         (_bytes(_paddle(id="")), "data.id"),
         (_bytes(_paddle(customer_id=True)), "data.customer_id is not an id"),
+        (_bytes(_paddle(customer_id=7)), "data.customer_id is not an id"),  # a number since 0.8
+        (_bytes(_paddle(customer_id="")), "data.customer_id is not an id"),
         (_bytes(_paddle(current_billing_period={"ends_at": "next year"})), "ends_at is not a date-time"),
         (_bytes(_paddle(current_billing_period={"ends_at": 1_791_460_800})), "ends_at is not a date-time"),
         (_bytes({**_paddle(), "occurred_at": None}), "occurred_at"),
@@ -237,128 +205,12 @@ def test_an_unreadable_paddle_body_is_poison(payload: bytes, where: str) -> None
         map_paddle_event(payload)
 
 
-# --- Lemon Squeezy -----------------------------------------------------------------------
-
-
-def test_a_lemon_squeezy_subscription_update_is_a_snapshot() -> None:
-    raw = _bytes(_lemon())
-    event = map_lemonsqueezy_event(raw)
-    assert event == NormalisedEvent(
-        provider=BillingProvider.LEMONSQUEEZY,
-        event_id=hashlib.sha256(raw).hexdigest(),  # no event id in the docs: the body's digest
-        provider_type="subscription_updated",
-        kind=EventKind.SUBSCRIPTION_UPDATED,
-        occurred_at=datetime(2026, 10, 8, 9, 0, 1, tzinfo=UTC),
-        customer_ref="7",
-        subscription_ref="1",
-        plan_price_id="12345",  # the variant
-        status=SubscriptionStatus.ACTIVE,
-        current_period_end=datetime(2027, 10, 8, tzinfo=UTC),
-        cancel_at_period_end=False,
-        custom_data={"payer_ref": "user:1"},
-    )
-    assert "ada@example.com" not in event.model_dump_json()  # the buyer's address never rides along
-
-
-@pytest.mark.parametrize(
-    ("event_name", "status", "kind", "row_status"),
-    [
-        ("subscription_created", "on_trial", EventKind.SUBSCRIPTION_STARTED, SubscriptionStatus.TRIALING),
-        ("subscription_resumed", "active", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.ACTIVE),
-        ("subscription_paused", "paused", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.EXPIRED),
-        ("subscription_unpaused", "active", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.ACTIVE),
-        ("subscription_updated", "past_due", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.PAST_DUE),
-        ("subscription_updated", "unpaid", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.EXPIRED),
-    ],
-)
-def test_each_lemon_squeezy_subscription_event_has_its_kind(
-    event_name: str, status: str, kind: EventKind, row_status: SubscriptionStatus
-) -> None:
-    assert event_name in LEMONSQUEEZY_EVENT_KINDS
-    event = map_lemonsqueezy_event(_bytes(_lemon(event_name, status=status)))
-    assert event is not None and (event.kind, event.status) == (kind, row_status)
-
-
-def test_a_cancelled_lemon_squeezy_subscription_runs_until_it_ends() -> None:
-    """ "Still technically active" until ``ends_at`` (the subscription object's docs)."""
-    event = map_lemonsqueezy_event(
-        _bytes(_lemon("subscription_cancelled", status="cancelled", cancelled=True, ends_at="2027-10-08T00:00:00Z"))
-    )
-    assert event is not None
-    assert (event.kind, event.status, event.cancel_at_period_end) == (
-        EventKind.SUBSCRIPTION_CANCELED,
-        SubscriptionStatus.ACTIVE,
-        True,
-    )
-    assert event.current_period_end == datetime(2027, 10, 8, tzinfo=UTC)
-    expired = map_lemonsqueezy_event(
-        _bytes(_lemon("subscription_expired", status="expired", cancelled=True, ends_at="2027-10-08T00:00:00Z"))
-    )
-    assert expired is not None and (expired.kind, expired.status) == (
-        EventKind.SUBSCRIPTION_EXPIRED,
-        SubscriptionStatus.EXPIRED,
-    )
-    no_end = map_lemonsqueezy_event(_bytes(_lemon(renews_at=None, custom_data=None)))
-    assert no_end is not None and no_end.current_period_end is None
-
-
-def test_a_failed_lemon_squeezy_payment_is_a_notice() -> None:
-    """Its body is a subscription invoice: no status, so it changes no state."""
-    payload: dict[str, Any] = {
-        "meta": {"event_name": "subscription_payment_failed"},
-        "data": {
-            "type": "subscription-invoices",
-            "id": "9",
-            "attributes": {
-                "subscription_id": 1,
-                "customer_id": 7,
-                "status": "pending",
-                "updated_at": "2026-11-08T00:00:00Z",
-            },
-        },
-    }
-    event = map_lemonsqueezy_event(_bytes(payload))
-    assert event is not None and event.kind is EventKind.PAYMENT_FAILED
-    assert not event.is_snapshot and event.status is None and event.custom_data == {}
-    assert (event.subscription_ref, event.customer_ref, event.plan_price_id) == ("1", "7", None)
-    with pytest.raises(PoisonEventError, match=r"data\.type is not subscription-invoices"):
-        map_lemonsqueezy_event(_bytes({**payload, "data": {**payload["data"], "type": "subscriptions"}}))
-
-
-@pytest.mark.parametrize(
-    "event_name",
-    ["order_created", "subscription_payment_success", "subscription_payment_recovered", "license_key_created"],
-)
-def test_other_lemon_squeezy_events_are_not_used(event_name: str) -> None:
-    assert map_lemonsqueezy_event(_bytes({"meta": {"event_name": event_name}})) is None
-
-
-@pytest.mark.parametrize(
-    ("payload", "where"),
-    [
-        (_bytes({"data": {}}), "meta is not an object"),
-        (_bytes({"meta": {}}), "meta.event_name"),
-        (_bytes({"meta": {"event_name": "subscription_updated"}}), "data is not an object"),
-        (_bytes({**_lemon(), "data": {"type": "subscriptions"}}), "data.attributes"),
-        (_bytes({**_lemon(), "data": {**_lemon()["data"], "type": "orders"}}), "data.type is not subscriptions"),
-        (_bytes(_lemon(status="refunded")), "a status the kit doesn't know"),
-        (_bytes(_lemon(updated_at=None)), "updated_at"),
-        (_bytes(_lemon(variant_id=[1])), "variant_id is not an id"),
-        (_bytes(_lemon(customer_id="")), "customer_id is not an id"),
-    ],
-)
-def test_an_unreadable_lemon_squeezy_body_is_poison(payload: bytes, where: str) -> None:
-    with pytest.raises(PoisonEventError, match=where):
-        map_lemonsqueezy_event(payload)
-
-
 def test_parse_webhook_event_picks_the_mapper() -> None:
     assert getattr(parse_webhook_event("paddle", _bytes(_paddle())), "provider", None) is BillingProvider.PADDLE
-    assert getattr(parse_webhook_event(BillingProvider.LEMONSQUEEZY, _bytes(_lemon())), "provider", None) is (
-        BillingProvider.LEMONSQUEEZY
-    )
-    with pytest.raises(ValueError):
-        parse_webhook_event("stripe", b"{}")
+    # Lemon Squeezy went in 0.8 (§14.13): its name is no provider, as Stripe's never was.
+    for provider in ("lemonsqueezy", "stripe"):
+        with pytest.raises(ValueError):
+            parse_webhook_event(provider, b"{}")
 
 
 def test_a_naive_time_is_read_as_utc() -> None:

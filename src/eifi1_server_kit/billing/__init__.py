@@ -1,5 +1,5 @@
 """Billing, plans and payment, as code (``docs/billing-harmonization.md`` §10 and §14 in
-``Eifi1/ui-kit``; its §12 wins over the sections above it, and §14.16 over the rest of §14).
+``Eifi1/ui-kit``; since ui-kit 0.34 the contract's body carries every settled amendment).
 
 Layer 1, like the rest of the kit: pure functions, Pydantic models and ports — no tables and
 no routes, and one request each for checkout, portal, cancel and undoing a cancel, through
@@ -10,8 +10,8 @@ allow-list, the notice job's query, mail and trigger, and the provider seam stay
 app. Marcel's decisions (§2): all three apps charge, through a Merchant of Record —
 Paddle (decision 16), one account for the three apps, each checkout tagged with its app
 (decision 18) — in CHF and EUR; a lapsed payer is read-only, never locked; a new payer gets
-a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy is deprecated in
-0.7 and goes in 0.8 (decision 25).
+a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy, deprecated in
+0.7, went in 0.8 (decision 25).
 
 * :mod:`~eifi1_server_kit.billing.settings` — :class:`BillingSettings`, the switch (off by
   default), the provider, its secrets, the price ids, the app's tag, Paddle's environment
@@ -24,7 +24,7 @@ a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy is dep
 * :mod:`~eifi1_server_kit.billing.gate` — the read-only gate:
   :func:`billing_write_allowed` (the demo's shape, the standing as an input) and
   :func:`refuse_billing_read_only` for an app's own choke points;
-* :mod:`~eifi1_server_kit.billing.signatures` — each provider's webhook signature,
+* :mod:`~eifi1_server_kit.billing.signatures` — the provider's webhook signature,
   checked with ``hmac`` (no SDK);
 * :mod:`~eifi1_server_kit.billing.events` — the normalised event vocabulary,
   :class:`NormalisedEvent`, a mapper per provider, and the app's tag that drops another
@@ -67,8 +67,6 @@ from eifi1_server_kit.billing.errors import (
 )
 from eifi1_server_kit.billing.events import (
     APP_KEY,
-    LEMONSQUEEZY_EVENT_KINDS,
-    LEMONSQUEEZY_STATUSES,
     PADDLE_EVENT_KINDS,
     PADDLE_STATUSES,
     PAYER_REF_KEY,
@@ -77,7 +75,6 @@ from eifi1_server_kit.billing.events import (
     NormalisedEvent,
     PoisonEventError,
     checkout_custom_data,
-    map_lemonsqueezy_event,
     map_paddle_event,
     parse_webhook_event,
 )
@@ -150,11 +147,9 @@ from eifi1_server_kit.billing.schemas import (
 )
 from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PaddleEnvironment, PriceRef
 from eifi1_server_kit.billing.signatures import (
-    LEMONSQUEEZY_SIGNATURE_HEADER,
     PADDLE_SIGNATURE_HEADER,
     PADDLE_SIGNATURE_TOLERANCE,
     SIGNATURE_HEADERS,
-    verify_lemonsqueezy_signature,
     verify_paddle_signature,
     verify_webhook_signature,
 )
@@ -189,9 +184,6 @@ __all__ = [
     "CHECKOUT_RETURN_PARAM",
     "CHECKOUT_RETURN_VALUE",
     "CURRENCY_EXPONENTS",
-    "LEMONSQUEEZY_EVENT_KINDS",
-    "LEMONSQUEEZY_SIGNATURE_HEADER",
-    "LEMONSQUEEZY_STATUSES",
     "NOTICE_AHEAD",
     "NOTICE_LATE_LIMIT",
     "NOTICE_STATUSES",
@@ -270,7 +262,6 @@ __all__ = [
     "grant_holds",
     "in_good_standing",
     "is_beta",
-    "map_lemonsqueezy_event",
     "map_paddle_event",
     "minor_to_decimal",
     "normalize_plan",
@@ -285,7 +276,6 @@ __all__ = [
     "row_changes",
     "sold_plan",
     "trial_ends_at",
-    "verify_lemonsqueezy_signature",
     "verify_paddle_signature",
     "verify_webhook_signature",
     "webhook_answer",

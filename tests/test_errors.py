@@ -20,6 +20,7 @@ from eifi1_server_kit.feedback import (
     FeedbackForbiddenError,
     UnknownAttachmentUrlError,
 )
+from eifi1_server_kit.jobs import JobsTokenError
 from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.translation_review import TranslationAccessError, TranslationAreaError, TranslationLocaleError
 from eifi1_server_kit.uploads import (
@@ -43,6 +44,7 @@ RAISED: dict[str, tuple[Exception, int]] = {
     "area": (TranslationAreaError("Unknown area 'x'"), 422),
     "access": (TranslationAccessError("Not granted for locale 'fr'"), 403),
     "roster": (RosterQueryError("Unknown sort key 'plan'"), 422),
+    "jobs": (JobsTokenError(), 401),
     "plain": (ValueError("an app's own invalid input"), 400),
 }
 
@@ -53,6 +55,7 @@ CODED: dict[str, tuple[AuthError | AccountError | BillingError, int]] = {
     "taken": (AuthError(AuthErrorCode.EMAIL_TAKEN, "That address has an account"), 409),
     "token": (AuthError(AuthErrorCode.TOKEN_INVALID), 400),
     "expired": (AuthError(AuthErrorCode.TOKEN_EXPIRED), 400),
+    "session_ended": (AuthError(AuthErrorCode.SESSION_ENDED), 401),
     "last_admin": (AccountError(AccountErrorCode.LAST_ADMIN), 409),
     "mismatch": (AccountError(AccountErrorCode.CONFIRMATION_MISMATCH), 409),
     "billing_off": (BillingError(BillingErrorCode.BILLING_DISABLED), 404),
@@ -172,6 +175,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         DemoError,
         BillingError,
         PlanLimitError,
+        JobsTokenError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error

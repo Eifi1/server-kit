@@ -79,7 +79,7 @@ def confirm_email_matches(target_email: str, typed: str | None) -> bool:
 def require_confirmation(
     level: ConfirmationLevel | str,
     *,
-    target_email: str,
+    target_email: str | None,
     acknowledged: bool = False,
     confirm_email: str | None = None,
 ) -> None:
@@ -95,10 +95,22 @@ def require_confirmation(
     Nothing given: ``409 {code: "confirmation_required"}``. A typed address that is not
     the target's: ``409 {code: "confirmation_mismatch"}`` — the page keeps the dialog open
     and says the address is wrong, rather than asking again from scratch.
+
+    ``target_email=None`` is a group (0.8, §11.8; KS 10), which has no address: ``none``
+    passes; ``acknowledge`` passes on ``acknowledged`` alone, since no typed address can
+    match, and is ``confirmation_required`` without it; ``type_email`` is a
+    :class:`ValueError` — a programming error, as no level table gives a group's action
+    ``type_email``. kastlan's company plan change may pass ``None`` in place of ``""``.
     """
     level = ConfirmationLevel(level)
     if level is ConfirmationLevel.NONE:
         return
+    if target_email is None:
+        if level is ConfirmationLevel.TYPE_EMAIL:
+            raise ValueError("type_email asks for the target's address, and a group has none (§11.8)")
+        if acknowledged:
+            return
+        raise AccountError(AccountErrorCode.CONFIRMATION_REQUIRED)
     typed = confirm_email is not None and bool(confirm_email.strip())
     if level is ConfirmationLevel.ACKNOWLEDGE and acknowledged:
         return

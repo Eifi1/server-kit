@@ -15,6 +15,7 @@ from eifi1_server_kit.user_admin import (
     AdminAction,
     AdminActionRow,
     AuditDetailError,
+    GroupRef,
     admin_action_record,
     audit_detail,
 )
@@ -50,6 +51,12 @@ def test_the_actions_are_the_contracts() -> None:
         "deletion_cancel",
         "erase",
         "plan",
+        # 0.8 (§11.3): what is done to a group, and to who is in it.
+        "group_create",
+        "group_rename",
+        "group_delete",
+        "membership_add",
+        "membership_role",
     ]
 
 
@@ -79,6 +86,82 @@ def test_kastlans_company_rides_along_only_when_given() -> None:
     assert company["company_id"] == 5 and company["detail"] == {} and company["target_email"] is None
     platform = admin_action_record("erase", actor_id=None, target_user_id=2, target_email="ada@example.com", now=NOW)
     assert "company_id" not in platform and platform["actor_id"] is None
+
+
+def test_the_group_columns_ride_along_only_when_given() -> None:
+    """§11.8: a table without the columns (kastlan's, keksdose's) takes the record as it is."""
+    plain = admin_action_record("membership_remove", actor_id=1, target_user_id=2, target_email=None, now=NOW)
+    assert "target_group_id" not in plain and "target_group_name" not in plain
+    added = admin_action_record(
+        AdminAction.MEMBERSHIP_ADD,
+        actor_id=2,  # an accepted invitation: the invitee is the actor
+        target_user_id=2,
+        target_email="ben@example.com",
+        detail={"role": "MEMBER"},
+        target_group_id=7,
+        now=NOW,
+    )
+    assert added["action"] == "membership_add" and added["target_group_id"] == 7
+    assert "target_group_name" not in added, "a name is stamped on a group_delete row only"
+    invite = admin_action_record(
+        "invite", actor_id=1, target_user_id=None, target_email="c@example.com", target_group_id=7, now=NOW
+    )
+    assert invite["target_group_id"] == 7 and invite["detail"] == {}
+
+
+def test_a_deleted_group_keeps_its_name_on_its_group_delete_row() -> None:
+    """Decision 6 (KS 16): the stamp, beside the counts of what went with it."""
+    deleted = admin_action_record(
+        AdminAction.GROUP_DELETE,
+        actor_id=1,
+        target_user_id=None,
+        target_email=None,
+        detail={"members": 3, "grants": 2, "invitations": 1},
+        target_group_id=7,
+        target_group_name="Paint shop",
+        now=NOW,
+    )
+    assert deleted["target_group_id"] == 7 and deleted["target_group_name"] == "Paint shop"
+    assert deleted["detail"] == {"members": 3, "grants": 2, "invitations": 1}
+    with pytest.raises(ValueError, match="group_delete row only"):
+        admin_action_record(
+            "group_rename",
+            actor_id=1,
+            target_user_id=None,
+            target_email=None,
+            target_group_id=7,
+            target_group_name="New",
+            now=NOW,
+        )
+    with pytest.raises(ValueError, match="beside its target_group_id"):
+        admin_action_record(
+            "group_delete", actor_id=1, target_user_id=None, target_email=None, target_group_name="Paint shop", now=NOW
+        )
+
+
+def test_the_row_reads_the_group() -> None:
+    """The column as written, and the group the app joined: live, else the stamp (§11.8)."""
+    record = admin_action_record(
+        "group_delete",
+        actor_id=1,
+        target_user_id=None,
+        target_email=None,
+        target_group_id=7,
+        target_group_name="Paint shop",
+        now=NOW,
+    )
+    row = AdminActionRow.model_validate(
+        {"id": 3, **record, "target_group": {"id": 7, "name": record["target_group_name"]}}
+    )
+    assert row.action is AdminAction.GROUP_DELETE and row.target_group_id == 7
+    assert row.target_group == GroupRef(id=7, name="Paint shop")
+    assert "target_group_name" not in row.model_dump(), "read back through target_group"
+    gone = AdminActionRow.model_validate(
+        {"id": 4, "at": NOW, "action": "membership_add", "target_group_id": 8, "target_group": {"id": 8}}
+    )
+    assert gone.target_group == GroupRef(id=8, name=None), "no name left: the page reads 'a deleted team'"
+    person = AdminActionRow.model_validate({"id": 5, "at": NOW, "action": "deactivate"})
+    assert person.target_group_id is None and person.target_group is None
 
 
 def test_now_is_stored_as_given_for_a_naive_column() -> None:

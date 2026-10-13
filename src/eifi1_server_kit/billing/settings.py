@@ -69,18 +69,19 @@ PADDLE_SIGNATURE_TOLERANCE = 5.0
 
 
 class BillingProvider(enum.StrEnum):
-    """The Merchants of Record the kit speaks (§2.2, §9). Paddle is the one Marcel chose
-    (decision 16, 2026-10-09); the kit's provider client speaks Paddle only (§14.2).
+    """The Merchants of Record the kit speaks (§2.2, §9): Paddle, the one Marcel chose
+    (decision 16, 2026-10-09). A second provider is a new member, a mapper and a
+    signature check (§5).
 
-    .. deprecated:: 0.7.0
-       ``LEMONSQUEEZY``, its event mapper and statuses, its signature check and the
-       numeric variant ids in ``billing_price_ids`` are deprecated and go in 0.8 (decision
-       25, §14.13). Nothing sells through it.
+    .. versionchanged:: 0.8.0
+       ``LEMONSQUEEZY`` is gone with its event mapper and statuses, its signature check
+       and the numeric variant ids ``billing_price_ids`` took (decision 25, §14.13);
+       deprecated since 0.7.0, and nothing sold through it. ``"lemonsqueezy"`` is no
+       provider any more: the settings refuse it, and a route that types its path
+       parameter as ``BillingProvider`` answers 422.
     """
 
     PADDLE = "paddle"
-    #: Deprecated since 0.7.0, removed in 0.8 (§14.13).
-    LEMONSQUEEZY = "lemonsqueezy"
 
 
 class PaddleEnvironment(enum.StrEnum):
@@ -102,13 +103,9 @@ class PriceRef(NamedTuple):
 
 
 def _price_ids(value: object) -> object:
-    """One id or a list of them; Lemon Squeezy's variant ids arrive as numbers in JSON (the
-    number coercion is deprecated with Lemon Squeezy and goes in 0.8, §14.13)."""
-    if isinstance(value, str | int) and not isinstance(value, bool):
-        value = [value]
-    if isinstance(value, list):
-        return [str(item) if isinstance(item, int) and not isinstance(item, bool) else item for item in value]
-    return value
+    """One id or a list of them. An id is text (Paddle's ``pri_…``): a JSON number is
+    refused, since 0.8 took Lemon Squeezy's numeric variant ids with it (§14.13)."""
+    return [value] if isinstance(value, str) else value
 
 
 _PriceId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
@@ -164,7 +161,7 @@ class BillingSettings(BaseModel):
     ``BillingSettings.model_validate(settings, from_attributes=True)``.
 
     ``billing_price_ids`` is plan → currency → interval → the provider's price id (§3.1;
-    Paddle's ``pri_…``, Lemon Squeezy's variant id), JSON in the environment::
+    Paddle's ``pri_…``), JSON in the environment::
 
         KEKSDOSE_BILLING_PRICE_IDS='{"pro": {"CHF": {"year": "pri_01h…", "month": "pri_01j…"}}}'
 
@@ -192,8 +189,7 @@ class BillingSettings(BaseModel):
     #: environment and their permissions: transaction write, customer-portal-session write
     #: and subscription write.
     billing_api_key: SecretStr | None = None
-    #: The webhook's signing secret (§5): Paddle's endpoint secret key (``pdl_ntfset_…``),
-    #: Lemon Squeezy's signing secret.
+    #: The webhook's signing secret (§5): Paddle's endpoint secret key (``pdl_ntfset_…``).
     billing_webhook_secret: SecretStr | None = None
     #: How far, in seconds, Paddle's signature timestamp may be from now (§5): the
     #: ``tolerance`` the app passes to
@@ -202,8 +198,7 @@ class BillingSettings(BaseModel):
     #: scale-to-zero host (Cloud Run at min-instances 0) a cold start can eat the five
     #: seconds, and every first delivery after a quiet spell answers 400 until Paddle's
     #: retry lands warm. keksdose runs 60 (``KEKSDOSE_BILLING_SIGNATURE_TOLERANCE=60``). A
-    #: replay inside the window is still a duplicate to the event store (§5). Lemon
-    #: Squeezy signs no timestamp, so it ignores this.
+    #: replay inside the window is still a duplicate to the event store (§5).
     billing_signature_tolerance: float = Field(default=PADDLE_SIGNATURE_TOLERANCE, gt=0)
     #: Plan → currency → interval → price id(s); see the class docstring.
     billing_price_ids: Annotated[
@@ -285,8 +280,13 @@ class BillingSettings(BaseModel):
             ]
             if missing:
                 raise ValueError(f"billing_enabled needs {', '.join(missing)}")
-            if self.billing_provider == BillingProvider.PADDLE:  # by value: a subclass's ``str`` too
-                self._paddle_can_switch_on()
+            # By value: a subclass's ``str`` field holds the text. Since 0.8 Paddle is the one
+            # provider, so any other text — ``"lemonsqueezy"`` included — fails at start.
+            if self.billing_provider != BillingProvider.PADDLE:
+                raise ValueError(
+                    f"billing_provider is paddle, the one provider the kit speaks, not {self.billing_provider!r}"
+                )
+            self._paddle_can_switch_on()
         self._price_index()  # an id standing for two combinations is refused here, at start
         return self
 

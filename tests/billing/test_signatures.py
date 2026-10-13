@@ -1,6 +1,5 @@
-"""The webhook signatures (billing contract §5), as the providers document them:
-https://developer.paddle.com/webhooks/signature-verification and
-https://docs.lemonsqueezy.com/help/webhooks/signing-requests."""
+"""The webhook signature (billing contract §5), as Paddle documents it:
+https://developer.paddle.com/webhooks/signature-verification."""
 
 from __future__ import annotations
 
@@ -11,7 +10,6 @@ import pytest
 from pydantic import ValidationError
 
 from eifi1_server_kit.billing import (
-    LEMONSQUEEZY_SIGNATURE_HEADER,
     PADDLE_SIGNATURE_HEADER,
     PADDLE_SIGNATURE_TOLERANCE,
     SIGNATURE_HEADERS,
@@ -19,7 +17,6 @@ from eifi1_server_kit.billing import (
     BillingErrorCode,
     BillingProvider,
     BillingSettings,
-    verify_lemonsqueezy_signature,
     verify_paddle_signature,
     verify_webhook_signature,
 )
@@ -39,12 +36,9 @@ def _refused(reason: str) -> pytest.RaisesExc[BillingError]:
     return pytest.raises(BillingError, match=reason)
 
 
-def test_the_headers_are_the_providers() -> None:
-    assert (PADDLE_SIGNATURE_HEADER, LEMONSQUEEZY_SIGNATURE_HEADER) == ("Paddle-Signature", "X-Signature")
-    assert SIGNATURE_HEADERS == {
-        BillingProvider.PADDLE: "Paddle-Signature",
-        BillingProvider.LEMONSQUEEZY: "X-Signature",
-    }
+def test_the_header_is_paddles() -> None:
+    assert PADDLE_SIGNATURE_HEADER == "Paddle-Signature"
+    assert SIGNATURE_HEADERS == {BillingProvider.PADDLE: "Paddle-Signature"}
     assert PADDLE_SIGNATURE_TOLERANCE == 5.0
 
 
@@ -122,29 +116,12 @@ def test_a_paddle_signature_checks_against_the_current_time_by_default() -> None
         verify_paddle_signature(BODY, f"ts={TS};h1={_h1()}", SECRET)
 
 
-def test_a_lemon_squeezy_signature_is_the_hex_hmac_of_the_raw_body() -> None:
-    secret = "ls-signing-secret"
-    digest = hmac.new(secret.encode(), BODY, hashlib.sha256).hexdigest()
-    verify_lemonsqueezy_signature(BODY, digest, secret)
-    verify_lemonsqueezy_signature(BODY, f" {digest.upper()} ", secret)
-    for header, reason in [
-        (None, "no X-Signature header"),
-        ("", "no X-Signature header"),
-        ("0" * 64, "does not match"),
-        ("ü", "does not match"),
-    ]:
-        with _refused(reason):
-            verify_lemonsqueezy_signature(BODY, header, secret)
-    with _refused("does not match"):
-        verify_lemonsqueezy_signature(BODY + b"\n", digest, secret)
-
-
 def test_verify_webhook_signature_reads_the_providers_header_in_any_case() -> None:
     verify_webhook_signature("paddle", BODY, {"paddle-signature": f"ts={TS};h1={_h1()}"}, SECRET, now=TS)
     verify_webhook_signature(BillingProvider.PADDLE, BODY, {"Paddle-Signature": f"ts={TS};h1={_h1()}"}, SECRET, now=TS)
-    digest = hmac.new(b"ls", BODY, hashlib.sha256).hexdigest()
-    verify_webhook_signature(BillingProvider.LEMONSQUEEZY, BODY, {"X-SIGNATURE": digest}, "ls")
-    with _refused("no X-Signature header"):
-        verify_webhook_signature("lemonsqueezy", BODY, {"Paddle-Signature": "ts=1;h1=a"}, "ls")
-    with pytest.raises(ValueError):
-        verify_webhook_signature("stripe", BODY, {}, "s")
+    with _refused("no Paddle-Signature header"):
+        verify_webhook_signature("paddle", BODY, {"X-Signature": _h1()}, SECRET, now=TS)
+    # Lemon Squeezy went in 0.8 (§14.13): its name is no provider, as Stripe's never was.
+    for provider in ("lemonsqueezy", "stripe"):
+        with pytest.raises(ValueError):
+            verify_webhook_signature(provider, BODY, {"X-Signature": "0" * 64}, "s")

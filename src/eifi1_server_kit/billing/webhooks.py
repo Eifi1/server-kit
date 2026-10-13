@@ -105,7 +105,7 @@ class DispatchOutcome(enum.StrEnum):
     #: :class:`DuplicateEventError`: nothing written, nothing recorded again.
     DUPLICATE = "duplicate"
     #: Older than the row's ``updated_from_event_at`` — the ordering guard (§5): recorded,
-    #: not applied. Neither provider guarantees the order of delivery.
+    #: not applied. Paddle doesn't guarantee the order of delivery.
     STALE = "stale"
     #: A free grant runs (§12.11): recorded; only the provider's link and dates written,
     #: the status, source and plan left as the grant set them.
@@ -266,7 +266,7 @@ def webhook_answer(result: DispatchOutcome | BaseException | None) -> WebhookAns
     """The answer policy (§5): what the webhook route answers for what happened.
 
     * ``None`` — an event billing doesn't use — and every :class:`DispatchOutcome`: 200.
-      Paddle and Lemon Squeezy both ask for a 200; anything else is retried. So is a
+      Paddle asks for a 200; anything else is retried. So is a
       :class:`DuplicateEventError` that reaches the route (a store that raises it at the
       commit): the event is in the table, a retry would only find it there.
     * :attr:`DispatchOutcome.NO_PAYER` and a
@@ -276,7 +276,7 @@ def webhook_answer(result: DispatchOutcome | BaseException | None) -> WebhookAns
       signature, 404 with billing off, 503 for a missing setting (retried) — logged, but
       for the 404.
     * Anything else is transient: 500 and logged, so the provider retries (Paddle 60 times
-      over 3 days, Lemon Squeezy 3 times within minutes).
+      over 3 days).
 
     Log the result's type and message, never the body: it carries the buyer's details.
     """

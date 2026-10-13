@@ -157,7 +157,7 @@ async def test_a_duplicate_found_by_the_insert_is_answered_the_same() -> None:
 
 
 async def test_an_older_snapshot_does_not_overwrite_a_newer_one() -> None:
-    """§5's ordering guard: neither provider guarantees the order of delivery."""
+    """§5's ordering guard: Paddle doesn't guarantee the order of delivery."""
     store, payers = _Store(), _Payers({"user:1": _trial()})
     cancelled = _event(
         event_id="evt_2", kind=EventKind.SUBSCRIPTION_CANCELED, cancel_at_period_end=True, occurred_at=NOW + DAY
@@ -176,13 +176,14 @@ async def test_an_older_snapshot_does_not_overwrite_a_newer_one() -> None:
 
 
 async def test_a_notice_links_but_never_moves_the_mark() -> None:
-    """Lemon Squeezy's payment_failed carries no state; a late one cannot hide a newer one."""
+    """A notice (``status`` ``None``) carries no state; a late one cannot hide a newer one.
+    No Paddle event is one since Lemon Squeezy's ``payment_failed`` went (0.8); the
+    dispatch keeps the rule for a mapper that answers one."""
     store, payers = (
         _Store(),
         _Payers({"user:1": Row(status=SubscriptionStatus.ACTIVE, updated_from_event_at=NOW + DAY)}),
     )
     notice = _event(
-        provider=BillingProvider.LEMONSQUEEZY,
         kind=EventKind.PAYMENT_FAILED,
         status=None,
         plan_price_id=None,
@@ -194,7 +195,7 @@ async def test_a_notice_links_but_never_moves_the_mark() -> None:
         (
             EventKind.PAYMENT_FAILED,
             {
-                "provider": BillingProvider.LEMONSQUEEZY,
+                "provider": BillingProvider.PADDLE,
                 "provider_customer_id": "ctm_1",
                 "provider_subscription_id": "sub_1",
             },

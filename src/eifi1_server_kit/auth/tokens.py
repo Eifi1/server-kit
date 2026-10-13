@@ -39,6 +39,30 @@ to ``jwt.encode``. What is shared is the shape (§6.2):
   ``sessions_invalid_before``), so ending sessions takes effect at once, whatever the
   lifetime. The lifetimes are per-app settings defaulting to
   :data:`ACCESS_TOKEN_LIFETIME` (24 h) and :data:`REFRESH_TOKEN_LIFETIME` (30 days).
+
+**Refreshing a session** — ``POST /auth/refresh {refresh_token}``
+(:class:`~eifi1_server_kit.auth.RefreshRequest`; §11). ui-kit 0.34's
+``attachSessionRefresh`` renews the session when a request answers 401, and it decides by
+the STATUS what the answer means, so these answers are a contract:
+
+* **Definitive: ``401 {code: "session_ended"}``**, raised as
+  ``AuthError(AuthErrorCode.SESSION_ENDED)``, for every refusal of the token or its
+  account: unknown, malformed or expired; no refresh token (its ``type``); minted at or
+  before the cut-off (:func:`token_is_revoked`) or, in an app that keeps sessions, ended
+  by its row; a deactivated account; a required password change (§6.2, §6.3). The
+  ``detail`` may say which, for logs. Never a ``403``. The client signs the user out.
+* **The route never turns its own failure into a 401.** A database error, a timeout or a
+  bug stays a 5xx, which the client reads as transient: it keeps the session and tries
+  again (after 1 s and 3 s). A 401 there would sign everyone out over an outage. Nothing
+  else on the route answers 401 or 403.
+* **A signed-in endpoint answers 401 only about the session, never for a wrong input**
+  (kastlan 2). The client replays a request once after a refresh, and a second 401 ends
+  the session, so an endpoint that answered 401 for a wrong current password or a wrong
+  2FA code would sign its user out over a typo. Those answer ``400``, such as
+  ``AccountErrorCode.PASSWORD_INCORRECT`` (user-admin §6.2). The signed-out steps
+  (signing in and its challenges, a reset, a verification link, the refresh itself) may
+  answer 401 for a wrong credential: the client never refreshes on them (ui-kit's
+  ``isSignedOutStep``).
 """
 
 from __future__ import annotations

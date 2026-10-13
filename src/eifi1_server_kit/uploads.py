@@ -24,6 +24,7 @@ the bytes to the app's own ``save`` — the object store, the disk or a table st
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
@@ -449,18 +450,50 @@ def media_type_for_extension(extension: str) -> str | None:
     return EXTENSION_MEDIA_TYPES.get(extension.lower())
 
 
-def content_disposition(filename: str, disposition: Disposition = "attachment") -> str:
-    """A ``Content-Disposition`` value whose filename cannot break the header.
+#: What the plain ``filename=`` keeps as it is: printable ASCII but the nine characters
+#: Windows refuses in a file name (``<>:"/\|?*``). Quotes and backslashes would break the
+#: header and are dropped; the rest of the nine, and anything not ASCII after folding,
+#: become :data:`_PLAIN_STAND_IN`.
+_PLAIN_SAFE = frozenset(chr(code) for code in range(0x20, 0x7F)) - frozenset('<>:"/\\|?*')
+#: What stands in the plain name for a character it cannot keep: legal in a file name
+#: everywhere, unlike the ``?`` ``encode("ascii", "replace")`` wrote (KS S2).
+_PLAIN_STAND_IN = "_"
+#: The plain name's length cap (Kurvenschmiede ``feedback_router.py:156``).
+_PLAIN_MAX_LENGTH = 100
 
-    The name is whatever the client called the file. For the plain ``filename=`` quotes,
-    backslashes and anything not printable are dropped, it is cut to 100 characters and
-    narrowed to ASCII — Starlette encodes header values as latin-1, so an en dash or a CJK
-    character there was a 500 out of a plain GET (keksdose ``upload_guards.py:277``, on its
-    object-store branch only). The ORIGINAL name follows in the RFC 5987 ``filename*``,
-    percent-encoded, so nothing is lost; every browser prefers that one. keksdose's
+
+def _plain_filename(name: str) -> str:
+    """``name`` as the plain ``filename=`` may carry it: quotes, backslashes and anything
+    not printable dropped; accents folded (NFKD, the combining marks dropped:
+    ``Débattement-à-gauche.csv`` → ``Debattement-a-gauche.csv``, ``über`` → ``uber``);
+    what is still outside :data:`_PLAIN_SAFE` (``ß``, ``Ø``, a CJK name, a colon) as ``_``;
+    cut to 100 characters. Nothing left, or only blanks, is ``attachment``."""
+    kept = "".join(c for c in name if c.isprintable() and c not in '"\\')
+    folded = "".join(c for c in unicodedata.normalize("NFKD", kept) if not unicodedata.combining(c))
+    plain = "".join(c if c in _PLAIN_SAFE else _PLAIN_STAND_IN for c in folded)
+    return plain[:_PLAIN_MAX_LENGTH].strip() or "attachment"
+
+
+def content_disposition(filename: str, disposition: Disposition = "attachment", *, fallback: str | None = None) -> str:
+    """A ``Content-Disposition`` value whose filename cannot break the header, and whose
+    plain name is a file name every system will write.
+
+    The name is whatever the client called the file. The ORIGINAL goes into the RFC 5987
+    ``filename*``, percent-encoded, so nothing is lost; every browser prefers that one, and
+    so does ui-kit's ``filenameFromDisposition`` (0.34). The plain ``filename=`` is for a
+    reader that takes nothing else — ``curl -J`` among them — and is narrowed to ASCII:
+    Starlette encodes header values as latin-1, so an en dash or a CJK character there was
+    a 500 out of a plain GET (keksdose ``upload_guards.py:277``, on its object-store branch
+    only). Quotes, backslashes and anything not printable are dropped; accents are folded
+    (``Débattement-à-gauche.csv`` → ``Debattement-a-gauche.csv``), and what still isn't
+    safe ASCII becomes ``_`` (``停车扫描-1.csv`` → ``____-1.csv``) — never ``?``, which
+    Windows refuses in a file name (KS S2; 0.7 wrote ``D?battement-?-gauche.csv``). Cut to
+    100 characters; nothing left is ``attachment``.
+
+    ``fallback`` is the plain name an app would rather offer — ``curve-12.csv``, a record's
+    id — narrowed the same way; ``filename*`` keeps the original either way. keksdose's
     ``content_disposition`` and Kurvenschmiede's ``_disposition``
     (``feedback_router.py:156``), merged.
     """
-    kept = "".join(c for c in filename if c.isprintable() and c not in '"\\')[:100]
-    plain = kept.encode("ascii", "replace").decode("ascii").strip() or "attachment"
+    plain = _plain_filename(filename if fallback is None else fallback)
     return f"{disposition}; filename=\"{plain}\"; filename*=UTF-8''{quote(filename or plain, safe='')}"

@@ -66,7 +66,7 @@ def test_the_fakes_and_the_client_are_the_port() -> None:
     "fields",
     [
         {},
-        {"billing_provider": "lemonsqueezy", "billing_api_key": "ls_example"},
+        {"billing_api_key": "pdl_sdbx_apikey_example"},
         {"billing_provider": "paddle"},
         {"billing_provider": "paddle", "billing_api_key": " "},
     ],
@@ -126,7 +126,7 @@ def test_the_provider_is_read_by_value(monkeypatch: pytest.MonkeyPatch) -> None:
     patched = BillingSettings(billing_api_key="pdl_sdbx_apikey_example")
     monkeypatch.setattr(patched, "billing_provider", "paddle")
     assert isinstance(billing_provider_client(patched), PaddleClient)
-    monkeypatch.setattr(patched, "billing_provider", "lemonsqueezy")
+    monkeypatch.setattr(patched, "billing_provider", "lemonsqueezy")  # no provider since 0.8
     assert isinstance(billing_provider_client(patched), NoProviderClient)
     # And the enum, as the environment parses it.
     assert isinstance(

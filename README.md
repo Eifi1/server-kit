@@ -76,8 +76,13 @@ an `attachment`; `require_utf8_text=True` adds Kurvenschmiede's UTF-8 rule); ref
 the cap and no further, refusing over it (413) or empty (400) — read every upload with it.
 `store_attachment(data, declared_type, save=…, mint_key=…)` adds keksdose's
 content-addressed key and hands the bytes to the app's `save`. Also `sniffed_type`,
-`signature_type`, `inline_or_attachment`, `content_disposition`, `content_addressed_key`,
-`media_type_for_extension`.
+`signature_type`, `inline_or_attachment`, `content_addressed_key`,
+`media_type_for_extension`, and `content_disposition(filename, disposition="attachment", *,
+fallback=None)`: the original name in the RFC 5987 `filename*`, and a plain `filename=`
+that every system will write — accents folded (`Débattement-à-gauche.csv` →
+`Debattement-a-gauche.csv`), `_` for what stays outside safe ASCII and for Windows'
+`<>:/|?*` (never `?`), quotes and backslashes dropped, 100 characters at most — or the
+app's own ASCII name, `fallback="curve-12.csv"`, narrowed the same way.
 
 `ensure_decodable_image(data, media_type)` — the **`images` extra** — is keksdose's
 dev#510 guard: after `check_upload`, with the detected type, Pillow opens any `image/*` and
@@ -132,7 +137,7 @@ each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translati
 "invalid_credentials"}` at 401, …), user administration's `AccountError` (409) and
 `RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`),
 `demo.DemoError` (403 / 404 / 429 / 503), and billing's `BillingError` (400 / 402 / 404 /
-409 / 422 / 502 / 503) and `PlanLimitError` (402). An `AccountError`'s or a `PlanLimitError`'s `extra`
+409 / 422 / 502 / 503) and `PlanLimitError` (402), and `jobs.JobsTokenError` (401). An `AccountError`'s or a `PlanLimitError`'s `extra`
 fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin",
 "companies": [...]}` or `{"detail": …, "code": "plan_limit", "dimension": "budgets", "plan":
 "free", "limit": 1, "used": 1}`; a refusal's `headers` go on the answer (`DemoError`'s
@@ -178,14 +183,18 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
-| Schemas | `RegisterRequest`, `LoginRequest`, `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
-| Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400), `AuthError(code, detail=None)` |
+| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
+| Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
 **The kit signs no JWT.** Each app keeps its library and secret and hands the claim dicts
 to it: `jwt.encode(kit.access_claims(user.id, now=now, extra={"role": user.role}), …)`.
 On every request and on refresh: `if kit.token_is_revoked(claims.get("iat"),
 user.sessions_invalid_before): …401`. The comparison is exact, so a token minted after a
-cut-off in the same second survives.
+cut-off in the same second survives. On refresh, every refusal is
+`AuthError(AuthErrorCode.SESSION_ENDED)`, and the route's own failure stays a 5xx; a
+signed-in endpoint answers 401 only about the session, never for a wrong input (ui-kit's
+`attachSessionRefresh` signs out on a second 401; the rule is `auth.tokens`' docstring).
 
 **One-time tokens are stored hashed** — reset, verification and invitation alike (keksdose
 kept its verification token in plaintext). Mail `raw`, store `digest`, look up by
@@ -204,11 +213,29 @@ ip = client_ip(request.headers, request.client.host if request.client else None,
 if (wait := limiters.login.hit(ip)) is not None:
     raise HTTPException(429, headers={"Retry-After": retry_after_header(wait)})
 await asyncio.sleep(limiters.login_failures.delay(payload.email))
-user = await authenticate(session, payload.email, payload.password)  # dummy hash for unknown addresses
+user = await authenticate(session, payload.email, payload.password)  # check_absent(password) for unknown addresses
 if user is None:  # unknown, wrong password, deactivated — one answer
     limiters.login_failures.record_failure(payload.email)
     raise kit.AuthError(kit.AuthErrorCode.INVALID_CREDENTIALS)
 limiters.login_failures.clear(payload.email)
+```
+
+**An address with no account costs what one with an account costs** (§5.2): the one 401
+must not come back in microseconds for an unknown address and in a quarter of a second for
+a known one (Kurvenschmiede measured 3.7 ms against 262.2 ms). Build the check once from
+the app's own hasher — the kit hashes nothing — and call it where the real check would be:
+
+```python
+check_absent = kit.absent_account_check(hash_password, verify_password, cost=lambda: settings.bcrypt_rounds)
+
+
+async def authenticate(session, email, password):
+    user = await get_user_by_email(session, email)
+    if user is None:
+        check_absent(password)  # False, after the same work a real check does
+        return None
+    password_ok = verify_password(password, user.password_hash)  # checked even when deactivated
+    ...
 ```
 
 **The gate.** `registration_decision` makes the first account the admin and then lets in
@@ -236,11 +263,11 @@ holds stay in the app.
 
 | Area | Names |
 |---|---|
-| Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` |
-| Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, and billing §6's `plan` at `acknowledge`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
+| Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` (`target_email=None` is a group: the tick alone, never `type_email`) |
+| Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, billing §6's `plan` at `acknowledge`, and §11's group words `group_create`, `group_rename`, `group_delete` (at `acknowledge`), `membership_add`, `membership_role`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
 | User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, `RosterQueryError` (422), `LIKE_ESCAPE` |
-| Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, now=)` → the row's fields (an `AdminAction`, or the app's own action kept as written); `audit_detail` (ids, roles, flags and counts only), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
-| Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `AdminActionRow`; `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
+| Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, target_group_id=, target_group_name=, now=)` → the row's fields (`target_group_name` on a `group_delete` row only) (an `AdminAction`, or the app's own action kept as written); `audit_detail` (ids, roles, flags and counts only), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
+| Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
 | Export | `export_envelope(app, account, data, now)` (`"format": "eifi1-account-export"`, `"version": 1`), `export_filename`, `EXPORT_PER_USER` (once a minute), `NEVER_EXPORT`; `assert_no_secrets(obj, allow=)` / `secret_paths` → `ExportSecretError`; `looks_secret`, `looks_secret_key`, `looks_secret_value` |
 | Refusals | `AccountErrorCode` (`last_admin`, `self_action`, `other_companies`, `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409; `password_incorrect` 400, so a wrong current password never reads as an ended session), `AccountError(code, detail=None, extra=None)` |
@@ -454,17 +481,16 @@ Layer 1: the subscription row and `billing_events`, the routes, the gate's allow
 notice job's query, mail and trigger, and the provider seam stay in the app. The kit sends
 one request each for checkout, portal, cancel and undoing a cancel, through
 `billing.PaddleClient`, only with the **`billing` extra** (httpx, imported lazily: `import
-eifi1_server_kit.billing` never needs it). **Lemon Squeezy is deprecated** in 0.7 and goes
-in 0.8: `BillingProvider.LEMONSQUEEZY`, its mapper, statuses and signature check, and the
-numeric variant ids in `billing_price_ids`.
+eifi1_server_kit.billing` never needs it). **Lemon Squeezy is gone** since 0.8 (deprecated
+in 0.7): `BillingProvider` is `paddle` alone, and a price id is text.
 
 | Area | Names |
 |---|---|
-| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`, `lemonsqueezy` deprecated), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`, `billing_app` (the app's tag, set in code — lowercase, a letter first, checked even where the app's subclass redeclares the field as `str`; with Paddle, required to switch on), `billing_environment` (`PaddleEnvironment`: `sandbox`, `live`; unset: the key's prefix), `billing_checkout_page_url` (the pay page), `billing_hosted_checkout_url` (wins over it); `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch), `.billing_api_environment()` (503 if unknown), `.verify_billing_webhook(provider, raw_body, headers, *, now=None)` (the secret AND the tolerance) |
+| Settings | `BillingSettings`: `billing_enabled` (**False**), `billing_provider` (`BillingProvider`: `paddle`; any other provider fails at start), `billing_api_key`, `billing_webhook_secret` (both `SecretStr`; with the provider, required to switch on), `billing_signature_tolerance` (seconds, Paddle's 5 by default), `billing_price_ids` (plan → currency → interval → price id, or a list with retired ids after the current one), `billing_launch_at`, `billing_app` (the app's tag, set in code — lowercase, a letter first, checked even where the app's subclass redeclares the field as `str`; with Paddle, required to switch on), `billing_environment` (`PaddleEnvironment`: `sandbox`, `live`; unset: the key's prefix), `billing_checkout_page_url` (the pay page), `billing_hosted_checkout_url` (wins over it); `.require_billing_enabled()` (404 `billing_disabled`), `.billing_price_id(plan, currency, interval)` (503 `billing_not_configured`), `.billing_price_ref(price_id)` → `PriceRef`, `.billing_plan_for_price(price_id)`, `.billing_webhook_key()`, `.billing_standing(row, now, *, retry_grace=None)` (with `billing_launch_at` as the launch), `.billing_api_environment()` (503 if unknown), `.verify_billing_webhook(provider, raw_body, headers, *, now=None)` (the secret AND the tolerance) |
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
-| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `verify_lemonsqueezy_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `map_lemonsqueezy_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None)`, `PAYER_REF_KEY`, `APP_KEY`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
+| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None)`, `PAYER_REF_KEY`, `APP_KEY`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
 | The provider | the `BillingProviderClient` port (`checkout_url`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
 | Paddle (the `billing` extra) | `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None, hosted_checkout_url=None, timeout=15, client=None)`, `PaddleError` (`.status`, `.paddle_code`, `.paddle_detail`, `.request_id`; 502, or 503 for a 401/403), `paddle_environment_of(api_key)`, `paddle_locale(kit_locale)` (ui-kit's `paddleLocale`: `de-CH` → `de`, `zh` → `zh-Hans`, `hu` → `en`; a hosted checkout's `locale`), `PADDLE_API_BASES`, `PADDLE_API_VERSION`, `PADDLE_TIMEOUT_SECONDS` |
 | Notices | `billing_notice_due(row, now, *, launch, sent, ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at, days_left)` (`.key`, the marker), `BillingNoticeKind` (`trial_ending`, `trial_ended`, `grant_ending`, `grant_ended`), `NOTICE_STATUSES`; over the app's candidates, `billing_notices_owed(candidates, now, *, settings)` → `OwedNotice(payer, kind, ends_at, days_left, row)` (the candidate's row, typed as the app's) from `NoticeCandidate(payer, row, sent, deactivated, deletion_requested)` |
@@ -601,18 +627,17 @@ async def paddle_webhook(request: Request, session=Depends(system_session)) -> R
     return Response(status_code=answer.status_code)
 ```
 
-The signatures follow the providers' docs: Paddle's `Paddle-Signature: ts=…;h1=…` (hex
-HMAC-SHA256 of `ts:raw_body`, any `h1` during a secret rotation, and Paddle's five-second
-tolerance on `ts` unless `billing_signature_tolerance` widens it — a scale-to-zero host's
-cold start can eat five seconds; keksdose runs 60), Lemon Squeezy's `X-Signature` (hex
-HMAC-SHA256 of the raw body). The checkout carries
-`checkout_custom_data(payer_ref)`, which both providers send back with every subscription
+The signature follows Paddle's docs: `Paddle-Signature: ts=…;h1=…` (hex HMAC-SHA256 of
+`ts:raw_body`, any `h1` during a secret rotation, and Paddle's five-second tolerance on `ts`
+unless `billing_signature_tolerance` widens it — a scale-to-zero host's cold start can eat
+five seconds; keksdose runs 60). The checkout carries
+`checkout_custom_data(payer_ref)`, which Paddle sends back with every subscription
 event, so `load` finds the row by `event.payer_ref`, else by the provider's ids. `dispatch`
 skips a duplicate — one `seen` finds, or one whose insert hits the unique key, which the
 store's `record` reports by raising `DuplicateEventError` (flush the insert there and undo
 it: a savepoint where the driver nests them, else a rollback, which also works on SQLite in
-tests); skips a snapshot older than `updated_from_event_at` (neither provider
-guarantees the order); skips a replaced subscription's late end; leaves a running grant's
+tests); skips a snapshot older than `updated_from_event_at` (Paddle doesn't
+guarantee the order); skips a replaced subscription's late end; leaves a running grant's
 status, source and plan alone (writing only the link and dates — the provider's paid period
 counts once the grant ends); and otherwise hands `apply(event, row, changes)` the columns
 to write. Unknown and duplicate events answer 200, poison 200 and a log line, a price the
@@ -715,6 +740,24 @@ localhost only; `FakeBillingProvider` records the port's calls (and fails on dem
 `PaddleApiFake` is Paddle's API as an `httpx.MockTransport` answering Paddle's documented
 examples.
 
+### `eifi1_server_kit.jobs`
+
+The scheduler's token routes (billing contract §14.7): a daily job is `POST /api/v1/ops/…`,
+called by a Cloud Scheduler HTTP job with no account behind it, so the caller proves it is
+the job with `X-Jobs-Token` (`JOBS_TOKEN_HEADER`) — a header, never a query parameter,
+which Cloud Run's request log records. `JobsSettings`, a mixin like `DemoSettings`, holds
+`jobs_token` (`SecretStr | None`, `<APP>_JOBS_TOKEN`). `require_jobs_token(token)` is the
+FastAPI dependency, reading the setting through `token` at every call;
+`check_jobs_token(presented, expected)` is its check, in constant time on bytes. Missing,
+wrong, or no token set: `JobsTokenError` (401, one answer for the three; the last logged at
+WARNING). Lifted from kastlan's and Kurvenschmiede's `ops_router.py`.
+
+```python
+from eifi1_server_kit.jobs import require_jobs_token
+
+router = APIRouter(prefix="/ops", dependencies=[Depends(require_jobs_token(lambda: get_settings().jobs_token))])
+```
+
 ### `eifi1_server_kit.mail`
 
 The **`mail` extra** (`httpx`) for `ResendClient` only; the rest needs nothing.
@@ -736,7 +779,12 @@ row's own language, so a German fallback says `de-CH`. Outlook junked a fully
 authenticated Kurvenschmiede mail that was only a fragment.
 
 `Mailer` is the protocol (`await mailer.send(to, message, kind="verification") -> bool`,
-never raises). `ResendClient(api_key=, from_address=, timeout=10, client=None,
+never raises). The `kind` is what the mail is for, in its log lines and Resend's
+`Idempotency-Key`: a one-time link's `OneTimeTokenKind`, billing's `BillingNoticeKind`, or
+`AccountNoticeKind` for the two account notices with no token — `email_change_notice` (to
+the old address, user-admin §6.2) and `account_deletion` (the answer to a deletion
+request, §6.4; kastlan said `deletion`, Kurvenschmiede `deletion_request`).
+`ResendClient(api_key=, from_address=, timeout=10, client=None,
 reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
 under one `Idempotency-Key`, and never logs the recipient. **Set `reply_to`** from the
 app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address)`, i.e.
@@ -751,7 +799,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.7.1/eifi1_server_kit-0.7.1-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.8.0/eifi1_server_kit-0.8.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client or the Paddle client, name the extra: `"eifi1-server-kit[billing,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,images,mail]`, keksdose `[billing,images]`, Kurvenschmiede `[billing,mail]`).
@@ -761,7 +809,9 @@ binary, so uv cannot fetch a git source inside a Docker build (keksdose's findin
 tag `v*` runs `.github/workflows/release.yml`, which builds the wheel with the full gate and
 attaches it to the GitHub Release; uv.lock pins its hash. To try a change locally without
 touching an app's `pyproject.toml` or `uv.lock`, run its suite with the kit overlaid:
-`uv run --with ../server-kit pytest`.
+`uv run --with-editable ../server-kit pytest`. Editable, not `--with ../server-kit`: uv
+caches the wheel it builds from a path until the kit's `pyproject.toml` changes, so an edit
+made after the first run would not be what gets tested (Kurvenschmiede's S6).
 
 ## Adopting layer 1
 

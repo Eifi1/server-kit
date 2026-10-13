@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 from starlette.datastructures import UploadFile
@@ -185,6 +186,45 @@ def test_a_filename_cannot_break_the_content_disposition_header() -> None:
     assert content_disposition("") == "attachment; filename=\"attachment\"; filename*=UTF-8''attachment"
     # Kurvenschmiede caps the plain name at 100 characters.
     assert 'filename="' + "a" * 100 + '"' in content_disposition("a" * 300)
+
+
+def _plain(header: str) -> str:
+    """The plain ``filename=`` of a ``Content-Disposition`` value."""
+    return header.split('filename="', 1)[1].split('"', 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("name", "plain"),
+    [
+        # KS S2's table: 0.7 wrote "D?battement-?-gauche.csv", "?ber-H?he.csv", "????-??-1.csv".
+        ("Débattement-à-gauche.csv", "Debattement-a-gauche.csv"),
+        ("über-Höhe.csv", "uber-Hohe.csv"),
+        ("停车扫描-轮廓-1.csv", "____-__-1.csv"),
+        # What doesn't fold is "_", never "?"; so is what Windows refuses in a name.
+        ("Straße Ø.pdf", "Stra_e _.pdf"),
+        ("Bericht 10:30 <a|b>?*/.pdf", "Bericht 10_30 _a_b____.pdf"),
+        # NFKD's compatibility forms fold too; a full-width quote is no quote any more.
+        ("ﬁle ＡＢ＂.txt", "file AB_.txt"),
+        ("Kontoauszug 1 – 2026.pdf", "Kontoauszug 1 _ 2026.pdf"),
+    ],
+)
+def test_the_plain_name_folds_accents_and_writes_no_question_mark(name: str, plain: str) -> None:
+    """KS S2: ``?`` is one of the nine characters Windows refuses in a file name, and a
+    reader that takes only ``filename=`` — ``curl -J`` — writes what it says."""
+    header = content_disposition(name)
+    assert _plain(header) == plain
+    assert f"filename*=UTF-8''{quote(name, safe='')}" in header  # the original, whole
+
+
+def test_the_plain_name_can_be_the_apps_own() -> None:
+    """KS S2: an app with an ASCII name to offer passes it; it is narrowed as the original
+    would be, and ``filename*`` still carries the original."""
+    header = content_disposition("停车扫描-轮廓-1.csv", fallback="curve-12.csv")
+    assert header == "attachment; filename=\"curve-12.csv\"; filename*=UTF-8''" + quote("停车扫描-轮廓-1.csv", safe="")
+    assert _plain(content_disposition("x.csv", fallback='cur"ve\\\r\n-ü.csv')) == "curve-u.csv"
+    assert _plain(content_disposition("x.csv", "inline", fallback="  ")) == "attachment"
+    assert _plain(content_disposition("x.csv", fallback="a" * 300)) == "a" * 100
+    assert content_disposition("", fallback="") == "attachment; filename=\"attachment\"; filename*=UTF-8''attachment"
 
 
 def test_a_name_outside_latin1_still_serves() -> None:

@@ -14,8 +14,10 @@ no routes — those stay in each app. Import from the submodules:
 * :mod:`eifi1_server_kit.demo` — the demo: its settings, the start's gate, the refusals,
   model R's read-only guard, the throwaway user and its one lifetime;
 * :mod:`eifi1_server_kit.billing` — billing: its settings, the plan catalogue and limits,
-  good standing and the read-only gate, the providers' webhooks (signatures, normalised
+  good standing and the read-only gate, the provider's webhooks (signatures, normalised
   events, a pure dispatcher), the wire shapes;
+* :mod:`eifi1_server_kit.jobs` — the scheduler's token routes: ``X-Jobs-Token``, its
+  setting and its 401;
 * :mod:`eifi1_server_kit.mail` — mail texts per language, one escaped layout as a whole
   document, Resend and console transports;
 * :mod:`eifi1_server_kit.feedback` — the feedback contract (schemas, enums, rules,
@@ -36,4 +38,4 @@ lifted with a citation on each.
 
 from __future__ import annotations
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
