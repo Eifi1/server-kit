@@ -10,6 +10,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.8.0] (2026-10-13)
+
 server-kit 0.8.0: the backend half of round 0.34 (ui-kit 0.34), from the apps' 0.33 / 0.7
 adoption reports and Kurvenschmiede's server-kit asks of 2026-10 (S1, S2, S3, S5). Lemon
 Squeezy goes, as 0.7 announced (decision 25, §14.13) — breaking for anything that still
