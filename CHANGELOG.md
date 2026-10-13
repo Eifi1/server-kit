@@ -10,6 +10,74 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### Added — notifications (round 0.36, `docs/notifications-harmonization.md`)
+
+* **notifications:** layer 1 of the notifications round (settings §6.4): pure rules and models, no
+  database and no routes. `registry` (`NotificationType`, `NotificationTypes`: each app declares
+  its own types, the server's list is the only one), `resource` (the settings resource and its
+  PATCH: `apply_switches_patch`, `resolve_switches`, `SETTINGS_SKIP`), `delivery` (`plan_delivery`:
+  the `app` and `email` switches, a verified address, quiet hours holding push only), `timing`
+  (`in_quiet_hours`, which fails open; `resolve_zone`, a null or unknown zone is Europe/Zurich;
+  the digest's period key `2026-W42` / `2026-10` and `digest_due`, once a period with 3 days'
+  grace), `push` (the subscription and payload shapes, `push_outcome`: 404/410 is gone,
+  `should_reap` after 10 failures; `vapid_subject`), `unsubscribe` (a signed, unstored,
+  non-expiring token whose key is derived from the app's own signing secret; it can only turn
+  e-mail off), `inbox` (the inbox row and its retention) and `errors`. Lifted from keksdose's
+  `schemas/push.py` and its services.
+* **mail:** `MailMessage.headers`, `list_unsubscribe_headers(url)` (RFC 8058's
+  `List-Unsubscribe` and `List-Unsubscribe-Post`, https only) and `MailUnsubscribe(label, page,
+  one_click)`, which `render_mail(…, unsubscribe=)` turns into the footer line; `ResendClient`
+  sends the headers, `ConsoleMailer` logs them. A header name the RFC does not allow, or CR/LF in
+  a value, is refused. A mail's `kind` may be a notification type's id.
+* **settings:** `apply_patch(…, skip=())`: a skipped field is checked as not nullable but left to
+  its own rule (the notification types).
+
+### Added — feedback, layer 2 (round 0.36, `docs/server-services-harmonization.md`)
+
+* **feedback:** the feedback service behind ports — the flows the three apps each wrote
+  around the layer-1 rules, written once. `feedback.ports`: `FeedbackActor`,
+  `FeedbackRow`, `NewFeedback`, `FeedbackRepository[RowT]` (`get(id, *, viewer)`,
+  `list_mine`, `inbox`, `open_crash`, `add`, `apply(row, changes, *, actor)`, `by_author`,
+  `urls_named_except`), `AttachmentStorage` (`save`, `read`), `StoredAttachment`, `Clock`,
+  `utc_now`. `feedback.service`: `FeedbackService(repository, *, policy, foreign_row,
+  now)` with `create`, `report_crash`, `list_mine`, `inbox`, `update` and
+  `erase_author` → `ErasedFeedback(reports, keys)`; `throttle_upload`,
+  `upload_attachment`, `download_attachment` → `AttachmentDownload`. Both re-exported from
+  `eifi1_server_kit.feedback`, without FastAPI, so a CLI files through the service too.
+  The kit never commits: each flow makes at most one repository write, as its last step.
+  The limiter is charged before the work (feedback §3.5, §3.6 as amended). The download
+  reads the type off the bytes and always sends `Content-Disposition` and `nosniff`. The
+  erasure deletes no file: it answers the bare keys, and each app deletes them at its
+  own commit.
+* **feedback:** `feedback.router` — `feedback_router(FeedbackDeps(…), *, prefix, tags)`,
+  the contract's seven routes with keksdose's endpoint names (its operation ids and its
+  `Body_upload_attachment_…` component stay), the app's own demo guard factory and admin
+  guard first in each route's `dependencies` (so they answer before the body is
+  validated), `foreign_row` (403 or 404), the app's schema subclasses and `to_response`,
+  the limiters read from `app.state.feedback_limiters`; `app_state_limiters`. A
+  `ValueError` when the create model's policy is not `deps.policy`. Behind the new
+  **`fastapi` extra** (`fastapi>=0.115.0`, `python-multipart>=0.0.18`); without it,
+  importing the module names the extra.
+* **feedback:** three refusals, answered by `install_contract_error_handlers`:
+  `FeedbackNotFoundError` (404 "Feedback not found"), `AttachmentNotFoundError` (404
+  "Attachment not found"), `FeedbackThrottledError` (429 with `Retry-After`,
+  `THROTTLED_DETAIL`, keksdose's sentence).
+* **feedback:** `feedback.testing` (not re-exported, no FastAPI, no httpx):
+  `InMemoryFeedbackRepository` (records each write), `InMemoryAttachmentStorage`,
+  `MemoryFeedbackRow`, `actor`, `fixed_clock`, and the conformance checks an app runs on
+  its own adapters: `check_repository` (files through the storage as the uploader
+  first), `check_storage`, `check_round_trip` (also checks that `policy.prefix` is the
+  mount).
+* **export:** `scripts/export_api.py` exports `eifi1_server_kit.feedback.router`, and a
+  `type` statement (`type Clock = …`) as a constant with its source.
+
+### Docs — feedback, layer 2
+
+* The limiter's and the crash module's docstrings say the amended rule: charge before the
+  work. The README's layering table marks layer 2 as 0.9.0, gains a "layer 2" section and
+  "Adopting layer 2", and calls the demo's read-only transaction "the demo's database
+  layer".
+
 ## [0.8.0] (2026-10-13)
 
 server-kit 0.8.0: the backend half of round 0.34 (ui-kit 0.34), from the apps' 0.33 / 0.7

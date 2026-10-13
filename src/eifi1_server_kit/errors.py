@@ -1,7 +1,7 @@
 """The kit's refusals as HTTP answers: one call, so no app maps them by hand — or forgets to.
 
 Every refusal the kit raises is a plain exception carrying the contract's status as
-``status_code`` (:class:`~eifi1_server_kit.feedback.FeedbackError` 422 / 403,
+``status_code`` (:class:`~eifi1_server_kit.feedback.FeedbackError` 422 / 403 / 404 / 429,
 :class:`~eifi1_server_kit.uploads.UploadRejectedError` 400 / 413 / 415, the translation
 review's 422 / 403, :class:`~eifi1_server_kit.auth.AuthError` 400 / 401 / 403 / 409,
 user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
@@ -9,8 +9,9 @@ user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
 :class:`~eifi1_server_kit.settings.PatchNullError` 422, the demo's
 :class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503, and billing's
 :class:`~eifi1_server_kit.billing.BillingError` 400 / 402 / 404 / 409 / 422 / 502 / 503 and
-:class:`~eifi1_server_kit.billing.PlanLimitError` 402, and a token route's
-:class:`~eifi1_server_kit.jobs.JobsTokenError` 401).
+:class:`~eifi1_server_kit.billing.PlanLimitError` 402, a token route's
+:class:`~eifi1_server_kit.jobs.JobsTokenError` 401, and the notifications'
+:class:`~eifi1_server_kit.notifications.NotificationError` 400 / 409 / 422).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -50,6 +51,7 @@ from eifi1_server_kit.billing.errors import BillingError, PlanLimitError
 from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.feedback.errors import FeedbackError
 from eifi1_server_kit.jobs import JobsTokenError
+from eifi1_server_kit.notifications.errors import NotificationError
 from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.translation_review.scope import (
     TranslationAccessError,
@@ -81,6 +83,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     BillingError,
     PlanLimitError,
     JobsTokenError,
+    NotificationError,
 )
 
 

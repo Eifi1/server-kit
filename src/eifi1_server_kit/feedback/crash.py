@@ -26,10 +26,11 @@ kit decides what to do with it::
 from keksdose's own code): any drift would mint a new fingerprint for every crash already
 open there, and the next occurrence of each would file a twin instead of folding.
 
-**The limiter.** keksdose charges its crash limiter BEFORE the dedupe
-(``feedback_router.py:155``), so repeats count too and ``occurrences`` stops rising after
-20 in an hour; the contract recommends charging after the dedupe (only new rows count).
-Which one is the app's choice — the kit has no router — and keksdose keeps its order.
+**The limiter** is charged BEFORE the dedupe, as keksdose does (``feedback_router.py:155``)
+and the contract says since round 0.36 (§3.6; ``docs/server-services-harmonization.md``
+§2.11): repeats count too, so ``occurrences`` stops rising after 20 in an hour.
+:meth:`eifi1_server_kit.feedback.FeedbackService.report_crash` runs the whole flow in
+that order.
 """
 
 from __future__ import annotations

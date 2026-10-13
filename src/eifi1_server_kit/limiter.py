@@ -20,14 +20,15 @@ loop — not a cross-instance total. ``hit()`` is the whole contract, so a share
 ``X-Forwarded-For``, as many hops as the app has proxies — never the left-most entry,
 which the client writes itself.
 
-**When to charge is the caller's choice.** Call ``hit()`` where a request should start
-costing a slot:
+**When to charge: before the work.** Call ``hit()`` where a request starts costing the
+server something — the feedback contract's rule since round 0.36 (§3.5, §3.6, as all
+three apps did; ``docs/server-services-harmonization.md`` §2.11), and what
+:mod:`eifi1_server_kit.feedback.service` does:
 
-* uploads — keksdose charges BEFORE the type/size checks (``upload_guards.throttle_attachment``),
-  so a refused file uses a slot; the contract recommends AFTER validation;
-* crashes — keksdose charges BEFORE the dedupe (``feedback_router.py:155``), so repeats
-  count and ``occurrences`` stops rising after 20 an hour; the contract recommends AFTER
-  the dedupe, charging only rows actually filed.
+* uploads — BEFORE the file is read and checked (keksdose
+  ``upload_guards.throttle_attachment``), so a refused file uses a slot;
+* crashes — BEFORE the dedupe (keksdose ``feedback_router.py:155``), so repeats count and
+  ``occurrences`` stops rising after 20 an hour.
 """
 
 from __future__ import annotations

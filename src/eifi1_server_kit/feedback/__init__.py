@@ -4,6 +4,13 @@ Schemas, enums, limits, the PATCH rules, rework bodies, crash filing, erasure an
 attachment URL check — every rule keksdose's backend enforces, as pure functions over
 plain values, so kastlan and Kurvenschmiede import them instead of writing them a third
 time. The database, the queries (RLS, ``company_id``), auth and the routes stay per app.
+
+Layer 2 (0.9.0, ``docs/server-services-harmonization.md``): the flows written once against
+ports each app implements — :class:`FeedbackService` over a :class:`FeedbackRepository`,
+:func:`upload_attachment` and :func:`download_attachment` over an
+:class:`AttachmentStorage`, :func:`throttle_upload` — re-exported here, without FastAPI.
+The routes are ``eifi1_server_kit.feedback.router`` (the ``fastapi`` extra) and the fakes
+and conformance checks ``eifi1_server_kit.feedback.testing``; neither is re-exported.
 """
 
 from __future__ import annotations
@@ -67,11 +74,25 @@ from eifi1_server_kit.feedback.erasure import (
     scrub_text,
 )
 from eifi1_server_kit.feedback.errors import (
+    THROTTLED_DETAIL,
+    AttachmentNotFoundError,
     CrashCategoryNotAssignableError,
     FeedbackError,
     FeedbackForbiddenError,
+    FeedbackNotFoundError,
+    FeedbackThrottledError,
     FeedbackValidationError,
     UnknownAttachmentUrlError,
+)
+from eifi1_server_kit.feedback.ports import (
+    AttachmentStorage,
+    Clock,
+    FeedbackActor,
+    FeedbackRepository,
+    FeedbackRow,
+    NewFeedback,
+    StoredAttachment,
+    utc_now,
 )
 from eifi1_server_kit.feedback.rules import (
     AUTHOR_EDITABLE_FIELDS,
@@ -96,6 +117,14 @@ from eifi1_server_kit.feedback.schemas import (
     FeedbackCreate,
     FeedbackResponse,
     FeedbackUpdate,
+)
+from eifi1_server_kit.feedback.service import (
+    AttachmentDownload,
+    ErasedFeedback,
+    FeedbackService,
+    download_attachment,
+    throttle_upload,
+    upload_attachment,
 )
 from eifi1_server_kit.uploads import ACCEPT_LIST, ACCEPTED_MEDIA_TYPES, MAX_ATTACHMENT_BYTES
 
@@ -128,22 +157,36 @@ __all__ = [
     "REWORK_STAMP_FORMAT",
     "SHA12_KEY_PATTERN",
     "TERMINAL_STATUSES",
+    "THROTTLED_DETAIL",
     "UUID32_SHA12_KEY_PATTERN",
     "AnonymisedFeedback",
+    "AttachmentDownload",
+    "AttachmentNotFoundError",
+    "AttachmentStorage",
     "AttachmentUrlPolicy",
+    "Clock",
     "CrashCategoryNotAssignableError",
     "CrashDecision",
     "CrashReportCreate",
     "CrashReportResponse",
+    "ErasedFeedback",
+    "FeedbackActor",
     "FeedbackAttachmentResponse",
     "FeedbackCategory",
     "FeedbackCreate",
     "FeedbackError",
     "FeedbackForbiddenError",
+    "FeedbackNotFoundError",
+    "FeedbackRepository",
     "FeedbackResponse",
+    "FeedbackRow",
+    "FeedbackService",
     "FeedbackStatus",
+    "FeedbackThrottledError",
     "FeedbackUpdate",
     "FeedbackValidationError",
+    "NewFeedback",
+    "StoredAttachment",
     "UnknownAttachmentUrlError",
     "UpdatePlan",
     "anonymise_feedback",
@@ -161,6 +204,7 @@ __all__ = [
     "crash_seen_at",
     "crash_title",
     "decide_crash",
+    "download_attachment",
     "feedback_attachment_urls",
     "fold_crash_context",
     "initial_status",
@@ -178,5 +222,8 @@ __all__ = [
     "scrub_text",
     "split_body_attachments",
     "stamp_identity",
+    "throttle_upload",
     "truncate",
+    "upload_attachment",
+    "utc_now",
 ]

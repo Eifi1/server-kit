@@ -13,16 +13,18 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 §7, [`docs/settings-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/settings-harmonization.md)
 §6, [`docs/landing-demo-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/landing-demo-harmonization.md)
 §6, [`docs/billing-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/billing-harmonization.md)
-§10 with §14 and [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
-§6 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
+§10 with §14, [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
+§6 and [`docs/notifications-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/notifications-harmonization.md)
+§4.1 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
 from the `server-kit-api.json` each release carries ([Developing](#developing)).
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
-  Three optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
-  `mail` (`httpx>=0.28`) for `mail.ResendClient` only, and `billing` (`httpx>=0.28`) for
-  `billing.PaddleClient` only. No JWT library: the kit builds and checks claims, each app
+  Four optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
+  `mail` (`httpx>=0.28`) for `mail.ResendClient` only, `billing` (`httpx>=0.28`) for
+  `billing.PaddleClient` only, and `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
+  for `feedback.router` only. No JWT library: the kit builds and checks claims, each app
   signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
@@ -31,13 +33,15 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 | Layer | What | Status |
 |---|---|---|
 | **1 — contracts as code** | pure functions, Pydantic models, small classes, one Starlette middleware. **No** database models, migrations, sessions, repositories or routes | **0.1.0** |
-| 2 — services behind ports | the feedback service written against a small repository / storage / clock port each app implements; router factories (`feedback_router(deps)`) with per-app hooks (`may_file(user)` for keksdose's demo sessions, the 404-vs-403 choice for a foreign row) | later |
+| **2 — services behind ports** | the feedback service written once against a repository / storage / clock port each app implements (`feedback.ports`, `feedback.service`), and the router factory `feedback_router(FeedbackDeps(…))` (`feedback.router`, the `fastapi` extra). The app's hooks: its own demo guard factory and admin guard as route dependencies, `foreign_row` (403 or 404), the actor on the ports (`get(id, *, viewer)`, `apply(row, changes, *, actor)`), its schema subclasses and `to_response`. The kit never commits | **0.9.0** |
 
 Layer 1 never imports an app's `User`: the rules take plain values (`is_admin`,
 `is_author`, the row's stored status and body, `is_first_user`, a token's `iat` and the
 account's `sessions_invalid_before`), refusals are plain exceptions carrying a
 `status_code`, and the queries — RLS, kastlan's `company_id`, the invitation rows — stay in
-the app.
+the app. Layer 2 doesn't either: the app builds a `FeedbackActor` from its `User`, its
+adapters keep the queries, and a layer-2 module may import FastAPI and Starlette, never
+SQLAlchemy or an app's model ([`docs/server-services-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/server-services-harmonization.md)).
 
 ## What is in it
 
@@ -64,6 +68,54 @@ one with a new row. A rework sent by an admin goes back to READY, anyone else's 
 `plan_update` does it from its `is_admin`. The author may edit while OPEN, READY or
 IN_PROGRESS. An app whose status column is a database enum adds the label first
 (`ALTER TYPE feedbackstatus ADD VALUE 'READY' AFTER 'OPEN'`); existing OPEN rows stay OPEN.
+
+### `eifi1_server_kit.feedback` — layer 2
+
+The flows the three apps each wrote around the rules — the lookups, the demo refusal, the
+limiters, reading an upload, the download's headers, the 404 or 403, the erasure's loop —
+written once (server-services §2, §4.1). The ports and the service come with
+`eifi1_server_kit.feedback` and need no FastAPI; the routes are
+`eifi1_server_kit.feedback.router`, the fakes and checks `eifi1_server_kit.feedback.testing`.
+
+| Area | Names |
+|---|---|
+| Ports | `FeedbackActor(id, email, display_name, is_admin, is_demo=False)`; `FeedbackRow` (read-only: an app's mapped row satisfies it as it is); `NewFeedback`; `FeedbackRepository[RowT]` (`get(id, *, viewer)`, `list_mine`, `inbox(status)`, `open_crash`, `add`, `apply(row, changes, *, actor)`, `by_author`, `urls_named_except`); `AttachmentStorage` (`save(data, upload, *, uploader, filename)` → key, `read(key, *, viewer)`) and `StoredAttachment`; `Clock`, `utc_now` |
+| Service | `FeedbackService(repository, *, policy, foreign_row="forbidden", now=utc_now)`: `create`, `report_crash(…, limiter=)`, `list_mine`, `inbox`, `update`, `erase_author(user_id, identifiers)` → `ErasedFeedback(reports, keys)`; `throttle_upload(limiter, user_id)`, `upload_attachment(…)` → the URL, `download_attachment(…)` → `AttachmentDownload(data, media_type, headers)` |
+| Routes (`feedback.router`) | `FeedbackDeps(actor=, repository=, storage=, demo_guard=, admin_guard=, policy=, create_model=, update_model=, response_model=, to_response=, foreign_row=, decode_images=, require_utf8_text=, limiters=, now=)`, `feedback_router(deps, *, prefix="/feedback", tags=("feedback",))`, `app_state_limiters` |
+| Refusals | `FeedbackNotFoundError` (404 "Feedback not found"), `AttachmentNotFoundError` (404 "Attachment not found"), `FeedbackThrottledError` (429, `Retry-After`, `THROTTLED_DETAIL`) — answered by `install_contract_error_handlers` |
+| Testing (`feedback.testing`) | `InMemoryFeedbackRepository` (records each write in `writes`), `InMemoryAttachmentStorage`, `MemoryFeedbackRow`, `actor(**overrides)`, `fixed_clock(at)`; `check_repository`, `check_storage`, `check_round_trip` |
+
+| Route | Endpoint | Guard (the app's) | Answer |
+|---|---|---|---|
+| `POST /feedback/attachments` | `upload_attachment` | `demo_guard("uploads")` | 201 `{url}` |
+| `GET /feedback/attachments/{key}` | `download_attachment` | — | 200, the bytes |
+| `POST /feedback` | `create` | `demo_guard("feedback")` | 201 |
+| `POST /feedback/crash` | `report_crash` | — | 202, always |
+| `GET /feedback/my` | `list_my` | — | the caller's own |
+| `GET /feedback` | `list_all` (`status_filter`) | `admin_guard` | each with `user_email` |
+| `PATCH /feedback/{feedback_id}` | `update` | `demo_guard("feedback")` | the row |
+
+- **The guards are the app's own**, first in each route's `dependencies=[…]`: FastAPI runs
+  them before the body is validated (a demo's `json={}` is 403 `demo_refused`), the 403's
+  words stay the app's, and each app's route walk finds them by its own names. The service
+  keeps the rule too, for a caller without the router (`refuse_demo`, "Insufficient role").
+- **keksdose's endpoint names**, the upload's `file` field and `status_filter`, so its
+  operation ids and its `Body_upload_attachment_api_v1_feedback_attachments_post` stay.
+  `policy.prefix` must be the mounted path; `create_model.attachment_url_policy` must be
+  `policy` (else `ValueError`). An app's own extra routes go after the kit's router.
+- **The kit never commits.** Each flow makes at most one repository write (`add` or
+  `apply`), as its last step; the app's session or adapter commits.
+- **The limiter is charged before the work** (feedback §3.5, §3.6 as amended): an upload
+  before it is read, a crash before the lookup. The windows are read per request from
+  `app.state.feedback_limiters`.
+- **The download** reads the type off the bytes (the signature, else text when stored as
+  text and still text, else `application/octet-stream`), always sends
+  `Content-Disposition` (`inline` for the four pictures only, the stored name or
+  `attachment.<ext>`) and `X-Content-Type-Options: nosniff`.
+- **The erasure deletes no file**: `erase_author` anonymises each row with `actor=None`
+  and answers the bare keys no other row names, sorted; the app deletes them at its commit.
+- **The create stamps the identity** (`stamp_identity`) and decides the first status;
+  `attachment_urls` is `None` for none, never `[]`.
 
 ### `eifi1_server_kit.uploads`
 
@@ -344,7 +396,7 @@ and their columns stay in the app.
 
 | Area | Names |
 |---|---|
-| The PATCH rule | `apply_patch(obj, update, *, not_nullable, defaults=None)` → the fields written; `PatchNullError` (422, `code: "not_nullable"`, `fields`), `PATCH_NULL_CODE` |
+| The PATCH rule | `apply_patch(obj, update, *, not_nullable, defaults=None, skip=())` → the fields written; `PatchNullError` (422, `code: "not_nullable"`, `fields`), `PATCH_NULL_CODE` |
 | The language | `canonical_locale(tag, offered)`, `parse_accept_language(header, offered)`, `profile_update_model(offered, name="ProfileUpdate")` |
 
 **One rule for every settings body** (§6.1), whatever its verb — keksdose's push writes
@@ -365,8 +417,11 @@ async def update_settings(body: CompanySettingsUpdate, …) -> CompanySettings: 
 `not_nullable` is required, so an endpoint whose fields may all be cleared says `()` out
 loud. `defaults={"overspend": True}` makes a `null` reset to a value instead of `None`
 (keksdose's push preferences). Every null is checked before anything is written, so a
-refused body never leaves the row half changed. A model without `extra="forbid"`, or a
-guard naming no field of the model, is a `TypeError` / `ValueError` on the first call.
+refused body never leaves the row half changed. `skip=("types",)` leaves a field to the
+caller: a null on it is still refused with the others, but it is neither written nor
+answered (notifications' `types`, which `apply_switches_patch` writes). A model without
+`extra="forbid"`, or a guard naming no field of the model, is a `TypeError` /
+`ValueError` on the first call.
 
 **The account's language** (§6.2) is one canonical `locale` from the app's offered
 languages. `canonical_locale(tag, offered)` normalises case and `_` (`de_ch` → `de-CH`),
@@ -465,7 +520,9 @@ if user.is_demo and not demo_write_allowed(request.method, request.url.path, DEM
     raise DemoError(DemoErrorCode.DEMO_READ_ONLY)
 ```
 
-Layer 2 — the read-only database transaction — is a recipe, not kit code (§6.3).
+The demo's database layer — the read-only database transaction — is a recipe, not kit
+code (§6.3); it is not the kit's layer 2, and a feedback service running in the app's
+session keeps it.
 **`refuse_demo(user.is_demo, "passkeys")` on every never-list route (§6.4), GET ones
 included**: layer 1 catches only writes, and the account export is a GET. Mail to a demo
 address is skipped silently (`is_demo_address`). Every app passes `is_demo` to
@@ -790,8 +847,89 @@ under one `Idempotency-Key`, and never logs the recipient. **Set `reply_to`** fr
 app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address)`, i.e.
 `support@<the sender's domain>`. Cloudflare Email Routing forwards `support@` on all three
 domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` logs
-the mail with its link — development only; kastlan passes `logging.WARNING`. Not yet:
-`List-Unsubscribe` and the rest a notification needs (the notifications round).
+the mail with its link — development only; kastlan passes `logging.WARNING`.
+
+**A notification mail** (notifications §3.6) is sent under its type's id as `kind`
+(`share_granted`) and carries RFC 8058's one-click unsubscribe. `MailUnsubscribe(label,
+page, one_click)` is its way out: `label` the footer line in the recipient's language,
+`page` the app's signed-out `/unsubscribe?token=…` page, `one_click` the `POST
+/notifications/unsubscribe/{token}` URL — https, or `None` on a development server, which
+then sends the footer line without the headers. Pass it as `render_mail(…,
+unsubscribe=…)`: `render_message` adds the line after the footer, escaped and typeset like
+the action line (`{label}: {page}` in the text half), and `MailMessage.headers` gets
+`list_unsubscribe_headers(one_click)` — `List-Unsubscribe: <…>` and
+`List-Unsubscribe-Post: List-Unsubscribe=One-Click`. `ResendClient` sends `headers` as
+Resend's `headers` object, `ConsoleMailer` logs them, and kastlan's SMTP transport sets
+them on its message. Account mail and billing's notices carry none.
+
+### `eifi1_server_kit.notifications`
+
+The server half of the notifications round (notifications contract §4.1). Layer 1 like the
+rest: no tables, no routes, no sending, no new dependency. The app keeps its registry's
+words, its tables (the switches, the settings row with `digest_sent`), its routes and the
+demo's refusal, its triggers, its jobs, its service worker and its sending (`pywebpush`
+off the event loop, its mailer). keksdose is the source
+(`backend/keksdose/domain/schemas/push.py` and its services).
+
+| Area | Names |
+|---|---|
+| The types | `NotificationType(id, app, email=None, quiet=True)`, `NotificationTypes(*types)` (`in`, `[id]`, `.ids`, `.receivable(keep)`), `TYPE_ID_PATTERN` |
+| The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate`, `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
+| Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE` |
+| Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
+| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE` |
+| Unsubscribe | `unsubscribe_token(secret, user_id, type_id)`, `read_unsubscribe_token(secret, token)` → `UnsubscribeClaim(user_id, type_id)`, `unsubscribe_key(secret)` |
+| The inbox | `InboxItem`, `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days) |
+| Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `PushEndpointTakenError` (409, `push_endpoint_taken`), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
+
+**The types are the app's**: a registry built once, the one list — the `GET` answers every
+type the account receives, in its order, and the card draws what it answers. A type
+offers `app` (the inbox and push, one switch) and `email`, each with its default; off
+unless it can only fire in answer to the person's own action. `receivable(keep)` is the
+account's narrowing (kastlan: staff in any company).
+
+**`GET/PATCH /notifications/settings`** under the settings rule. The body is the kit's
+models with the app's registry and knobs; `types` goes through `apply_switches_patch` (a
+type's `null` resets both switches, a switch's `null` that one, an unreceived type a 422
+before anything is written), the rest through `apply_patch`:
+
+```python
+from eifi1_server_kit import notifications as kit
+from eifi1_server_kit.settings import apply_patch
+
+
+class SettingsUpdate(kit.DigestUpdate, kit.QuietHoursUpdate, kit.NotificationSettingsUpdate):
+    registry = TYPES  # an unknown type, or e-mail on a type without, is a 422
+    low_balance_threshold: Decimal | None = Field(default=None, ge=0)
+
+
+@router.patch("/notifications/settings", response_model=SettingsOut)
+async def update_settings(body: SettingsUpdate, …) -> SettingsOut:
+    types = TYPES.receivable(lambda _type: True)
+    changed = kit.apply_switches_patch(types, stored, body.types)
+    apply_patch(row, body, not_nullable=kit.SETTINGS_NOT_NULLABLE, skip=kit.SETTINGS_SKIP)
+    …  # write `changed`; an app without a digest passes not_nullable=kit.SETTINGS_SKIP
+    return SettingsOut(types=kit.resolve_switches(types, {**stored, **changed}), …)
+```
+
+**Delivery** (§3.3): nothing for an inactive account, a demo or the event's actor; `app`
+on is an inbox row and a push, the push dropped for a `quiet` type inside quiet hours;
+`email` on is the mail, only to a verified address; `service=True` skips the switch on
+the app channel (keksdose's guest deadline). **Quiet hours** fail open (half set, start =
+end); the zone is the settings' `timezone`, and an unset or no longer resolvable one is
+`Europe/Zurich`, never UTC. **The digest** is due from its period's first local day until
+3 days after, once per period: store `digest_due`'s key as `digest_sent` in the
+transaction that writes its inbox row; its push's tag is `digest:2026-W42`.
+
+**Push**: the payload is `{title, body, tag, data: {url, type}}` — `url` a path in the
+app, never `//` or a scheme — encoded under 3 KB with the body cut by "…". A 404 or 410
+deletes the device, anything else counts a failure, and 10 in a row reap it. TTL 24 h and
+timeout 10 s, passed explicitly. The VAPID subject is `mailto:` the support address.
+
+**One-click unsubscribe**: `v1.<data>.<mac>`, signed with a key derived from the app's
+existing signing secret, not stored, never expiring; it names one account and one type
+and can only turn that e-mail off. A bad token is a 400; a GET never unsubscribes. The
+mail half is `mail.MailUnsubscribe`.
 
 ## Installing it in an app
 
@@ -802,7 +940,7 @@ never on a path outside their repository (a build must not need anything beside 
 uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.8.0/eifi1_server_kit-0.8.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client or the Paddle client, name the extra: `"eifi1-server-kit[billing,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,images,mail]`, keksdose `[billing,images]`, Kurvenschmiede `[billing,mail]`).
+With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
 
 The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
 binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each
@@ -899,6 +1037,63 @@ Two caps are Kurvenschmiede's, now everyone's, and keksdose had neither:
   context URL client-side; until an app runs that version, `max_context_size = None` on its
   subclass lifts the cap. The crash payload is unaffected — `CrashReportCreate` truncates
   every field, it never refuses.
+
+## Adopting layer 2
+
+The feedback routes become the kit's (server-services §4.4). Each app writes two adapters
+over its own session and store, one actor dependency and its demo guard factory, then
+includes the kit's router where its own was; its models, migrations (no schema change),
+guards and extra routes stay:
+
+```python
+from eifi1_server_kit.errors import install_contract_error_handlers
+from eifi1_server_kit.feedback.router import FeedbackDeps, feedback_router
+from eifi1_server_kit.limiter import FeedbackLimiters
+
+router = feedback_router(
+    FeedbackDeps(
+        actor=feedback_actor,  # User -> FeedbackActor (is_admin, is_demo, display_name)
+        repository=feedback_repository,  # FeedbackRepository on the request's session
+        storage=feedback_storage,  # AttachmentStorage over the app's store
+        demo_guard=not_in_the_demo,  # the app's factory around refuse_demo
+        admin_guard=require_role(UserRole.ADMIN),  # the app's own guard and 403
+        policy=FEEDBACK_ATTACHMENTS,  # == FeedbackCreate.attachment_url_policy
+        create_model=FeedbackCreate,
+    )
+)
+app.include_router(router, prefix="/api/v1")  # the app's own extra routes after it
+app.state.feedback_limiters = FeedbackLimiters()  # in create_app
+install_contract_error_handlers(app)
+```
+
+Run `feedback.testing`'s `check_repository` and `check_storage` once against the adapters
+on the test database, and `check_round_trip` over the app's client; keep a wiring test per
+route and the app's own variations. Then, per app:
+
+- **keksdose** (`[billing,fastapi,images]`): the repository's `get` ignores the viewer
+  (`session.get`), `add` and `apply` flush, `urls_named_except` is `id NOT IN`; the
+  repository dependency takes `Depends(db_session)`, the session `commit_boundary`
+  commits. `decode_images=True`. The support door charges the same window through
+  `throttle_upload(request.app.state.feedback_limiters.upload, user.id)`.
+  `_anonymise_feedback` calls `erase_author`, prefixes `feedback/` and hands the keys to
+  its after-commit purge. Visible: the identity stamp; `Content-Disposition` on every
+  download.
+- **kastlan** (`[billing,fastapi,images,mail]`): the repository commits after a flush only
+  when its `commit` flag is on, and only the router's dependency sets it — the erasure
+  builds it with the flag off and stays one commit. `foreign_row="forbidden"`,
+  `decode_images=True`; the admin guard is `require_role(*ADMIN_ONLY)`. Its `GET
+  /feedback/counts` and `GET /feedback/{feedback_id}` are included after the kit's
+  router. On the wire: no `Location`, no `user_name`, the address in the inbox only.
+- **Kurvenschmiede** (`[billing,fastapi,mail]`): `get` is `visible_by_id` for the viewer,
+  `add` claims the named uploads, `apply` hangs a rework's files as the actor's, clears
+  the attachment rows when the erasure nulls the URL columns and writes through
+  `save(session, row, actor=…)`; the storage keeps its sweep and HMAC.
+  `foreign_row="not_found"`, `require_utf8_text=True`; `{row_id}` becomes
+  `{feedback_id}`. Its feedback loop files through `FeedbackService(…).create(first_admin,
+  payload)`, and the erasure ignores the keys (files go by report).
+
+The 429's sentence becomes keksdose's (`THROTTLED_DETAIL`) in kastlan and Kurvenschmiede;
+the inbox's 403 stays each app's own guard's.
 
 ## Developing
 

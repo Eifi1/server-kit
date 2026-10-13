@@ -2,7 +2,9 @@
 
 Layer 1: the cross-app contracts as code. Pure functions, Pydantic models and one
 Starlette middleware; no database models, no migrations, no sessions, no repositories,
-no routes — those stay in each app. Import from the submodules:
+no routes — those stay in each app. Layer 2 (0.9.0, feedback first): services written
+once against ports each app implements, with a router factory; still no database
+models, sessions or commits. Import from the submodules:
 
 * :mod:`eifi1_server_kit.auth` — sign-in, sign-up and the account (addresses, the gate,
   names, one-time tokens, session claims, limits, schemas, coded refusals);
@@ -19,9 +21,14 @@ no routes — those stay in each app. Import from the submodules:
 * :mod:`eifi1_server_kit.jobs` — the scheduler's token routes: ``X-Jobs-Token``, its
   setting and its 401;
 * :mod:`eifi1_server_kit.mail` — mail texts per language, one escaped layout as a whole
-  document, Resend and console transports;
+  document, Resend and console transports, a notification mail's one-click unsubscribe;
+* :mod:`eifi1_server_kit.notifications` — notifications: the app's types, the settings
+  resource and its PATCH, delivery, quiet hours and the digest's period, Web Push's
+  shapes and outcomes, the signed unsubscribe token, the inbox's shapes;
 * :mod:`eifi1_server_kit.feedback` — the feedback contract (schemas, enums, rules,
-  crash filing, erasure, attachment URLs);
+  crash filing, erasure, attachment URLs), and layer 2: the feedback service behind ports
+  each app implements, its routes as ``feedback.router.feedback_router`` (the ``fastapi``
+  extra) and the fakes and conformance checks in ``feedback.testing``;
 * :mod:`eifi1_server_kit.uploads` — what an uploaded file is, by its bytes;
 * :mod:`eifi1_server_kit.limiter` — an in-process sliding-window limiter, and the client's
   address counted from the right of ``X-Forwarded-For``;
@@ -31,8 +38,9 @@ no routes — those stay in each app. Import from the submodules:
 
 The contracts are ``docs/feedback-harmonization.md``, ``docs/auth-harmonization.md``,
 ``docs/user-admin-harmonization.md``, ``docs/settings-harmonization.md``,
-``docs/landing-demo-harmonization.md``, ``docs/billing-harmonization.md`` and
-``docs/text-size-harmonization.md`` in ``Eifi1/ui-kit``; the rules are keksdose's,
+``docs/landing-demo-harmonization.md``, ``docs/billing-harmonization.md``,
+``docs/text-size-harmonization.md`` and ``docs/notifications-harmonization.md`` in
+``Eifi1/ui-kit``; the rules are keksdose's,
 lifted with a citation on each.
 """
 
