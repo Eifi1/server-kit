@@ -124,6 +124,28 @@ def test_a_typo_in_the_guard_is_a_programming_error() -> None:
         apply_patch({}, body, not_nullable=(), defaults={"colour": "teal"})
     with pytest.raises(ValueError, match="not both: qr_iban"):
         apply_patch({}, body, not_nullable=("qr_iban",), defaults={"qr_iban": ""})
+    with pytest.raises(ValueError, match="no such field on _CompanySettings: types"):
+        apply_patch({}, body, not_nullable=(), skip=("types",))
+    with pytest.raises(ValueError, match="no default: qr_iban"):
+        apply_patch({}, body, not_nullable=(), skip=("qr_iban",), defaults={"qr_iban": ""})
+
+
+def test_a_skipped_field_is_checked_for_null_but_left_to_the_caller() -> None:
+    """Notifications' ``types`` (``skip=SETTINGS_SKIP``): a null on it is refused with the
+    others, before anything is written; a value is neither written nor answered."""
+    row: dict[str, Any] = {"default_language": "de-CH", "default_account_country": "CH", "qr_iban": "x"}
+    body = _CompanySettings.model_validate({"default_language": "fr", "qr_iban": None})
+    written = apply_patch(row, body, not_nullable=("default_language",), skip=("default_language",))
+    assert written == {"qr_iban": None}
+    assert row == {"default_language": "de-CH", "default_account_country": "CH", "qr_iban": None}
+    refused = _CompanySettings.model_validate({"default_language": None, "qr_iban": "y"})
+    with pytest.raises(PatchNullError) as caught:
+        apply_patch(row, refused, not_nullable=("default_language",), skip=("default_language",))
+    assert caught.value.fields == ("default_language",)
+    assert row["qr_iban"] is None, "nothing written"
+    # A skipped field that may be null is simply left out.
+    cleared = _CompanySettings.model_validate({"default_language": None})
+    assert apply_patch(row, cleared, not_nullable=(), skip=("default_language",)) == {}
 
 
 async def test_the_refusal_is_answered_with_its_code_and_fields() -> None:
