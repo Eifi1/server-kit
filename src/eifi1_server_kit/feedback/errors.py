@@ -14,9 +14,20 @@ Typical mapping::
 and, for whatever no endpoint caught,
 :func:`eifi1_server_kit.errors.install_contract_error_handlers` — without it an app-wide
 ``ValueError`` handler answers these with its own status.
+
+Layer 2 (:mod:`eifi1_server_kit.feedback.service`, ``feedback.router``) raises three more:
+:class:`FeedbackNotFoundError` and :class:`AttachmentNotFoundError` (404) and
+:class:`FeedbackThrottledError` (429 with ``Retry-After``). The router raises no
+``HTTPException`` of its own; the installer answers all of them.
 """
 
 from __future__ import annotations
+
+from eifi1_server_kit.limiter import retry_after_header
+
+#: The upload throttle's sentence, keksdose's (``upload_guards.py:97``); its support door
+#: raises it too, through :func:`eifi1_server_kit.feedback.throttle_upload`.
+THROTTLED_DETAIL = "Too many attachments uploaded — please try again later."
 
 
 class FeedbackError(ValueError):
@@ -48,3 +59,44 @@ class FeedbackForbiddenError(FeedbackError):
     """
 
     status_code = 403
+
+
+class FeedbackNotFoundError(FeedbackError):
+    """No such report, or one this actor may not see (→ 404, "Feedback not found").
+
+    Also what a foreign row answers where the app chose ``foreign_row="not_found"``
+    (Kurvenschmiede): indistinguishable from a missing one (server-services §2.10).
+    """
+
+    status_code = 404
+
+    def __init__(self, detail: str = "Feedback not found") -> None:
+        super().__init__(detail)
+
+
+class AttachmentNotFoundError(FeedbackError):
+    """A key outside the app's pattern, a file the store does not have, or one this
+    viewer may not read (→ 404, "Attachment not found")."""
+
+    status_code = 404
+
+    def __init__(self, detail: str = "Attachment not found") -> None:
+        super().__init__(detail)
+
+
+class FeedbackThrottledError(FeedbackError):
+    """The upload window is spent (→ 429, contract §3.5): :data:`THROTTLED_DETAIL` with a
+    ``Retry-After`` in whole seconds, rounded up, as :class:`~eifi1_server_kit.demo.DemoError`
+    carries one."""
+
+    status_code = 429
+
+    def __init__(self, retry_after: float, detail: str = THROTTLED_DETAIL) -> None:
+        #: Seconds until the oldest hit leaves the window — the limiter's ``hit()`` answer.
+        self.retry_after = retry_after
+        super().__init__(detail)
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """``{"Retry-After": …}`` — the header the answer carries."""
+        return {"Retry-After": retry_after_header(self.retry_after)}

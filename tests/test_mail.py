@@ -18,7 +18,9 @@ from eifi1_server_kit.mail import (
     Mailer,
     MailMessage,
     MailText,
+    MailUnsubscribe,
     ResendClient,
+    list_unsubscribe_headers,
     pick,
     pick_entry,
     render_mail,
@@ -322,3 +324,106 @@ def test_without_the_extra_resend_says_what_is_missing(monkeypatch: pytest.Monke
     with pytest.raises(ImportError, match=r"eifi1-server-kit\[mail\]"):
         ResendClient(api_key="re_test", from_address="noreply@app.example")
     assert render_mail("en", RESET, link=LINK, name="Ada", hours=1).subject == "Reset your password"
+
+
+# ── a notification mail: one-click unsubscribe (notifications §3.6) ─────────
+
+ONE_CLICK = "https://app.example/api/v1/notifications/unsubscribe/v1.NDI6c2hhcmVfZ3JhbnRlZA.mac"
+PAGE = "https://app.example/unsubscribe?token=v1.NDI6c2hhcmVfZ3JhbnRlZA.mac&from=mail"
+WAY_OUT = MailUnsubscribe(
+    label="You get this because shared projects are on. Stop <these>", page=PAGE, one_click=ONE_CLICK
+)
+
+
+def test_the_list_unsubscribe_headers_are_rfc_8058s() -> None:
+    assert list_unsubscribe_headers(ONE_CLICK) == {
+        "List-Unsubscribe": f"<{ONE_CLICK}>",
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://app.example/api/v1/notifications/unsubscribe/t",
+        "mailto:unsubscribe@app.example",
+        "https://app.example/u/t>, <https://evil.example",
+        "https://app.example/u/a b",
+        "https://app.example/u/t\r\nBcc: someone@example.com",
+        "https://app.example/ü",
+        "",
+    ],
+)
+def test_the_list_unsubscribe_url_is_https_and_one_header_value(url: str) -> None:
+    with pytest.raises(ValueError, match="List-Unsubscribe URL"):
+        list_unsubscribe_headers(url)
+
+
+def test_an_unsubscribe_needs_its_links() -> None:
+    with pytest.raises(ValueError, match="unsubscribe page is http"):
+        MailUnsubscribe(label="Stop", page="/unsubscribe?token=t", one_click=ONE_CLICK)
+    with pytest.raises(ValueError, match="List-Unsubscribe URL"):
+        MailUnsubscribe(label="Stop", page=PAGE, one_click="http://localhost:8000/api/v1/notifications/unsubscribe/t")
+    development = MailUnsubscribe(label="Stop", page="http://localhost:5173/unsubscribe?token=t", one_click=None)
+    assert development.headers is None, "RFC 8058 takes https only: the footer line alone"
+    assert WAY_OUT.headers == list_unsubscribe_headers(ONE_CLICK)
+
+
+def test_the_footer_line_is_last_escaped_and_typeset_like_the_action_line() -> None:
+    html, text = render_message(
+        subject="s", lang="en", intro="i", body="b", cta="Open", link=LINK, outro="o", unsubscribe=WAY_OUT
+    )
+    assert html.endswith(
+        '<p style="color:#64748b;font-size:12px">o</p>'
+        '<p style="color:#64748b;font-size:12px"><a href="https://app.example/unsubscribe?token='
+        'v1.NDI6c2hhcmVfZ3JhbnRlZA.mac&amp;from=mail">You get this because shared projects are on. Stop '
+        "&lt;these&gt;</a></p></body></html>"
+    )
+    assert text.endswith(f"\n\no\n\nYou get this because shared projects are on. Stop <these>: {PAGE}")
+    _, french = render_message(
+        subject="s", lang="fr-CH", intro="i", body="b", cta="Ouvrir", link=LINK, outro="o", unsubscribe=WAY_OUT
+    )
+    assert french.endswith(f"Stop <these> : {PAGE}")
+    plain_html, plain_text = render_message(subject="s", lang="en", intro="i", body="b", cta="c", link=LINK, outro="o")
+    assert PAGE not in plain_text and "unsubscribe" not in plain_html, "account mail has none"
+
+
+def test_render_mail_makes_a_notification_mail() -> None:
+    message = render_mail("de-CH", RESET, link=LINK, name="Ada", hours=1, unsubscribe=WAY_OUT)
+    assert message.headers == list_unsubscribe_headers(ONE_CLICK)
+    assert message.text.endswith(f"Stop <these>: {PAGE}")
+    assert message.html is not None and message.html.startswith('<!doctype html><html lang="de-CH">')
+    assert render_mail("de-CH", RESET, link=LINK, name="Ada", hours=1).headers is None
+    development = MailUnsubscribe(label="Stop", page="http://localhost:5173/unsubscribe?token=t", one_click=None)
+    local = render_mail("en", RESET, link=LINK, name="Ada", hours=1, unsubscribe=development)
+    assert local.headers is None and local.text.endswith("Stop: http://localhost:5173/unsubscribe?token=t")
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{"List Unsubscribe": "<x>"}, {"": "x"}, {"X-A:B": "x"}, {"X-Note": "a\r\nBcc: b@example.com"}, {"X-N": "a\nb"}],
+)
+def test_a_header_is_a_name_and_one_line(headers: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="mail header"):
+        MailMessage(subject="s", text="t", headers=headers)
+
+
+async def test_resend_sends_the_headers_in_its_payload() -> None:
+    resend = _Resend(200)
+    message = render_mail("en", RESET, link=LINK, name="Ada", hours=1, unsubscribe=WAY_OUT)
+    assert await resend.client().send("ada@example.com", message, kind="share_granted")
+    (request,) = resend.requests
+    assert json.loads(request.content)["headers"] == {
+        "List-Unsubscribe": f"<{ONE_CLICK}>",
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    }
+    assert "List-Unsubscribe" not in request.headers, "in the mail, not on the request to Resend"
+    assert request.headers["Idempotency-Key"].startswith("share_granted-"), "sent under its type id"
+
+
+async def test_the_console_mailer_logs_the_headers(caplog: pytest.LogCaptureFixture) -> None:
+    message = render_mail("en", RESET, link=LINK, name="Ada", hours=1, unsubscribe=WAY_OUT)
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
+        assert await ConsoleMailer().send("ada@example.com", message, kind="share_granted")
+    assert "[email:console] share_granted to=ada@example.com" in caplog.text
+    assert f"List-Unsubscribe: <{ONE_CLICK}>\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\n" in caplog.text

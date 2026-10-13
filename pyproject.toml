@@ -1,6 +1,6 @@
 [project]
 name = "eifi1-server-kit"
-version = "0.8.0"
+version = "0.9.0"
 description = "The backend sibling of @eifi1/ui-kit: the cross-app contracts (feedback, uploads, limiter, CORS, translation review, sign-in and the account, user administration, settings, the demo, billing, mail) as pure, framework-light code."
 readme = "README.md"
 license = "MIT"
@@ -31,6 +31,12 @@ mail = ["httpx>=0.28.0"]
 # `billing.testing` — needs nothing, and httpx is imported lazily. The apps' floor, no
 # ceiling (billing-harmonization §14.1).
 billing = ["httpx>=0.28.0"]
+# `feedback.router` (layer 2) builds the feedback routes with FastAPI, and FastAPI's
+# `UploadFile` reads the upload's multipart body with python-multipart; the ports, the
+# service and `feedback.testing` need neither, and the router says which extra it needs
+# when it is missing. The apps' floors, no ceiling: keksdose holds FastAPI below 0.137
+# itself (server-services-harmonization §2.1).
+fastapi = ["fastapi>=0.115.0", "python-multipart>=0.0.18"]
 
 [project.urls]
 Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"
@@ -54,6 +60,9 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
+    # The `fastapi` extra's second half: the feedback router's tests upload through
+    # FastAPI's `UploadFile`, which needs it.
+    "python-multipart>=0.0.18",
     "ruff>=0.9.0",
 ]
 

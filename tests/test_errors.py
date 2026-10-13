@@ -21,6 +21,7 @@ from eifi1_server_kit.feedback import (
     UnknownAttachmentUrlError,
 )
 from eifi1_server_kit.jobs import JobsTokenError
+from eifi1_server_kit.notifications import NotificationError
 from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.translation_review import TranslationAccessError, TranslationAreaError, TranslationLocaleError
 from eifi1_server_kit.uploads import (
@@ -176,6 +177,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         BillingError,
         PlanLimitError,
         JobsTokenError,
+        NotificationError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error

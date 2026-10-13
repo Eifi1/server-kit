@@ -78,7 +78,11 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("eifi1_server_kit.billing", "docs/billing-harmonization.md", "§10, §14"),
     ("eifi1_server_kit.jobs", "docs/billing-harmonization.md", "§14.7"),
     ("eifi1_server_kit.mail", "docs/auth-harmonization.md", "§8"),
+    ("eifi1_server_kit.notifications", "docs/notifications-harmonization.md", "§3, §4.1"),
     ("eifi1_server_kit.feedback", "docs/feedback-harmonization.md", "§3"),
+    # Layer 2's routes, behind the `fastapi` extra; its ports and service come with
+    # `eifi1_server_kit.feedback`.
+    ("eifi1_server_kit.feedback.router", "docs/server-services-harmonization.md", "§2.9"),
     ("eifi1_server_kit.uploads", "docs/feedback-harmonization.md", "§3.5"),
     ("eifi1_server_kit.limiter", "docs/feedback-harmonization.md", "§3.5, §3.6"),
     ("eifi1_server_kit.errors", "docs/feedback-harmonization.md", "§3.7"),
@@ -367,7 +371,8 @@ def _describe_function(name: str, function: object) -> Json:
 
 
 def _assignment(module_name: str, name: str) -> tuple[str, ast.stmt] | None:
-    """Where ``name`` is assigned at the top of ``module_name``, following ``from … import``."""
+    """Where ``name`` is assigned at the top of ``module_name`` — or declared with a ``type``
+    statement (``type Clock = Callable[[], datetime]``) — following ``from … import``."""
     _, tree = _module_source(module_name)
     for statement in tree.body:
         if isinstance(statement, ast.Assign) and any(
@@ -379,6 +384,8 @@ def _assignment(module_name: str, name: str) -> tuple[str, ast.stmt] | None:
             and isinstance(statement.target, ast.Name)
             and statement.target.id == name
         ):
+            return module_name, statement
+        if isinstance(statement, ast.TypeAlias) and statement.name.id == name:
             return module_name, statement
     for statement in tree.body:
         if isinstance(statement, ast.ImportFrom) and statement.module and statement.module.startswith(PACKAGE):
@@ -436,7 +443,7 @@ def describe_module(module_name: str, contract_doc: str, section: str) -> Json:
 
 #: Synthetic sample mails for the showcase's preview: (id, title, texts, link, values).
 #: "Ada's Garden Planner" is no product, and every address is on example.com.
-SAMPLE_MAILS: tuple[tuple[str, str, Mapping[str, MailText], str, Mapping[str, str]], ...] = (
+SAMPLE_MAILS: tuple[tuple[str, str, Mapping[str, MailText], str, Mapping[str, Any]], ...] = (
     (
         "password-reset",
         "Reset your password",

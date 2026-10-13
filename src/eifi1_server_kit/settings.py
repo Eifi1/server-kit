@@ -93,6 +93,7 @@ def apply_patch(
     *,
     not_nullable: Iterable[str],
     defaults: Mapping[str, object] | None = None,
+    skip: Iterable[str] = (),
 ) -> dict[str, object]:
     """Write a settings body onto ``obj`` under §6.1's rules 1–3; the fields written.
 
@@ -112,6 +113,12 @@ def apply_patch(
       changed. ``not_nullable`` is required on purpose: an empty one says "every field may
       be cleared" out loud, and a forgotten one would otherwise reach the database as a
       ``NOT NULL`` violation — a 500.
+    * **A ``skip`` field is the caller's to write**: rule 3 still checks it — a null on it
+      is refused with the others, before anything is written — but it is neither written
+      nor answered. That is how a field with rules of its own reaches its own code:
+      notifications' ``types`` goes through
+      :func:`~eifi1_server_kit.notifications.apply_switches_patch`
+      (``skip=SETTINGS_SKIP``).
 
     ``obj`` is an ORM row or any object (``setattr``), or a mutable mapping (item
     assignment). Values are written as validated: a nested model stays a model, so dump it
@@ -120,9 +127,10 @@ def apply_patch(
 
     Programming errors, raised as :class:`TypeError` / :class:`ValueError` so a test meets
     them on the first call: a model that doesn't forbid unknown fields (rule 4 — without
-    ``extra="forbid"`` a typo would be a silent no-op), and a ``not_nullable`` or
-    ``defaults`` name that is no field of the model (a typo there would switch the guard off
-    without a word), or one name in both.
+    ``extra="forbid"`` a typo would be a silent no-op), and a ``not_nullable``, ``defaults``
+    or ``skip`` name that is no field of the model (a typo there would switch the guard off
+    without a word), or one name in both ``not_nullable`` and ``defaults``, or in both
+    ``skip`` and ``defaults`` (a skipped field is not written, so it has no default here).
     """
     model = type(update)
     if model.model_config.get("extra") != "forbid":
@@ -130,10 +138,13 @@ def apply_patch(
     fields = model.model_fields
     refused_null = frozenset(not_nullable)
     resets = dict(defaults or {})
-    if unknown := sorted((refused_null | resets.keys()) - fields.keys()):
+    skipped = frozenset(skip)
+    if unknown := sorted((refused_null | resets.keys() | skipped) - fields.keys()):
         raise ValueError(f"no such field on {model.__name__}: {', '.join(unknown)}")
     if both := sorted(refused_null & resets.keys()):
         raise ValueError(f"a field is either not nullable or reset to a default, not both: {', '.join(both)}")
+    if both := sorted(skipped & resets.keys()):
+        raise ValueError(f"a skipped field is the caller's to write, so it has no default: {', '.join(both)}")
 
     sent = [name for name in fields if name in update.model_fields_set]
     if nulls := [name for name in sent if name in refused_null and getattr(update, name) is None]:
@@ -141,6 +152,8 @@ def apply_patch(
 
     written: dict[str, object] = {}
     for name in sent:
+        if name in skipped:
+            continue
         value = getattr(update, name)
         if value is None and name in resets:
             value = resets[name]

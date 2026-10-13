@@ -32,8 +32,12 @@ here; kastlan built its own on the same shape.
   :class:`~eifi1_server_kit.billing.BillingNoticeKind`, and the two account notices with
   no token by :class:`AccountNoticeKind`.
 
-Not here yet: ``List-Unsubscribe`` and anything else a NOTIFICATION mail needs — that is
-the notifications round. These are transactional mails the recipient asked for.
+* **A notification mail** (``docs/notifications-harmonization.md`` §3.6) is sent under its
+  notification type's id and carries RFC 8058's one-click unsubscribe:
+  :func:`list_unsubscribe_headers` on :attr:`MailMessage.headers`, and a footer line
+  linking the app's unsubscribe page (:class:`MailUnsubscribe`, which
+  :func:`render_mail` lays out and turns into the headers). Account mail and billing's
+  notices carry none: the recipient asked for them, and has no switch to turn them off.
 """
 
 from __future__ import annotations
@@ -60,8 +64,10 @@ __all__ = [
     "ConsoleMailer",
     "MailMessage",
     "MailText",
+    "MailUnsubscribe",
     "Mailer",
     "ResendClient",
+    "list_unsubscribe_headers",
     "pick",
     "pick_entry",
     "render_mail",
@@ -88,6 +94,10 @@ _LANG_TAG = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 #: no-break space (U+00A0) before it, as ui-kit's French catalogue does (``Mixte\u00a0:``);
 #: every other language none.
 _BEFORE_COLON: Mapping[str, str] = {"fr": "\u00a0"}
+#: A header's name: printable ASCII but the colon (RFC 5322 ``ftext``).
+_HEADER_NAME = re.compile(r"[!-9;-~]+")
+#: RFC 8058's second header: the body a mail client POSTs to the first one's URL.
+_ONE_CLICK = "List-Unsubscribe=One-Click"
 
 
 def _language(tag: str) -> str:
@@ -137,8 +147,71 @@ def _lang_attribute(lang: str) -> str:
     return tag
 
 
+def _check_link(link: str, what: str) -> None:
+    if not link.startswith(("https://", "http://")):
+        raise ValueError(f"{what} is http(s): {link[:40]!r}")
+
+
+def list_unsubscribe_headers(url: str) -> dict[str, str]:
+    """RFC 8058's two headers for a notification mail (notifications §3.6)::
+
+        List-Unsubscribe: <https://app.example/api/v1/notifications/unsubscribe/v1.…>
+        List-Unsubscribe-Post: List-Unsubscribe=One-Click
+
+    ``url`` is the app's ``POST /notifications/unsubscribe/{token}``, which a mail client
+    calls with no cookie and no page in between. A :class:`ValueError` unless it is
+    ``https://`` (RFC 8058 takes nothing else) in printable ASCII with no space, ``<``,
+    ``>`` or ``,`` — anything that would end the header's ``<…>``.
+    """
+    if (
+        not url.startswith("https://")
+        or not url.isascii()
+        or not url.isprintable()
+        or any(char.isspace() or char in "<>," for char in url)
+    ):
+        raise ValueError(f"a List-Unsubscribe URL is https:// with no space, <, > or ,: {url[:60]!r}")
+    return {"List-Unsubscribe": f"<{url}>", "List-Unsubscribe-Post": _ONE_CLICK}
+
+
+@dataclass(frozen=True, slots=True)
+class MailUnsubscribe:
+    """A notification mail's way out (notifications §3.6), for :func:`render_mail`.
+
+    ``label`` is the footer line, in the recipient's language: why the mail came and what
+    the link does ("You get this because e-mails about shared projects are on. Stop
+    them"). ``page`` is the app's signed-out ``/unsubscribe?token=…`` page, which offers
+    "Stop these e-mails" and "Stop all"; ``one_click`` the ``POST
+    /notifications/unsubscribe/{token}`` URL for :func:`list_unsubscribe_headers`, or
+    ``None`` where the app's base URL isn't https (a development server): RFC 8058 takes
+    https only, so such a mail has the footer line and no headers. A :class:`ValueError`
+    for a ``page`` that isn't http(s) or a ``one_click`` that isn't https.
+    """
+
+    label: str
+    page: str
+    one_click: str | None
+
+    def __post_init__(self) -> None:
+        _check_link(self.page, "an unsubscribe page")
+        if self.one_click is not None:
+            list_unsubscribe_headers(self.one_click)  # refused here, not at the send
+
+    @property
+    def headers(self) -> dict[str, str] | None:
+        """:func:`list_unsubscribe_headers` for :attr:`one_click`, or ``None``."""
+        return None if self.one_click is None else list_unsubscribe_headers(self.one_click)
+
+
 def render_message(
-    *, subject: str, lang: str, intro: str, body: str, cta: str, link: str, outro: str
+    *,
+    subject: str,
+    lang: str,
+    intro: str,
+    body: str,
+    cta: str,
+    link: str,
+    outro: str,
+    unsubscribe: MailUnsubscribe | None = None,
 ) -> tuple[str, str]:
     """``(html, text)`` for a transactional mail: greeting, one paragraph, one link, footer
     (keksdose ``infrastructure/email.py:50``).
@@ -162,15 +235,23 @@ def render_message(
     The plain text's link line is ``{cta}: {link}``, typeset for ``lang``: French takes a
     no-break space before the colon (``Choisir\u00a0: https://…``), every other language
     none.
+
+    ``unsubscribe`` (a notification mail, :class:`MailUnsubscribe`) adds a last line after
+    the footer, linking its ``page``: escaped and typeset like the action line —
+    ``{label}: {page}`` in the text half.
     """
-    if not link.startswith(("https://", "http://")):
-        raise ValueError(f"a mail link is http(s): {link[:40]!r}")
+    _check_link(link, "a mail link")
     tag = _lang_attribute(lang)
     content = (
         f"<p>{escape(intro)}</p><p>{escape(body)}</p>"
         f'<p><a href="{escape(link, quote=True)}">{escape(cta)}</a></p>'
         f'<p style="color:#64748b;font-size:12px">{escape(outro)}</p>'
     )
+    if unsubscribe is not None:
+        content += (
+            f'<p style="color:#64748b;font-size:12px">'
+            f'<a href="{escape(unsubscribe.page, quote=True)}">{escape(unsubscribe.label)}</a></p>'
+        )
     html = (
         f'<!doctype html><html lang="{escape(tag, quote=True)}">'
         f'<head><meta charset="utf-8"><title>{escape(subject)}</title></head>'
@@ -178,16 +259,30 @@ def render_message(
     )
     colon = _BEFORE_COLON.get(_language(tag).lower(), "") + ":"
     text = f"{intro}\n\n{body}\n\n{cta}{colon} {link}\n\n{outro}"
+    if unsubscribe is not None:
+        text += f"\n\n{unsubscribe.label}{colon} {unsubscribe.page}"
     return html, text
 
 
 @dataclass(frozen=True, slots=True)
 class MailMessage:
-    """One mail, ready to send: ``html`` may be ``None`` for a plain-text mail (kastlan)."""
+    """One mail, ready to send: ``html`` may be ``None`` for a plain-text mail (kastlan).
+
+    ``headers`` are extra mail headers — a notification mail's
+    :func:`list_unsubscribe_headers` — which :class:`ResendClient` sends as Resend's
+    ``headers`` object and an SMTP transport sets on its message. A :class:`ValueError` for
+    a name that is no header name, or a line break in a value.
+    """
 
     subject: str
     text: str
     html: str | None = None
+    headers: Mapping[str, str] | None = None
+
+    def __post_init__(self) -> None:
+        for name, value in (self.headers or {}).items():
+            if not _HEADER_NAME.fullmatch(name) or any(char in value for char in "\r\n\x00"):
+                raise ValueError(f"a mail header is a name and a one-line value: {name[:40]!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,20 +301,36 @@ class MailText:
     cta: str
     outro: str
 
-    def render(self, *, link: str, lang: str, **values: object) -> MailMessage:
+    def render(
+        self, *, link: str, lang: str, unsubscribe: MailUnsubscribe | None = None, **values: object
+    ) -> MailMessage:
         """The mail with ``values`` filled in and the layout of :func:`render_message`;
         ``lang`` is the language this row is written in (its key in the table), so no
-        template may use a ``{lang}`` placeholder.
+        template may use a ``{lang}`` or ``{unsubscribe}`` placeholder.
 
         ``str.format`` runs on the TEMPLATE only, so braces in a person's name are text,
         never a format field; the name is HTML-escaped by the layout. A literal brace in a
         template is doubled (``{{``).
+
+        ``unsubscribe`` makes it a notification mail: the footer line, and
+        :attr:`MailMessage.headers` from its ``one_click``. Its ``label`` is used as
+        written, never formatted.
         """
         subject, intro, body, cta, outro = (
             part.format_map(values) for part in (self.subject, self.intro, self.body, self.cta, self.outro)
         )
-        html, text = render_message(subject=subject, lang=lang, intro=intro, body=body, cta=cta, link=link, outro=outro)
-        return MailMessage(subject=subject, text=text, html=html)
+        html, text = render_message(
+            subject=subject,
+            lang=lang,
+            intro=intro,
+            body=body,
+            cta=cta,
+            link=link,
+            outro=outro,
+            unsubscribe=unsubscribe,
+        )
+        headers = unsubscribe.headers if unsubscribe is not None else None
+        return MailMessage(subject=subject, text=text, html=html, headers=headers)
 
 
 def render_mail(
@@ -228,15 +339,22 @@ def render_mail(
     *,
     link: str,
     fallback: Sequence[str] = FALLBACK_LOCALES,
+    unsubscribe: MailUnsubscribe | None = None,
     **values: object,
 ) -> MailMessage:
     """The recipient's mail from a table: :func:`pick_entry` for ``locale``, then
     :meth:`MailText.render` with the row's own language in ``<html lang>``::
 
         message = render_mail(user.locale, RESET_TEXTS, link=link, name=greeting, hours=1)
+
+    A notification mail passes ``unsubscribe`` (:class:`MailUnsubscribe`, its label picked
+    for the same ``locale``): the footer line and the ``List-Unsubscribe`` headers::
+
+        message = render_mail(user.locale, SHARED_TEXTS, link=link, actor=name, unsubscribe=way_out)
+        await mailer.send(user.email, message, kind="share_granted")
     """
     lang, text = pick_entry(locale, texts, fallback=fallback)
-    return text.render(link=link, lang=lang, **values)
+    return text.render(link=link, lang=lang, unsubscribe=unsubscribe, **values)
 
 
 class AccountNoticeKind(enum.StrEnum):
@@ -272,8 +390,10 @@ class Mailer(Protocol):
         label, which the recipient's address never is: a
         :class:`~eifi1_server_kit.auth.OneTimeTokenKind` (``verification``,
         ``password_reset``, ``invitation``, ``email_change``), an
-        :class:`AccountNoticeKind` (``email_change_notice``, ``account_deletion``) or a
-        :class:`~eifi1_server_kit.billing.BillingNoticeKind`.
+        :class:`AccountNoticeKind` (``email_change_notice``, ``account_deletion``), a
+        :class:`~eifi1_server_kit.billing.BillingNoticeKind`, or — for a notification mail —
+        its notification type's id (``share_granted``; notifications §3.6). An app whose own
+        ``send`` takes a narrower kind widens it to its registry's ids.
         """
         ...
 
@@ -292,7 +412,21 @@ class ConsoleMailer:
         self._log = log
 
     async def send(self, to: str, message: MailMessage, *, kind: str = "other") -> bool:
-        self._log.log(self._level, "[email:console] %s to=%s subject=%s\n%s", kind, to, message.subject, message.text)
+        if message.headers:
+            headers = "".join(f"{name}: {value}\n" for name, value in message.headers.items())
+            self._log.log(
+                self._level,
+                "[email:console] %s to=%s subject=%s\n%s\n%s",
+                kind,
+                to,
+                message.subject,
+                headers,
+                message.text,
+            )
+        else:
+            self._log.log(
+                self._level, "[email:console] %s to=%s subject=%s\n%s", kind, to, message.subject, message.text
+            )
         return True
 
 
@@ -375,6 +509,9 @@ class ResendClient:
             payload["html"] = message.html
         if self._reply_to is not None:
             payload["reply_to"] = [self._reply_to]
+        if message.headers:
+            # Resend's own field for mail headers, beside the request's HTTP headers.
+            payload["headers"] = dict(message.headers)
         return payload
 
     async def send(self, to: str, message: MailMessage, *, kind: str = "other") -> bool:

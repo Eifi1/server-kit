@@ -119,6 +119,9 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         for info in pkgutil.iter_modules(eifi1_server_kit.__path__)
         if not info.name.startswith("_")
     }
+    # A submodule an app imports by its own path, not re-exported by its package: layer 2's
+    # routes, behind the `fastapi` extra.
+    public |= {"eifi1_server_kit.feedback.router"}
     names = [module["name"] for module in data["modules"]]
     assert len(names) == len(set(names)) and set(names) == public, "a new module joins MODULES in the exporter"
     contracts = {module["name"]: module["contract"] for module in data["modules"]}
@@ -187,6 +190,22 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
     assert members["eifi1_server_kit.billing", "PortalTarget"]["signature"].startswith("PortalTarget = Literal[")
     # A constant re-exported from another module is found where it is assigned.
     assert members["eifi1_server_kit.user_admin", "LIKE_ESCAPE"]["signature"] == 'LIKE_ESCAPE = "\\\\"'
+    # 0.9's layer 2: a `type` statement is found too, and a generic dataclass keeps its parameter.
+    clock = members["eifi1_server_kit.feedback", "Clock"]
+    assert clock["kind"] == "constant" and clock["signature"] == "type Clock = Callable[[], datetime]"
+    assert members["eifi1_server_kit.feedback", "FeedbackRepository"]["kind"] == "protocol"
+    deps = members["eifi1_server_kit.feedback.router", "FeedbackDeps"]
+    assert (
+        deps["signature"] == "@dataclass(frozen=True, slots=True, kw_only=True) class FeedbackDeps[RowT: FeedbackRow]"
+    )
+    assert [field["name"] for field in deps["fields"]][:6] == [
+        "actor",
+        "repository",
+        "storage",
+        "demo_guard",
+        "admin_guard",
+        "policy",
+    ]
 
 
 def test_nothing_machine_specific_reaches_the_file(exporter: ModuleType, data: dict[str, Any]) -> None:
