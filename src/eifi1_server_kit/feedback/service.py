@@ -559,7 +559,7 @@ class FeedbackService[RowT: FeedbackRow]:
         pairs = [(row, None) for row in rows]
         return await self._views(actor, pairs, admin=False, to_response=to_response, reply_model=reply_model)
 
-    async def public_item[ItemT: FeedbackPublicListItem](
+    async def public_item[ItemT: FeedbackPublicListItem = FeedbackPublicListItem](
         self,
         actor: FeedbackActor,
         entries: Sequence[PublicListEntry[Any]],
@@ -587,7 +587,7 @@ class FeedbackService[RowT: FeedbackRow]:
             for entry in entries
         ]
 
-    async def public_view[DetailT: FeedbackPublicResponse](
+    async def public_view[DetailT: FeedbackPublicResponse = FeedbackPublicResponse](
         self,
         actor: FeedbackActor,
         row: PublicFeedbackRow,
@@ -717,7 +717,7 @@ class FeedbackService[RowT: FeedbackRow]:
             raise FeedbackNotFoundError()
         return row
 
-    async def comments[CommentT: FeedbackCommentResponse](
+    async def comments[CommentT: FeedbackCommentResponse = FeedbackCommentResponse](
         self,
         actor: FeedbackActor,
         feedback_id: int,
@@ -733,7 +733,7 @@ class FeedbackService[RowT: FeedbackRow]:
         names = await self._names(row.user_id for row in rows)
         return [self._comment_view(actor, row, names, model) for row in rows]
 
-    async def comment[CommentT: FeedbackCommentResponse](
+    async def comment[CommentT: FeedbackCommentResponse = FeedbackCommentResponse](
         self,
         actor: FeedbackActor,
         feedback_id: int,
@@ -754,7 +754,7 @@ class FeedbackService[RowT: FeedbackRow]:
         )
         return self._comment_view(actor, row, await self._names([actor.id]), model)
 
-    async def hide_comment[CommentT: FeedbackCommentResponse](
+    async def hide_comment[CommentT: FeedbackCommentResponse = FeedbackCommentResponse](
         self,
         actor: FeedbackActor,
         feedback_id: int,

@@ -147,7 +147,7 @@ async def test_a_flow_without_its_store_says_so() -> None:
         await bare.comment(AUTHOR, 1, FeedbackCommentCreate(body="x"))
     with pytest.raises(RuntimeError, match="no vote store"):
         await bare.vote(AUTHOR, 1)
-    no_reads = FeedbackService(object(), policy=POLICY, votes=InMemoryVoteStore())  # type: ignore[arg-type]
+    no_reads: FeedbackService[MemoryFeedbackRow] = FeedbackService(object(), policy=POLICY, votes=InMemoryVoteStore())  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="no public reads"):
         await no_reads.vote(AUTHOR, 1)
 
