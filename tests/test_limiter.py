@@ -6,8 +6,10 @@ import pytest
 from starlette.datastructures import Headers
 
 from eifi1_server_kit.limiter import (
+    FEEDBACK_COMMENTS_PER_HOUR,
     FEEDBACK_CRASHES_PER_HOUR,
     FEEDBACK_UPLOADS_PER_HOUR,
+    FEEDBACK_VOTES_PER_HOUR,
     UNKNOWN_CLIENT,
     FeedbackLimiters,
     SlidingWindowRateLimiter,
@@ -167,6 +169,25 @@ def test_feedback_limiters_are_per_instance_with_the_contracts_budgets() -> None
     assert first.upload.hit("7") is None
     tight = FeedbackLimiters(uploads_per_hour=1, crashes_per_hour=1, clock=clock)
     assert tight.crash.hit("7") is None and tight.crash.hit("7") is not None
+
+
+def test_public_feedback_has_its_own_comment_and_vote_budgets() -> None:
+    """Feedback §9.2 decision 19: comments 20 an hour, votes 60, per user, each its own window."""
+    clock = _Clock()
+    limiters = FeedbackLimiters(clock=clock)
+    assert limiters.comment.max_hits == FEEDBACK_COMMENTS_PER_HOUR == 20
+    assert limiters.vote.max_hits == FEEDBACK_VOTES_PER_HOUR == 60
+    assert limiters.comment.window_seconds == limiters.vote.window_seconds == 3600
+    for _ in range(20):
+        assert limiters.comment.hit("7") is None
+    assert limiters.comment.hit("7") is not None
+    assert limiters.vote.hit("7") is None and limiters.upload.hit("7") is None, "separate windows"
+    limiters.reset()
+    assert limiters.comment.hit("7") is None
+    assert limiters.vote.count("7") == 0, "reset clears the vote window too"
+    tight = FeedbackLimiters(comments_per_hour=1, votes_per_hour=1, clock=clock)
+    assert tight.comment.hit("7") is None and tight.comment.hit("7") is not None
+    assert tight.vote.hit("7") is None and tight.vote.hit("7") is not None
 
 
 # ── client_ip: counted from the right (landing-demo contract §5.1) ──────────

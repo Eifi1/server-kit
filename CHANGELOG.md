@@ -10,6 +10,39 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.11.0] (2026-10-14)
+
+server-kit 0.11.0: the backend half of round 0.38 (ui-kit 0.38) — Marcel's public feedback,
+settled as `docs/feedback-harmonization.md` §9 after the three apps' reviews. A report is
+readable by the app's other users its `public_viewer` admits, minus attachments, `context`,
+the crash fingerprint and the author's address; crash reports stay private; a demo is not
+signed in. Upvotes, comments by others as rows, and the admin's answers as a timeline of
+replies. Kastlan keeps the public part off and takes the replies.
+
+### ⚠ BREAKING CHANGES
+
+* **feedback:** `outcome` is frozen: a PATCH naming it (null too) is a 422. An answer is a
+  reply (`POST /feedback/{id}/replies`); `outcome` migrates into the first reply. Bump ui-kit
+  0.38 with it.
+
+### Added — public feedback (round 0.38, feedback §9)
+
+* **feedback, layer 1:** `public_body` / `public_text` (every attachment URL stripped, anywhere),
+  `is_public` (never a CRASH), `feedback_recipients`, `plan_reply` / `ReplyPlan`,
+  `DECIDED_STATUSES`, the `public` lane in `plan_update`; the reply, comment, vote and public
+  schemas; `FEEDBACK_ANSWERED`, `FEEDBACK_COMMENT`; `FeedbackConflictError`.
+* **feedback, layer 2:** the ports `PublicFeedbackRepository`, `FeedbackReplyStore`,
+  `FeedbackCommentStore`, `FeedbackVoteStore`, `PeopleLookup`; the service's reply, comment and
+  vote flows and page views (one call per store); nine routes behind `FeedbackDeps.public_viewer`
+  and the reply store; the erasure covers comments, votes and replies. `feedback.testing`:
+  in-memory stores, `check_reply_store`, `check_comment_store`, `check_vote_store`,
+  `check_public_repository`, `assert_public_view`.
+* **auth:** `first_name_of(first, last)` — the first name, or None while the last is empty.
+* **limiter:** `FEEDBACK_COMMENTS_PER_HOUR` (20), `FEEDBACK_VOTES_PER_HOUR` (60), on
+  `FeedbackLimiters` as `.comment` and `.vote`.
+* **mail:** `AccountNoticeKind.FEEDBACK_PUBLISHED`.
+* `FeedbackActor.role`, `NewFeedback.public`, `ErasedFeedback.comments/votes/replies`.
+
 ## [0.10.0] (2026-10-14)
 
 server-kit 0.10.0: the backend half of round 0.37 (ui-kit 0.37), two contract sections settled

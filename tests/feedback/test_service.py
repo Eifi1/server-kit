@@ -38,6 +38,7 @@ from eifi1_server_kit.feedback import (
     upload_attachment,
     utc_now,
 )
+from eifi1_server_kit.feedback.service import ErasedFeedback
 from eifi1_server_kit.feedback.testing import (
     InMemoryAttachmentStorage,
     InMemoryFeedbackRepository,
@@ -309,8 +310,8 @@ async def test_a_row_the_adapter_hides_is_a_404_whatever_the_setting() -> None:
 async def test_resolved_at_and_the_rework_use_the_rules_and_the_clock() -> None:
     service = _service()
     row = await _filed(service)
-    done = await service.update(ADMIN, row.id, FeedbackUpdate(status=FeedbackStatus.DONE, outcome="Fixed"))
-    assert done.resolved_at == NOW and done.outcome == "Fixed"
+    done = await service.update(ADMIN, row.id, FeedbackUpdate(status=FeedbackStatus.DONE))
+    assert done.resolved_at == NOW and done.outcome is None
     reworked = await service.update(AUTHOR, row.id, FeedbackUpdate(body=row.body + "\n\n--- REWORK ---\nStill slow"))
     assert reworked.status is FeedbackStatus.OPEN and reworked.resolved_at is None
 
@@ -540,3 +541,47 @@ def test_new_feedback_has_no_files_by_default() -> None:
         user_id=1, title="t", body="", category=FeedbackCategory.BUG, status=FeedbackStatus.OPEN, context=None
     )
     assert new.screenshot_url is None and new.attachment_urls is None and new.crash_fingerprint is None
+
+
+async def test_erase_author_takes_the_person_out_of_comments_votes_and_replies() -> None:
+    """§9.12: comments scrubbed and un-named (hidden ones too), votes deleted, an erased
+    admin's replies un-named and scrubbed, ``hidden_by`` cleared; the counts answered."""
+    from eifi1_server_kit.feedback import FeedbackCommentCreate, FeedbackCommentHide, FeedbackReplyCreate
+    from eifi1_server_kit.feedback.testing import (
+        InMemoryCommentStore,
+        InMemoryPeopleLookup,
+        InMemoryReplyStore,
+        InMemoryVoteStore,
+    )
+
+    comments, votes, replies = InMemoryCommentStore(), InMemoryVoteStore(), InMemoryReplyStore()
+    repository = InMemoryFeedbackRepository(emails=EMAILS, votes=votes, comments=comments)
+    service = _service(
+        repository,
+        comments=comments,
+        votes=votes,
+        replies=replies,
+        people=InMemoryPeopleLookup(),
+        public_viewer=lambda viewer: True,
+    )
+    row = await _filed(service, by=STRANGER)
+    said = await service.comment(AUTHOR, row.id, FeedbackCommentCreate(body=f"Me too, {AUTHOR.email}"))
+    hidden = await service.comment(AUTHOR, row.id, FeedbackCommentCreate(body="rude"))
+    kept = await service.comment(STRANGER, row.id, FeedbackCommentCreate(body="Thanks"))
+    await service.hide_comment(ADMIN, row.id, hidden.id, FeedbackCommentHide(hidden=True))
+    await service.vote(AUTHOR, row.id)
+    await service.reply(ADMIN, row.id, FeedbackReplyCreate(body=f"Answered by {ADMIN.email}"))
+
+    erased = await service.erase_author(AUTHOR.id, [AUTHOR.email])
+    assert (erased.reports, erased.comments, erased.votes, erased.replies) == (0, 2, 1, 0)
+    assert comments.rows[said.id].user_id is None and comments.rows[said.id].body == f"Me too, {ERASED_MARK}"
+    assert comments.rows[hidden.id].user_id is None and comments.rows[kept.id].user_id == STRANGER.id
+    assert set(votes.rows) == {(row.id, STRANGER.id)}
+
+    admin = await service.erase_author(ADMIN.id, [ADMIN.email])
+    assert (admin.comments, admin.votes, admin.replies) == (0, 0, 1)
+    [reply] = replies.rows.values()
+    assert reply.author_id is None and reply.body == f"Answered by {ERASED_MARK}"
+    assert comments.rows[hidden.id].hidden_by is None and comments.rows[hidden.id].hidden_at is not None
+    # 0.10's answer, where the app gives no stores.
+    assert await _service().erase_author(AUTHOR.id, []) == ErasedFeedback(reports=0, keys=())

@@ -42,8 +42,10 @@ from collections.abc import Callable, Mapping
 from starlette.datastructures import Headers
 
 __all__ = [
+    "FEEDBACK_COMMENTS_PER_HOUR",
     "FEEDBACK_CRASHES_PER_HOUR",
     "FEEDBACK_UPLOADS_PER_HOUR",
+    "FEEDBACK_VOTES_PER_HOUR",
     "UNKNOWN_CLIENT",
     "Clock",
     "FeedbackLimiters",
@@ -230,13 +232,18 @@ def _warn_short_header(entries: int, trusted_hops: int) -> None:
 #: The contract's budgets (§3.5, §3.6): 20 uploads and 20 crash reports per user per hour.
 FEEDBACK_UPLOADS_PER_HOUR = 20
 FEEDBACK_CRASHES_PER_HOUR = 20
+#: Public feedback's budgets (feedback §9.2 decision 19): 20 comments and 60 votes (a vote
+#: and an unvote alike) per user per hour.
+FEEDBACK_COMMENTS_PER_HOUR = 20
+FEEDBACK_VOTES_PER_HOUR = 60
 
 
 class FeedbackLimiters:
-    """The feedback routes' two budgets, keyed by user — one instance per app.
+    """The feedback routes' budgets, keyed by user — one instance per app.
 
-    ``upload`` answers a refusal with 429 + ``Retry-After``; ``crash`` answers with a 202
-    ``stored: false``, never an error status (a crashed page must not collect failures).
+    ``upload``, ``comment`` and ``vote`` answer a refusal with 429 + ``Retry-After``;
+    ``crash`` answers with a 202 ``stored: false``, never an error status (a crashed page
+    must not collect failures). Each is charged before the work (§3.5).
     """
 
     def __init__(
@@ -245,10 +252,16 @@ class FeedbackLimiters:
         uploads_per_hour: int = FEEDBACK_UPLOADS_PER_HOUR,
         crashes_per_hour: int = FEEDBACK_CRASHES_PER_HOUR,
         clock: Clock = time.monotonic,
+        comments_per_hour: int = FEEDBACK_COMMENTS_PER_HOUR,
+        votes_per_hour: int = FEEDBACK_VOTES_PER_HOUR,
     ) -> None:
         self.upload = SlidingWindowRateLimiter(max_hits=uploads_per_hour, window_seconds=3600, clock=clock)
         self.crash = SlidingWindowRateLimiter(max_hits=crashes_per_hour, window_seconds=3600, clock=clock)
+        self.comment = SlidingWindowRateLimiter(max_hits=comments_per_hour, window_seconds=3600, clock=clock)
+        self.vote = SlidingWindowRateLimiter(max_hits=votes_per_hour, window_seconds=3600, clock=clock)
 
     def reset(self) -> None:
         self.upload.reset()
         self.crash.reset()
+        self.comment.reset()
+        self.vote.reset()

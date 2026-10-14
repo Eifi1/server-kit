@@ -137,8 +137,9 @@ def test_an_app_narrows_or_loosens_the_rules_in_a_subclass() -> None:
 
 def test_a_patch_cannot_null_or_blank_the_columns_a_row_needs() -> None:
     """keksdose ``test_feedback.py:263``: an explicit null for a NOT NULL column was a 500
-    from the flush; it is a 422 naming the field. ``outcome: null`` clears a real field."""
-    for name in ("title", "body", "status", "category"):
+    from the flush; it is a 422 naming the field. Since 0.11 ``outcome`` is frozen (§9.7):
+    any PATCH naming it, ``null`` included, is a 422."""
+    for name in ("title", "body", "status", "category", "public"):
         with pytest.raises(ValidationError, match=f"{name} cannot be null"):
             FeedbackUpdate.model_validate({name: None})
     with pytest.raises(ValidationError, match="title cannot be blank"):
@@ -146,8 +147,9 @@ def test_a_patch_cannot_null_or_blank_the_columns_a_row_needs() -> None:
     # The body is optional: blanking it is a real edit and stores "".
     blank = FeedbackUpdate.model_validate({"body": "   "})
     assert blank.body == "" and blank.model_dump(exclude_unset=True) == {"body": ""}
-    cleared = FeedbackUpdate.model_validate({"outcome": None})
-    assert cleared.model_dump(exclude_unset=True) == {"outcome": None}
+    for outcome in (None, "Fixed"):
+        with pytest.raises(ValidationError, match="outcome is read-only; post a reply"):
+            FeedbackUpdate.model_validate({"outcome": outcome})
     # None means "not sent": nothing set, nothing dumped.
     assert FeedbackUpdate().model_dump(exclude_unset=True) == {}
 
@@ -294,3 +296,83 @@ def test_a_plain_assignment_overrides_the_policy_too() -> None:
     assert Create(title="t", screenshot_url=own).screenshot_url == own
     with pytest.raises(ValidationError):
         Create(title="t", screenshot_url=URL_A)
+
+
+# ── public feedback (0.11, §9.3, §9.7–§9.9) ───────────────────────────────
+
+
+def test_the_reply_and_comment_bodies_are_trimmed_and_bounded() -> None:
+    from eifi1_server_kit.feedback import (
+        COMMENT_MAX,
+        REPLY_MAX,
+        FeedbackCommentCreate,
+        FeedbackCommentHide,
+        FeedbackReplyCreate,
+    )
+
+    reply = FeedbackReplyCreate.model_validate({"body": "  Fixed in 0.4.27.  ", "status": "IN_EVALUATION"})
+    assert reply.body == "Fixed in 0.4.27." and reply.status is FeedbackStatus.IN_EVALUATION
+    assert FeedbackReplyCreate(body="x").status is None
+    assert len(FeedbackReplyCreate(body=" " + "x" * REPLY_MAX + " ").body) == REPLY_MAX
+    assert len(FeedbackCommentCreate(body="x" * COMMENT_MAX).body) == COMMENT_MAX
+    for model, cap in ((FeedbackReplyCreate, REPLY_MAX), (FeedbackCommentCreate, COMMENT_MAX)):
+        with pytest.raises(ValidationError):
+            model.model_validate({"body": "   "})
+        with pytest.raises(ValidationError):
+            model.model_validate({"body": "x" * (cap + 1)})
+        with pytest.raises(ValidationError):
+            model.model_validate({"body": "x", "note": "stale"})
+    with pytest.raises(ValidationError):
+        FeedbackCommentCreate.model_validate({"body": 3})
+    assert FeedbackCommentHide(hidden=True).hidden
+
+
+def test_the_report_gains_optional_fields_and_the_public_models_are_separate() -> None:
+    from eifi1_server_kit.feedback import (
+        FeedbackCommentResponse,
+        FeedbackPublicListItem,
+        FeedbackPublicReplyResponse,
+        FeedbackPublicResponse,
+        FeedbackReplyResponse,
+        FeedbackVoteResponse,
+    )
+
+    at = datetime(2026, 10, 14, 9, 12, tzinfo=UTC)
+    base = {
+        "id": 1,
+        "user_id": 2,
+        "title": "t",
+        "body": "b",
+        "category": "BUG",
+        "status": "OPEN",
+        "context": None,
+        "screenshot_url": None,
+        "outcome": None,
+        "resolved_at": None,
+        "created_at": at,
+        "updated_at": at,
+    }
+    plain = FeedbackResponse.model_validate(base)
+    assert (plain.author_name, plain.mine, plain.public, plain.votes, plain.replies) == (None, None, None, None, None)
+    reply = FeedbackReplyResponse(id=3, body="ok", status_from="OPEN", status_to="DONE", created_at=at)
+    full = FeedbackResponse.model_validate({**base, "public": True, "votes": 2, "replies": [reply]})
+    assert full.replies == [reply] and full.replies[0].status_from is FeedbackStatus.OPEN
+    assert "status_from" not in FeedbackPublicReplyResponse.model_fields
+    assert set(FeedbackPublicListItem.model_fields) < set(FeedbackPublicResponse.model_fields)
+    assert not {"user_id", "context", "public", "screenshot_url"} & set(FeedbackPublicResponse.model_fields)
+    item = FeedbackPublicListItem(id=1, title="t", category="IDEA", status="OPEN", created_at=at, updated_at=at)
+    assert (item.votes, item.voted, item.comment_count, item.mine) == (0, False, 0, False)
+    assert FeedbackPublicResponse(**item.model_dump(), body="").replies == []
+    comment = FeedbackCommentResponse(id=1, body=None, hidden=True, created_at=at)
+    assert comment.author_name is None and not comment.staff
+    assert FeedbackVoteResponse(votes=1, voted=True).model_dump() == {"votes": 1, "voted": True}
+
+
+def test_the_update_takes_public_and_refuses_outcome() -> None:
+    from eifi1_server_kit.feedback import OUTCOME_READ_ONLY
+
+    assert FeedbackUpdate.model_validate({"public": False}).model_dump(exclude_unset=True) == {"public": False}
+    with pytest.raises(ValidationError, match=OUTCOME_READ_ONLY):
+        FeedbackUpdate.model_validate({"status": "DONE", "outcome": "shipped"})
+    with pytest.raises(ValidationError, match="public cannot be null"):
+        FeedbackUpdate.model_validate({"public": None})

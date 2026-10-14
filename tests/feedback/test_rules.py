@@ -234,9 +234,9 @@ def test_an_admin_may_do_anything_else() -> None:
 
 
 def test_a_dumped_update_payload_plugs_straight_in() -> None:
-    payload = FeedbackUpdate.model_validate({"status": "DONE", "outcome": "shipped"})
+    payload = FeedbackUpdate.model_validate({"status": "DONE", "title": "shipped"})
     plan = _admin(S.IN_EVALUATION, payload.model_dump(exclude_unset=True))
-    assert plan.changes == {"status": S.DONE, "outcome": "shipped", "resolved_at": NOW}
+    assert plan.changes == {"status": S.DONE, "title": "shipped", "resolved_at": NOW}
 
 
 # ── CRASH (keksdose feedback #160) ──────────────────────────────────────────
@@ -285,3 +285,56 @@ def test_an_apps_own_enum_classes_work_unchanged() -> None:
     with pytest.raises(CrashCategoryNotAssignableError):
         reject_manual_crash(AppCategory.CRASH)
     reject_manual_crash(AppCategory.BUG)
+
+
+# ── public feedback (0.11, §9.3, §9.7) ──────────────────────────────────────
+
+
+def test_the_author_switches_public_while_the_report_is_open() -> None:
+    assert _author(S.OPEN, {"public": False}).changes == {"public": False}
+    assert _author(S.IN_PROGRESS, {"public": True, "title": "t"}).changes == {"public": True, "title": "t"}
+    with pytest.raises(FeedbackForbiddenError, match="Entry is in DONE"):
+        _author(S.DONE, {"public": False})
+    with pytest.raises(FeedbackForbiddenError, match="Not the author"):
+        plan_update(status=S.OPEN, body="b", changes={"public": False}, is_admin=False, is_author=False)
+    assert _admin(S.DONE, {"public": False}).changes == {"public": False}
+
+
+def test_a_filed_private_report_may_be_switched_at_any_status_and_nothing_else() -> None:
+    """The opt-out (§9.3): ``public`` alone, at any status, on a report the migration made public."""
+    for status in FeedbackStatus:
+        plan = plan_update(
+            status=status, body="b", changes={"public": False}, is_admin=False, is_author=True, filed_private=True
+        )
+        assert plan.changes == {"public": False}
+    with pytest.raises(FeedbackForbiddenError, match="Entry is in DONE"):
+        plan_update(
+            status=S.DONE,
+            body="b",
+            changes={"public": False, "title": "t"},
+            is_admin=False,
+            is_author=True,
+            filed_private=True,
+        )
+    check_author_edit(S.WONT_DO, {"public": True}, is_author=True, reworking=False, filed_private=True)
+
+
+def test_a_reply_without_a_status_changes_nothing() -> None:
+    from eifi1_server_kit.feedback import ReplyPlan, plan_reply
+
+    assert plan_reply(status=S.OPEN, new_status=None) == ReplyPlan(changes={}, status_from=None, status_to=None)
+
+
+def test_a_reply_with_a_status_moves_the_report_by_the_resolved_at_rule() -> None:
+    from eifi1_server_kit.feedback import plan_reply
+
+    done = plan_reply(status=S.IN_EVALUATION, new_status="DONE", now=NOW)
+    assert done.changes == {"status": S.DONE, "resolved_at": NOW}
+    assert (done.status_from, done.status_to) == (S.IN_EVALUATION, S.DONE)
+    reopened = plan_reply(status=S.WONT_DO, new_status=S.OPEN)
+    assert reopened.changes == {"status": S.OPEN, "resolved_at": None}
+    # The nudge's answer: a reply onto the status the row already has still records it.
+    same = plan_reply(status=S.DONE, new_status=S.DONE)
+    assert same.changes == {"status": S.DONE} and same.status_to is S.DONE
+    stamped = plan_reply(status=S.OPEN, new_status=S.WONT_DO)
+    assert isinstance(stamped.changes["resolved_at"], datetime)

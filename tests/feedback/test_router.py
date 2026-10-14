@@ -276,8 +276,10 @@ async def test_a_patch_in_keksdoses_order(world: World) -> None:
     assert crash.status_code == 422  # before the lookup
     null = await world.request("PATCH", url, AUTHOR, json={"title": None})
     assert null.status_code == 422
-    long = await world.request("PATCH", url, ADMIN, json={"outcome": "x" * 4001})
-    assert long.status_code == 422  # the app's update model
+    frozen = await world.request("PATCH", url, ADMIN, json={"outcome": "x"})
+    assert frozen.status_code == 422 and "outcome is read-only; post a reply" in frozen.text  # §9.7
+    long = await world.request("PATCH", url, ADMIN, json={"title": "x" * 300})
+    assert long.status_code == 422
     done = await world.request("PATCH", url, ADMIN, json={"status": "DONE"})
     assert done.json()["resolved_at"] == NOW.isoformat().replace("+00:00", "Z")
 

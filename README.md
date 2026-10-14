@@ -33,7 +33,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 | Layer | What | Status |
 |---|---|---|
 | **1 — contracts as code** | pure functions, Pydantic models, small classes, one Starlette middleware. **No** database models, migrations, sessions, repositories or routes | **0.1.0** |
-| **2 — services behind ports** | the feedback service written once against a repository / storage / clock port each app implements (`feedback.ports`, `feedback.service`), and the router factory `feedback_router(FeedbackDeps(…))` (`feedback.router`, the `fastapi` extra). The app's hooks: its own demo guard factory and admin guard as route dependencies, `foreign_row` (403 or 404), the actor on the ports (`get(id, *, viewer)`, `apply(row, changes, *, actor)`), its schema subclasses and `to_response`. The kit never commits. The translation review the same way: the reviewer view carrying the app's grant (`TranslationReviewer`), the store port (`TranslationReviewStore[RowT]`: `verdicts`, `put`, `clear`, `by_reviewer`), `TranslationReviewService` and `translation_review_router(TranslationReviewDeps(…))` (`translation_review.router`); no route guards: the grant decides, and a demo's is empty | **0.9.0**; translation review **0.10.0** |
+| **2 — services behind ports** | the feedback service written once against a repository / storage / clock port each app implements (`feedback.ports`, `feedback.service`), and the router factory `feedback_router(FeedbackDeps(…))` (`feedback.router`, the `fastapi` extra). The app's hooks: its own demo guard factory and admin guard as route dependencies, `foreign_row` (403 or 404), the actor on the ports (`get(id, *, viewer)`, `apply(row, changes, *, actor)`), its schema subclasses and `to_response`. The kit never commits. The translation review the same way: the reviewer view carrying the app's grant (`TranslationReviewer`), the store port (`TranslationReviewStore[RowT]`: `verdicts`, `put`, `clear`, `by_reviewer`), `TranslationReviewService` and `translation_review_router(TranslationReviewDeps(…))` (`translation_review.router`); no route guards: the grant decides, and a demo's is empty. Public feedback grows the feedback service: four more ports (`FeedbackReplyStore`, `FeedbackCommentStore`, `FeedbackVoteStore`, `PeopleLookup`) beside the repository, which implements `PublicFeedbackRepository` too; the app's predicate `public_viewer` on the viewer; one write per store, the report last | **0.9.0**; translation review **0.10.0**; public feedback **0.11.0** |
 
 Layer 1 never imports an app's `User`: the rules take plain values (`is_admin`,
 `is_author`, the row's stored status and body, `is_first_user`, a token's `iat` and the
@@ -60,6 +60,8 @@ SQLAlchemy or an app's model ([`docs/server-services-harmonization.md`](https://
 | Attachment URLs | `AttachmentUrlPolicy(key_pattern, prefix)`, `OPAQUE_KEY_PATTERN` (default), `SHA12_KEY_PATTERN` (keksdose), `UUID32_SHA12_KEY_PATTERN` (kastlan) |
 | Context | `stamp_identity` (the server writes `user_*` from the session), `context_size`, `CONTEXT_KEYS` |
 | Errors | `FeedbackError` → `FeedbackValidationError` (422: `CrashCategoryNotAssignableError`, `UnknownAttachmentUrlError`), `FeedbackForbiddenError` (403) — all `ValueError`s with a `status_code` |
+| Public feedback (0.11) | `public_body(body, *, policy)` (no file line, no attachment URL anywhere, kastlan's folded `--- COMMENT <stamp> · <name> ---` without the name), `public_text(text, *, policy)` (the URL removal alone, `REMOVED_URL` "[…]"), `is_public(category, public)` (never a CRASH), `feedback_recipients(*, author_id, commenter_ids, writer_id)`; `FEEDBACK_ANSWERED`, `FEEDBACK_COMMENT`, `COMMENT_MAX` (4000), `REPLY_MAX` (8000), `PUBLIC_PAGE_SIZE` (50), `PUBLIC_PAGE_MAX` (100); `PUBLIC_REPORT_FIELDS`, `PUBLIC_COMMENT_FIELDS`, `PUBLIC_REPLY_FIELDS` (what leaves for others, §9.10); `DECIDED_STATUSES`; `plan_reply(*, status, new_status, now=)` → `ReplyPlan(changes, status_from, status_to)`; `plan_update(…, filed_private=False)` (`public` is the author's while the report is open, at any status when `filed_private`) |
+| Public schemas (0.11) | `FeedbackResponse` gains `author_name`, `mine`, `public`, `filed_private`, `votes`, `voted`, `comment_count`, `replies` (all optional); `FeedbackUpdate` gains `public`, and **`outcome` is frozen**: a PATCH naming it is 422 `OUTCOME_READ_ONLY` ("outcome is read-only; post a reply"); `FeedbackReplyCreate`, `FeedbackReplyResponse` (`FeedbackPublicReplyResponse` + `status_from`), `FeedbackPublicListItem`, `FeedbackPublicResponse` (separate models, so nothing added to `FeedbackResponse` reaches the public), `FeedbackCommentCreate`, `FeedbackCommentResponse`, `FeedbackCommentHide`, `FeedbackVoteResponse`, `PublicSort` |
 
 **READY, the triage step** (feedback contract §8.2): OPEN means "filed, not yet triaged",
 and an admin releases a row for implementation by setting READY. The server decides the
@@ -82,8 +84,11 @@ written once (server-services §2, §4.1). The ports and the service come with
 | Ports | `FeedbackActor(id, email, display_name, is_admin, is_demo=False)`; `FeedbackRow` (read-only: an app's mapped row satisfies it as it is); `NewFeedback`; `FeedbackRepository[RowT]` (`get(id, *, viewer)`, `list_mine`, `inbox(status)`, `open_crash`, `add`, `apply(row, changes, *, actor)`, `by_author`, `urls_named_except`); `AttachmentStorage` (`save(data, upload, *, uploader, filename)` → key, `read(key, *, viewer)`) and `StoredAttachment`; `Clock`, `utc_now` |
 | Service | `FeedbackService(repository, *, policy, foreign_row="forbidden", now=utc_now)`: `create`, `report_crash(…, limiter=)`, `list_mine`, `inbox`, `update`, `erase_author(user_id, identifiers)` → `ErasedFeedback(reports, keys)`; `throttle_upload(limiter, user_id)`, `upload_attachment(…)` → the URL, `download_attachment(…)` → `AttachmentDownload(data, media_type, headers)` |
 | Routes (`feedback.router`) | `FeedbackDeps(actor=, repository=, storage=, demo_guard=, admin_guard=, policy=, create_model=, update_model=, response_model=, to_response=, foreign_row=, decode_images=, require_utf8_text=, limiters=, now=)`, `feedback_router(deps, *, prefix="/feedback", tags=("feedback",))`, `app_state_limiters` |
-| Refusals | `FeedbackNotFoundError` (404 "Feedback not found"), `AttachmentNotFoundError` (404 "Attachment not found"), `FeedbackThrottledError` (429, `Retry-After`, `THROTTLED_DETAIL`) — answered by `install_contract_error_handlers` |
+| Refusals | `FeedbackNotFoundError` (404 "Feedback not found"), `AttachmentNotFoundError` (404 "Attachment not found"), `FeedbackThrottledError` (429, `Retry-After`, `THROTTLED_DETAIL`, `COMMENTS_THROTTLED_DETAIL`, `VOTES_THROTTLED_DETAIL`), `FeedbackConflictError` (409) — answered by `install_contract_error_handlers` |
 | Testing (`feedback.testing`) | `InMemoryFeedbackRepository` (records each write in `writes`), `InMemoryAttachmentStorage`, `MemoryFeedbackRow`, `actor(**overrides)`, `fixed_clock(at)`; `check_repository`, `check_storage`, `check_round_trip` |
+| Public ports (0.11) | `FeedbackActor.role` (for the app's predicate); `NewFeedback.public` (True; False for a crash); `PublicFeedbackRow`; `FeedbackReplyRow`, `FeedbackCommentRow`; `NewFeedbackReply`, `NewFeedbackComment`; `PublicListEntry(row, votes, voted, comment_count)`; `PublicFeedbackRepository[RowT]` (`public_page(*, viewer_id, sort, status, category, q, limit, offset)` with the counts in SQL, `get_public(id)`); `FeedbackReplyStore` (`for_reports`, `add(new, *, actor)` fires `feedback_answered`, `by_author`, `apply`); `FeedbackCommentStore` (`for_report`, `counts(ids, *, include_hidden)`, `commenters`, `add(new, *, actor)` fires `feedback_comment`, `get`, `apply`, `delete`, `by_author`, `clear_hidden_by`); `FeedbackVoteStore` (`counts(ids, *, viewer_id)`, `put`, `delete`, `delete_by_author`); `PeopleLookup` (`names(ids)` → `(first, last)`, the one read of `users`). `AttachmentStorage.read` states the files predicate: the uploader, the author of a report naming the file, an admin |
+| Public service (0.11) | `FeedbackService(…, replies=None, comments=None, votes=None, people=None, public_viewer=None, public_search=True)`: `reply`, `list_public`, `get_public`, `comments`, `comment(…, limiter=)`, `hide_comment`, `delete_comment`, `vote(…, limiter=)`, `unvote(…, limiter=)`, `sees_public(actor)`; the page views `admin_view(actor, pairs)`, `author_view(actor, rows)`, `public_item(actor, entries)`, `public_view(actor, row)` (one call per store a page); `create` casts the author's vote; `erase_author` → `ErasedFeedback(…, comments, votes, replies)` |
+| Public testing (0.11) | `InMemoryReplyStore`, `InMemoryCommentStore`, `InMemoryVoteStore`, `InMemoryPeopleLookup` (each logs `calls`; the reply and comment stores record `added` with the actor), `MemoryReplyRow`, `MemoryCommentRow`; `check_reply_store`, `check_comment_store`, `check_vote_store`, `check_public_repository`; `assert_public_view(payload, *, policy=)` |
 
 | Route | Endpoint | Guard (the app's) | Answer |
 |---|---|---|---|
@@ -93,6 +98,15 @@ written once (server-services §2, §4.1). The ports and the service come with
 | `POST /feedback/crash` | `report_crash` | — | 202, always |
 | `GET /feedback/my` | `list_my` | — | the caller's own |
 | `GET /feedback` | `list_all` (`status_filter`) | `admin_guard` | each with `user_email` |
+| `GET /feedback/public` | `list_public` (`sort`, `status_filter`, `category`, `q`, `limit`, `offset`) | — (`public_viewer`, else 404) | titles only, the counts |
+| `GET /feedback/public/{feedback_id}` | `get_public` | — (the same; the report public) | the public body and the replies |
+| `GET /feedback/{feedback_id}/comments` | `list_comments` | — (who sees the report) | oldest first |
+| `POST /feedback/{feedback_id}/comments` | `create_comment` | `demo_guard("feedback")` | 201 |
+| `PATCH /feedback/{feedback_id}/comments/{comment_id}` | `hide_comment` | `admin_guard`, `demo_guard("feedback")` | the comment |
+| `DELETE /feedback/{feedback_id}/comments/{comment_id}` | `delete_comment` | `demo_guard("feedback")` (the writer, else 404) | 204 |
+| `PUT /feedback/{feedback_id}/vote` | `vote` | `demo_guard("feedback")` | `{votes, voted}` |
+| `DELETE /feedback/{feedback_id}/vote` | `unvote` | `demo_guard("feedback")` (the author: 409) | `{votes, voted}` |
+| `POST /feedback/{feedback_id}/replies` | `create_reply` | `admin_guard`, `demo_guard("feedback")` | 201, the row with its replies |
 | `PATCH /feedback/{feedback_id}` | `update` | `demo_guard("feedback")` | the row |
 
 - **The guards are the app's own**, first in each route's `dependencies=[…]`: FastAPI runs
@@ -116,6 +130,16 @@ written once (server-services §2, §4.1). The ports and the service come with
   and answers the bare keys no other row names, sorted; the app deletes them at its commit.
 - **The create stamps the identity** (`stamp_identity`) and decides the first status;
   `attachment_urls` is `None` for none, never `[]`.
+- **Public feedback (0.11, feedback §9).** `create_reply` is mounted with `deps.replies`
+  (all three apps); the other eight with `deps.public_viewer` (keksdose: everyone signed
+  in; Kurvenschmiede: never a CUSTOMER), which needs `comments`, `votes` and `people`
+  (else `ValueError` at build time). An admin always sees the public parts; a demo never
+  does (404 on the reads, the app's demo refusal on the writes); a CRASH is never public.
+  Others read first names only, and every body that leaves for them passes `public_text`.
+  The existing answers fill the new fields from the stores given, one call per store a
+  page; an app that gives none answers them `null`. A reply with a status adds the reply,
+  then applies the row (one write per store, the report last); a status `PATCH` alone
+  writes no reply and sends nothing. `outcome` is frozen for this release.
 
 ### `eifi1_server_kit.uploads`
 
@@ -147,7 +171,8 @@ imported lazily; without the extra every call raises `ImportError` naming it.
 ### `eifi1_server_kit.limiter`
 
 `SlidingWindowRateLimiter(max_hits=, window_seconds=, clock=)` with `hit(key) -> float |
-None` and `reset()`; `FeedbackLimiters` (20 uploads and 20 crashes per user per hour);
+None` and `reset()`; `FeedbackLimiters` (20 uploads and 20 crashes per user per hour;
+since 0.11 also `.comment`, 20, and `.vote`, 60 — `comments_per_hour=`, `votes_per_hour=`);
 `retry_after_header`. **Process-local**: each worker and each Cloud Run instance counts on
 its own. Build limiters per app (`app.state`), never as module globals. When to charge —
 before or after validation, before or after the crash dedupe — is the caller's choice;
@@ -272,7 +297,7 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 |---|---|
 | Addresses | `normalise_email` (trim + lower-case, never strips a `+tag`); `tagged_variant(email, tag)` (keksdose's `taggedEmail`: `None` when there is already a `+` or nothing to split); `invitation_accepts(invited, registered, tag)` (the exact address or the app's own tag on it); `verified_by_invitation(invited, registered)` (the exact address only — a tagged sign-up verifies by its own mail); `addresses_for_reset(email, tag)` (the submitted address, then its tagged variant) |
 | The gate | `registration_decision(is_first_user=, on_env_list=, has_valid_invitation=)` → `RegistrationDecision.FIRST_ADMIN` / `INVITED` / `CLOSED` (`.allowed`, `.first_admin`); `parse_env_list`, `env_list_match` (`None` = no list set) |
-| Names | `full_name(first, last, locale)` ("First Last"; hu "Last First"; zh "LastFirst" for a CJK name, a Latin one as written; a missing part leaves the other), `name_incomplete(first, last, is_demo=)`, `erasure_identifiers(email, first, last, old_display_name)` |
+| Names | `full_name(first, last, locale)` ("First Last"; hu "Last First"; zh "LastFirst" for a CJK name, a Latin one as written; a missing part leaves the other), `first_name_of(first, last)` (0.11: the first name others see, `None` while the last name is blank — no first-word guessing), `name_incomplete(first, last, is_demo=)`, `erasure_identifiers(email, first, last, old_display_name)` |
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
@@ -886,7 +911,8 @@ never raises). The `kind` is what the mail is for, in its log lines and Resend's
 the old address, user-admin §6.2), `account_deletion` (the answer to a deletion
 request, §6.4; kastlan said `deletion`, Kurvenschmiede `deletion_request`) and
 `work_transferred_notice` (Kurvenschmiede: to an active former owner whose work an admin
-handed on, notifications §9.3).
+handed on, notifications §9.3) and `feedback_published` (0.11: once to an author of
+reports the round-0.38 migration made public, feedback §9.12).
 `ResendClient(api_key=, from_address=, timeout=10, client=None,
 reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
 under one `Idempotency-Key` — `MailMessage.idempotency_key` where the message has one,
@@ -1006,7 +1032,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.10.0/eifi1_server_kit-0.10.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.11.0/eifi1_server_kit-0.11.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
