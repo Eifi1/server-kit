@@ -254,15 +254,16 @@ def test_the_refusals_sentences() -> None:
 
 
 def test_who_may_review_the_kit() -> None:
-    """keksdose ``test_translation_review_tokens.py:59``: a member no; a legal-only reviewer no
-    (the legal pages hold no kit key); a reviewer of every area and an admin yes. Generalised:
-    an app with a ``kit`` area may grant it alone."""
+    """keksdose ``test_translation_review_tokens.py:59``: a member no; a legal-only reviewer no;
+    a reviewer of every area and an admin yes. 0.12 (T2): any area limit refuses a token, as
+    ``scope()`` does."""
     assert not can_review_kit(ReviewGrant((), None))
     assert not can_review_kit(ReviewGrant(("fr",), ("legal",)))
     assert can_review_kit(ReviewGrant(("fr",), None))
     assert can_review_kit(ReviewGrant(LOCALES, None))
-    assert can_review_kit(ReviewGrant(("fr",), ("legal", "kit")))
-    assert can_review_kit(ReviewGrant(("fr",), ("kit.dataTable",)))
+    # 0.12 (T2): any area limit refuses a token, one covering `kit.` too.
+    assert not can_review_kit(ReviewGrant(("fr",), ("legal", "kit")))
+    assert not can_review_kit(ReviewGrant(("fr",), ("kit.dataTable",)))
     assert not can_review_kit(ReviewGrant(("fr",), ("kitchen",)))
 
 

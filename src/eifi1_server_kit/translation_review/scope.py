@@ -200,16 +200,15 @@ def review_grant(
 
 
 def can_review_kit(grant: ReviewGrant) -> bool:
-    """May this grant mint or use a review token? Some locale, and an area limit that does not
-    shut the kit out (keksdose ``translation_review_token_service.py:57``, generalised).
+    """May this grant mint or use a review token? Some locale, and no area limit at all
+    (keksdose ``translation_review_token_service.py:57``).
 
-    keksdose refused ANY area limit, because its one area (``legal``) holds no ``kit.`` key.
-    The general rule: refused when areas are granted and none of them covers ``kit.`` —
-    an app with a ``kit`` area may hand a token to a kit-only reviewer.
+    0.12 (server services §6, decision T2): the same rule as
+    :meth:`~eifi1_server_kit.translation_review.TranslationReviewService.scope`, which
+    refuses a kit-only viewer on an area-limited grant. Until 0.11 an area covering
+    ``kit.`` was let through here and refused there; no app has such a grant.
     """
-    if not grant.locales:
-        return False
-    return grant.areas is None or any(area == KIT_AREA or area.startswith(KIT_KEY_PREFIX) for area in grant.areas)
+    return bool(grant.locales) and grant.areas is None
 
 
 def assert_allowed(grant: ReviewGrant, pairs: Iterable[tuple[str, str]], locale_codes: Sequence[str]) -> None:
