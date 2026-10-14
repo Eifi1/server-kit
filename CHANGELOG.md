@@ -10,6 +10,56 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.10.0] (2026-10-14)
+
+server-kit 0.10.0: the backend half of round 0.37 (ui-kit 0.37), two contract sections settled
+after the three apps' reviews (Marcel, 2026-10-14: "Do 0.37 as recommended"). **The translation
+review joins layer 2** (`docs/server-services-harmonization.md` §6): a service behind a store
+port, its router factory and testing support, as the feedback service's — about 100, 140 and 115
+lines out of keksdose, kastlan and Kurvenschmiede. **Notifications §9**: a notification mail a
+job sends is owed until it went, for 3 days, with one `Idempotency-Key` per recipient, event and
+day. Nothing is removed. Behaviour that changes: the four translation-review request bodies
+refuse unknown fields (a 422, not a silent drop); `scope()` refuses a kit-only review token on
+an area-limited grant; the area rule gains the `<area>:` arm.
+
+### Added — the translation review, layer 2 (round 0.37, server services §6)
+
+* **translation_review:** `ports` (`TranslationReviewer`, the app's grant on a view, keksdose's
+  review token being the same view with `kit_only`; `TranslationReviewRow`, `ReviewerName`,
+  `NewVerdict`, `TranslationReviewStore[RowT]` with `verdicts`, an upsert `put`, `clear`,
+  `by_reviewer`), `service` (`TranslationReviewService`: `scope`, `list_reviews`, `save`,
+  `clear`, `export` in keksdose's shape under `VERDICTS_EXPORT_KEY = "translation_verdicts"`:
+  locale, string, text, verdict, suggestion, note, reviewed_at, oldest first), `router`
+  (`translation_review_router(TranslationReviewDeps(…))`, the `fastapi` extra, keksdose's
+  endpoint names, no route guards: the grant decides; the kit never commits) and `testing`
+  (`InMemoryTranslationReviewStore`, `reviewer`, `check_store`, `check_round_trip`).
+* **translation_review, layer 1:** the `<area>:` arm in `in_areas` and `area_like_patterns`
+  (four patterns per area); `review_grant(…, is_demo=False)`; `TranslationReviewOut`'s
+  `reviewer_first_name` / `reviewer_last_name`; `NO_REVIEW_ACCESS`, `NO_KIT_REVIEW_ACCESS`;
+  `extra="forbid"` on `TranslationReviewWrite`, `TranslationReviewBatch`,
+  `TranslationReviewKey` and `TranslationReviewClear`.
+* **clock:** `Clock` and `utc_now`, shared by both layer-2 services; `feedback` still exports them.
+
+### Added — notifications §9 (round 0.37)
+
+* **notifications:** `retry` — `mail_due`, `mail_event`, `MailMarker(…).idempotency_key(day)`,
+  `MAIL_LATE_DAYS` (3), `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN`. With no inbox,
+  the digest's marker is written once the send answered True.
+* **mail:** `MailMessage.idempotency_key`, which `ResendClient` sends as the `Idempotency-Key` of
+  both tries (a 409 is not sent); `AccountNoticeKind.WORK_TRANSFERRED_NOTICE`.
+
+### Changed — from the apps' 0.36 adoptions
+
+* **notifications:** `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)` (keksdose).
+* **settings:** `apply_patch(None, …)` when every field of the model is skipped (kastlan).
+
+### Fixed
+
+* **user_admin:** the export check no longer flags `digest_cadence` ("cadence" is a fact word;
+  keksdose).
+* **feedback:** the module docstring's subclass example no longer shows kastlan's retired
+  `user_name`.
+
 ## [0.9.0] (2026-10-13)
 
 server-kit 0.9.0: the backend half of round 0.36 (ui-kit 0.36), two contracts settled after the
