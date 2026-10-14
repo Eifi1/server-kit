@@ -522,10 +522,16 @@ class FeedbackService[RowT: FeedbackRow]:
             if counts is not None:
                 update["comment_count"] = counts.get(row.id, 0)
             if replies is not None:
-                update["replies"] = [
+                views = [
                     self._reply_view(reply, names, admin=admin, model=reply_model)
                     for reply in _oldest_first(replies.get(row.id, ()))
                 ]
+                update["replies"] = views
+                # §9.7: `outcome` answers as the newest reply's body, so a client from
+                # before 0.38 still shows the latest answer; the frozen column only while
+                # a report has no reply.
+                if views:
+                    update["outcome"] = views[-1].body
             out.append(answer.model_copy(update=update) if update else answer)
         return out
 
