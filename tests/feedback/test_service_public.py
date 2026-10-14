@@ -524,6 +524,19 @@ async def test_without_public_parts_the_views_are_010s(world: World) -> None:
     assert (answer.author_name, answer.mine, answer.votes, answer.comment_count) == (None, None, None, None)
 
 
+async def test_outcome_answers_as_the_newest_reply(world: World) -> None:
+    # §9.7, kastlan's 0.38 finding 2: a client from before 0.38 reads `outcome`.
+    row = await world.file()
+    [before] = await world.service.admin_view(ADMIN, [(row, None)])
+    assert before.outcome == row.outcome
+    await world.service.reply(ADMIN, row.id, FeedbackReplyCreate(body="First"))
+    await world.service.reply(ADMIN, row.id, FeedbackReplyCreate(body=f"Then {SHOT}"))
+    [admin] = await world.service.admin_view(ADMIN, [(row, None)])
+    [author] = await world.service.author_view(AUTHOR, [row])
+    assert admin.outcome == f"Then {SHOT}"
+    assert author.outcome == f"Then {REMOVED_URL}"
+
+
 # --- update ------------------------------------------------------------------------------------
 
 

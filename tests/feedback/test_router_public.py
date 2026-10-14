@@ -216,12 +216,14 @@ def test_the_apps_guards_come_first() -> None:
     ]
     for key in demo_first:
         assert _depends_on(routes[key])[0].startswith("not_in_the_demo."), key
+    # 0.11.1 (Kurvenschmiede): the admin's two writes too, the demo before the role, so a
+    # demo meets `demo_refused` on every write.
     for key in (
         ("PATCH", f"{BASE}/{{feedback_id}}/comments/{{comment_id}}"),
         ("POST", f"{BASE}/{{feedback_id}}/replies"),
     ):
         names = _depends_on(routes[key])
-        assert names[0] == "require_admin" and names[1].startswith("not_in_the_demo."), key
+        assert names[0].startswith("not_in_the_demo.") and names[1] == "require_admin", key
     for key in (("GET", f"{BASE}/public"), ("GET", f"{BASE}/{{feedback_id}}/comments")):
         assert _depends_on(routes[key]) == [], "a read refuses a demo with a 404, in the service"
 
@@ -309,6 +311,10 @@ async def test_outsiders_get_404_and_a_demo_403_on_writes(world: World) -> None:
         ("PUT", f"{BASE}/{row['id']}/vote", None),
         ("DELETE", f"{BASE}/{row['id']}/vote", None),
         ("DELETE", f"{BASE}/{row['id']}/comments/1", None),
+        # 0.11.1 (Kurvenschmiede): the admin's two writes refuse a demo as every write does,
+        # `demo_refused` before the role's 403.
+        ("POST", f"{BASE}/{row['id']}/replies", {"body": "x"}),
+        ("PATCH", f"{BASE}/{row['id']}/comments/1", {"hidden": True}),
     ):
         refused = await world.request(method, path, DEMO, json=body)
         assert refused.status_code == 403 and refused.json()["code"] == "demo_refused", path

@@ -10,6 +10,19 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.11.1] (2026-10-14)
+
+The apps' 0.38 adoption findings, released as one batch with ui-kit 0.38.1 once all three
+had reported.
+
+### Fixed
+
+* **feedback:** `outcome` answers as the newest reply's body (§9.7), as the viewer reads
+  it, so a client from before 0.38 shows the latest answer; the frozen column only while
+  a report has no reply (kastlan).
+* **feedback:** `create_reply` and `hide_comment` refuse a demo with `demo_refused` before
+  the role's 403, as every other write does (Kurvenschmiede).
+
 ## [0.11.0] (2026-10-14)
 
 server-kit 0.11.0: the backend half of round 0.38 (ui-kit 0.38) — Marcel's public feedback,
