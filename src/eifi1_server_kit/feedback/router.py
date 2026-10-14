@@ -322,7 +322,7 @@ def feedback_router[RowT: FeedbackRow](
             "/{feedback_id}/replies",
             response_model=response_model,
             status_code=status.HTTP_201_CREATED,
-            dependencies=[Depends(deps.admin_guard), Depends(deps.demo_guard("feedback"))],
+            dependencies=[Depends(deps.demo_guard("feedback")), Depends(deps.admin_guard)],
         )
         async def create_reply(
             feedback_id: int,
@@ -407,7 +407,7 @@ def _public_routes(router: APIRouter, deps: FeedbackDeps[Any], Service: Any) -> 
     @router.patch(
         "/{feedback_id}/comments/{comment_id}",
         response_model=comment_model,
-        dependencies=[Depends(deps.admin_guard), Depends(deps.demo_guard("feedback"))],
+        dependencies=[Depends(deps.demo_guard("feedback")), Depends(deps.admin_guard)],
     )
     async def hide_comment(
         feedback_id: int, comment_id: int, payload: FeedbackCommentHide, actor: Actor, service: Service
