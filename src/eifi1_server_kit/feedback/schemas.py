@@ -2,13 +2,13 @@
 
 Lifted from keksdose ``backend/keksdose/domain/schemas/feedback.py`` (cited per class).
 Every class is meant to be SUBCLASSED by an app — to narrow the attachment key, to add
-response fields (kastlan's ``company_id`` / ``user_name``), to tighten a cap::
+response fields (kastlan's ``company_id``), to tighten a cap::
 
     class FeedbackCreate(kit.FeedbackCreate):
         attachment_url_policy = AttachmentUrlPolicy(UUID32_SHA12_KEY_PATTERN)
 
     class FeedbackResponse(EntityResponseMixin, kit.FeedbackResponse):
-        user_name: str | None = None
+        ...  # kastlan's identity block (company_id) comes with EntityResponseMixin
 
 The knobs are class variables, read through ``cls`` by the validators, so a subclass
 changes them without re-declaring a validator.
