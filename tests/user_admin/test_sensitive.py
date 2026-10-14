@@ -30,6 +30,8 @@ from eifi1_server_kit.user_admin import looks_secret, looks_secret_key, looks_se
         ("totp_enabled", False),
         ("api_tokens_revoked", False),  # 0.5.1: a fact about a secret
         ("session_valid", False),
+        ("digest_cadence", False),  # 0.10: notifications' setting, not a digest
+        ("digest", True),
         ("token_type", False),
         ("tokenizer", False),
         ("api_tokens", True),  # as a LEAF; as a list of objects it is walked instead
