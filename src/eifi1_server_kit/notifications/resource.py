@@ -26,7 +26,9 @@ rules — a type's ``null`` resets both its switches, a switch's ``null`` that o
     write(patch)
     return SettingsResponse(types=resolve_switches(types, {**stored, **patch}), …)  # rule 5
 
-An app with no digest refuses a null on ``types`` alone: ``not_nullable=SETTINGS_SKIP``.
+An app with no digest refuses a null on ``types`` alone: ``not_nullable=SETTINGS_SKIP``;
+one whose body is ``types`` alone (no push, no digest) has no row to write and passes
+``None``: ``apply_patch(None, body, not_nullable=SETTINGS_SKIP, skip=SETTINGS_SKIP)``.
 The storage is the app's; keksdose's rows (one per touched type) fit, as an unset switch
 is a missing row or a null column (:class:`StoredSwitches`).
 """

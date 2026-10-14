@@ -93,6 +93,9 @@ FACT_SUFFIXES: frozenset[str] = frozenset(
         # not the secret — keksdose had renamed them to `*_count` to get past the check.
         "revoked",
         "valid",
+        # 0.10 (keksdose): notifications' `digest_cadence` (the kit's own DigestFields, in
+        # every export by notifications §3.9) says how often the digest goes, not a digest.
+        "cadence",
     }
 )
 

@@ -5,7 +5,7 @@ and ``translation_review_token_service.py:33-60``, with the app's vocabulary as
 parameters — its ``UI_LOCALE_CODES`` (keksdose: de-CH, en, fr, it) and ``REVIEW_AREAS``
 (keksdose: ``legal``) — and the user read through :class:`ReviewerProfile`. Roles stay the
 app's: it says whether the caller is an admin (every locale) or a reviewer (the granted
-ones); keksdose also passes ``is_reviewer=False`` for a demo session.
+ones), and whether it is a demo session, which is granted nothing (0.10).
 """
 
 from __future__ import annotations
@@ -18,6 +18,13 @@ from typing import Protocol
 KIT_KEY_PREFIX = "kit."
 #: The area the kit's keys form — what a review token's listing is narrowed to.
 KIT_AREA = "kit"
+#: The ``GET``'s 403 for a caller granted no locale (keksdose ``translations_router.py:90``,
+#: kastlan's too; server-services §6.2.8).
+NO_REVIEW_ACCESS = "No translation review access"
+#: The 403 for a review token on a grant with an area limit: a token lists every ``kit.``
+#: verdict, more than an area grant may see (keksdose's sentence at mint,
+#: ``translation_review_token_service.py:71``; the service's ``scope()`` refuses it, §6.2.2).
+NO_KIT_REVIEW_ACCESS = "No review access to the kit's wording"
 
 
 # The statuses are keksdose's (``translations_router.py:70`` ``_refuse``,
@@ -75,18 +82,23 @@ def require_kit_keys(keys: Iterable[str]) -> None:
 
 
 def in_areas(key: str, areas: Sequence[str] | None) -> bool:
-    """Whether ``key`` lies in one of ``areas`` — the area itself, anything under ``<area>.``,
-    or the kit's wording for it under ``kit.<area>.`` (``None`` = every area; keksdose
-    ``translation_review_service.py:91``).
+    """Whether ``key`` lies in one of ``areas`` — the area itself, anything under ``<area>.``
+    or ``<area>:``, or the kit's wording for it under ``kit.<area>.`` (``None`` = every
+    area; keksdose ``translation_review_service.py:91``).
 
     The ``kit.<area>.`` arm is ui-kit 0.28's: the legal pages' shared sections are the kit's
     words, flattened under ``kit.`` like all of them, so a reviewer granted ``["legal"]``
     must reach ``kit.legal.*`` too — read and write — or the lawyer never sees the text all
-    three apps share (docs/legal-harmonization.md §7.5 in ui-kit). The kit's ``keyInArea``
-    applies the same rule on the page.
+    three apps share (docs/legal-harmonization.md §7.5 in ui-kit). The ``<area>:`` arm is
+    0.10's, for kastlan's ``ns:key`` (``legal:imprint.title``; i18n-harmonization H1,
+    server-services §6.2.4). The kit's ``keyInArea`` applies the same four arms on the page.
     """
     return areas is None or any(
-        key == area or key.startswith(f"{area}.") or key.startswith(f"{KIT_KEY_PREFIX}{area}.") for area in areas
+        key == area
+        or key.startswith(f"{area}.")
+        or key.startswith(f"{area}:")
+        or key.startswith(f"{KIT_KEY_PREFIX}{area}.")
+        for area in areas
     )
 
 
@@ -104,10 +116,11 @@ def _like_literal(text: str) -> str:
 def area_like_patterns(areas: Sequence[str] | None) -> list[str] | None:
     """:func:`in_areas` as SQL ``LIKE`` patterns, for a listing that filters in the query.
 
-    Per area, the three arms of :func:`in_areas`: the key itself, ``<area>.%`` and the
-    kit's wording for it, ``kit.<area>.%`` — ``["legal"]`` gives ``["legal", "legal.%",
-    "kit.legal.%"]``. ``None`` (every area) is ``None``: no filter at all. An empty list
-    gives an empty list, and an ``OR`` of nothing matches nothing, as ``in_areas`` does.
+    Per area, the four arms of :func:`in_areas`: the key itself, ``<area>.%``, ``<area>:%``
+    and the kit's wording for it, ``kit.<area>.%`` — ``["legal"]`` gives ``["legal",
+    "legal.%", "legal:%", "kit.legal.%"]``. ``None`` (every area) is ``None``: no filter at
+    all. An empty list gives an empty list, and an ``OR`` of nothing matches nothing, as
+    ``in_areas`` does.
 
     Kurvenschmiede's finding after 0.2.1: a listing that narrows by area in SQL
     (``key LIKE 'legal.%'``) never went through ``in_areas``, so the ``kit.<area>.`` arm
@@ -126,7 +139,7 @@ def area_like_patterns(areas: Sequence[str] | None) -> list[str] | None:
     patterns: list[str] = []
     for area in areas:
         literal = _like_literal(area)
-        patterns += [literal, f"{literal}.%", f"{kit}{literal}.%"]
+        patterns += [literal, f"{literal}.%", f"{literal}:%", f"{kit}{literal}.%"]
     return patterns
 
 
@@ -165,13 +178,18 @@ def review_grant(
     is_admin: bool,
     is_reviewer: bool,
     locale_codes: Sequence[str],
+    is_demo: bool = False,
 ) -> ReviewGrant:
     """The caller's grant (keksdose ``allowed_locales`` / ``allowed_areas``, ``:96-112``).
 
     An admin: every locale, every area. A reviewer: exactly the granted locales (in UI
     order, unknown ones ignored) and the granted areas. Anyone else: nothing — the role is
-    the permission and the locales are its scope, so a leftover list grants nothing.
+    the permission and the locales are its scope, so a leftover list grants nothing. A
+    demo session: nothing, whatever role it wears (keksdose ``review_grant_of``, made the
+    kit's in 0.10; server-services §6.2.2).
     """
+    if is_demo:
+        return ReviewGrant(locales=(), areas=None)
     if is_admin:
         return ReviewGrant(locales=tuple(locale_codes), areas=None)
     if not is_reviewer:

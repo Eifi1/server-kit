@@ -78,7 +78,7 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("eifi1_server_kit.billing", "docs/billing-harmonization.md", "§10, §14"),
     ("eifi1_server_kit.jobs", "docs/billing-harmonization.md", "§14.7"),
     ("eifi1_server_kit.mail", "docs/auth-harmonization.md", "§8"),
-    ("eifi1_server_kit.notifications", "docs/notifications-harmonization.md", "§3, §4.1"),
+    ("eifi1_server_kit.notifications", "docs/notifications-harmonization.md", "§3, §4.1, §9"),
     ("eifi1_server_kit.feedback", "docs/feedback-harmonization.md", "§3"),
     # Layer 2's routes, behind the `fastapi` extra; its ports and service come with
     # `eifi1_server_kit.feedback`.
@@ -86,7 +86,11 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("eifi1_server_kit.uploads", "docs/feedback-harmonization.md", "§3.5"),
     ("eifi1_server_kit.limiter", "docs/feedback-harmonization.md", "§3.5, §3.6"),
     ("eifi1_server_kit.errors", "docs/feedback-harmonization.md", "§3.7"),
+    # Layer 2's clock, shared by the feedback service and the translation review (0.10).
+    ("eifi1_server_kit.clock", "docs/server-services-harmonization.md", "§6.2"),
     ("eifi1_server_kit.translation_review", "docs/i18n-harmonization.md", "§2"),
+    # The translation review's routes (0.10), behind the `fastapi` extra, as feedback's.
+    ("eifi1_server_kit.translation_review.router", "docs/server-services-harmonization.md", "§6.2"),
     # The showcase reviews translations across origins: the review contract's routes.
     ("eifi1_server_kit.cors", "docs/i18n-harmonization.md", "§2"),
 )

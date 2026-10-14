@@ -23,8 +23,9 @@ models, sessions or commits. Import from the submodules:
 * :mod:`eifi1_server_kit.mail` — mail texts per language, one escaped layout as a whole
   document, Resend and console transports, a notification mail's one-click unsubscribe;
 * :mod:`eifi1_server_kit.notifications` — notifications: the app's types, the settings
-  resource and its PATCH, delivery, quiet hours and the digest's period, Web Push's
-  shapes and outcomes, the signed unsubscribe token, the inbox's shapes;
+  resource and its PATCH, delivery, quiet hours and the digest's period, a job's mail
+  owed until it went, Web Push's shapes and outcomes, the signed unsubscribe token, the
+  inbox's shapes;
 * :mod:`eifi1_server_kit.feedback` — the feedback contract (schemas, enums, rules,
   crash filing, erasure, attachment URLs), and layer 2: the feedback service behind ports
   each app implements, its routes as ``feedback.router.feedback_router`` (the ``fastapi``
@@ -33,7 +34,11 @@ models, sessions or commits. Import from the submodules:
 * :mod:`eifi1_server_kit.limiter` — an in-process sliding-window limiter, and the client's
   address counted from the right of ``X-Forwarded-For``;
 * :mod:`eifi1_server_kit.cors` — narrow, credential-free CORS for extra origins;
-* :mod:`eifi1_server_kit.translation_review` — the review schemas, key scope and tokens;
+* :mod:`eifi1_server_kit.translation_review` — the review schemas, key scope and tokens,
+  and layer 2 (0.10.0): the review service behind a store port each app implements, its
+  routes as ``translation_review.router.translation_review_router`` (the ``fastapi``
+  extra) and the fake and conformance checks in ``translation_review.testing``;
+* :mod:`eifi1_server_kit.clock` — layer 2's clock, an aware UTC ``datetime``;
 * :mod:`eifi1_server_kit.errors` — every kit refusal answered at its contract status.
 
 The contracts are ``docs/feedback-harmonization.md``, ``docs/auth-harmonization.md``,
@@ -46,4 +51,4 @@ lifted with a citation on each.
 
 from __future__ import annotations
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"

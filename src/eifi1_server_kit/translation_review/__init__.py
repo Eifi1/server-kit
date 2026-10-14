@@ -3,10 +3,23 @@
 The kit's ``TranslationReviewPanel`` and its showcase speak these; keksdose is the source
 (``schemas/translations.py``, ``translation_review_service.py``,
 ``translation_review_token_service.py``, ``adapters/api/translations_router.py``).
+
+Layer 2 (0.10.0; ``docs/server-services-harmonization.md`` §6 in ``Eifi1/ui-kit``): the
+reviewer view, the store port and :class:`TranslationReviewService` come with this
+package and need no FastAPI; the routes are
+``eifi1_server_kit.translation_review.router`` (the ``fastapi`` extra), the fake and the
+conformance checks ``eifi1_server_kit.translation_review.testing``.
 """
 
 from __future__ import annotations
 
+from eifi1_server_kit.translation_review.ports import (
+    NewVerdict,
+    ReviewerName,
+    TranslationReviewer,
+    TranslationReviewRow,
+    TranslationReviewStore,
+)
 from eifi1_server_kit.translation_review.schemas import (
     BATCH_MAX,
     NOTE_MAX,
@@ -27,6 +40,8 @@ from eifi1_server_kit.translation_review.scope import (
     KIT_AREA,
     KIT_KEY_PREFIX,
     LIKE_ESCAPE,
+    NO_KIT_REVIEW_ACCESS,
+    NO_REVIEW_ACCESS,
     ReviewerProfile,
     ReviewGrant,
     TranslationAccessError,
@@ -42,6 +57,7 @@ from eifi1_server_kit.translation_review.scope import (
     require_kit_keys,
     review_grant,
 )
+from eifi1_server_kit.translation_review.service import VERDICTS_EXPORT_KEY, TranslationReviewService
 from eifi1_server_kit.translation_review.tokens import (
     DEFAULT_REVIEW_TOKEN_HOURS,
     KEKSDOSE_REVIEW_TOKEN_PREFIX,
@@ -71,10 +87,15 @@ __all__ = [
     "MAX_REVIEW_TOKEN_HOURS",
     "MIN_REVIEW_TOKEN_HOURS",
     "NOTE_MAX",
+    "NO_KIT_REVIEW_ACCESS",
+    "NO_REVIEW_ACCESS",
     "REVIEW_TOKEN_BYTES",
     "REVIEW_TOKEN_RANDOM_LENGTH",
     "TEXT_MAX",
+    "VERDICTS_EXPORT_KEY",
+    "NewVerdict",
     "ReviewGrant",
+    "ReviewerName",
     "ReviewerProfile",
     "TranslationAccessError",
     "TranslationAreaError",
@@ -84,10 +105,14 @@ __all__ = [
     "TranslationReviewClearResponse",
     "TranslationReviewKey",
     "TranslationReviewOut",
+    "TranslationReviewRow",
+    "TranslationReviewService",
+    "TranslationReviewStore",
     "TranslationReviewTokenResponse",
     "TranslationReviewTokenRevokeResponse",
     "TranslationReviewWrite",
     "TranslationReviewWriteResponse",
+    "TranslationReviewer",
     "TranslationReviewsResponse",
     "TranslationVerdict",
     "area_like_patterns",

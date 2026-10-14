@@ -148,6 +148,31 @@ def test_a_skipped_field_is_checked_for_null_but_left_to_the_caller() -> None:
     assert apply_patch(row, cleared, not_nullable=(), skip=("default_language",)) == {}
 
 
+def test_no_object_when_every_field_is_skipped() -> None:
+    """kastlan's 0.36 finding 3: a body whose every field has its own code has nothing to
+    write onto, so it passes ``None`` instead of a throwaway object. Rule 3 still holds."""
+    sent = _Preferences.model_validate({"overspend": True, "digest": None})
+    assert apply_patch(None, sent, not_nullable=("overspend",), skip=("overspend", "digest")) == {}
+    assert apply_patch(None, _Preferences(), not_nullable=(), skip=("overspend", "digest")) == {}
+    refused = _Preferences.model_validate({"overspend": None})
+    with pytest.raises(PatchNullError) as caught:
+        apply_patch(None, refused, not_nullable=("overspend",), skip=("overspend", "digest"))
+    assert caught.value.fields == ("overspend",)
+
+
+def test_no_object_with_a_field_to_write_is_a_programming_error() -> None:
+    """Raised up front, whatever the body sent, so a test meets it on the first call: a
+    write onto nothing would be lost."""
+    with pytest.raises(TypeError, match=r"every field of _Preferences is skipped; not skipped: digest$"):
+        apply_patch(None, _Preferences(), not_nullable=(), skip=("overspend",))
+    only_skipped = _CompanySettings.model_validate({"default_language": "fr"})
+    with pytest.raises(TypeError, match=r"not skipped: default_account_country, qr_iban$"):
+        apply_patch(None, only_skipped, not_nullable=(), skip=("default_language",))
+    # A typo in skip is named first: it is why a field looks unskipped.
+    with pytest.raises(ValueError, match="no such field on _Preferences: digets"):
+        apply_patch(None, _Preferences(), not_nullable=(), skip=("overspend", "digets"))
+
+
 async def test_the_refusal_is_answered_with_its_code_and_fields() -> None:
     assert PatchNullError in CONTRACT_ERRORS
 

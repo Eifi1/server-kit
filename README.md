@@ -24,7 +24,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
   Four optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
   `mail` (`httpx>=0.28`) for `mail.ResendClient` only, `billing` (`httpx>=0.28`) for
   `billing.PaddleClient` only, and `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
-  for `feedback.router` only. No JWT library: the kit builds and checks claims, each app
+  for `feedback.router` and `translation_review.router` only. No JWT library: the kit builds and checks claims, each app
   signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
@@ -33,7 +33,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 | Layer | What | Status |
 |---|---|---|
 | **1 — contracts as code** | pure functions, Pydantic models, small classes, one Starlette middleware. **No** database models, migrations, sessions, repositories or routes | **0.1.0** |
-| **2 — services behind ports** | the feedback service written once against a repository / storage / clock port each app implements (`feedback.ports`, `feedback.service`), and the router factory `feedback_router(FeedbackDeps(…))` (`feedback.router`, the `fastapi` extra). The app's hooks: its own demo guard factory and admin guard as route dependencies, `foreign_row` (403 or 404), the actor on the ports (`get(id, *, viewer)`, `apply(row, changes, *, actor)`), its schema subclasses and `to_response`. The kit never commits | **0.9.0** |
+| **2 — services behind ports** | the feedback service written once against a repository / storage / clock port each app implements (`feedback.ports`, `feedback.service`), and the router factory `feedback_router(FeedbackDeps(…))` (`feedback.router`, the `fastapi` extra). The app's hooks: its own demo guard factory and admin guard as route dependencies, `foreign_row` (403 or 404), the actor on the ports (`get(id, *, viewer)`, `apply(row, changes, *, actor)`), its schema subclasses and `to_response`. The kit never commits. The translation review the same way: the reviewer view carrying the app's grant (`TranslationReviewer`), the store port (`TranslationReviewStore[RowT]`: `verdicts`, `put`, `clear`, `by_reviewer`), `TranslationReviewService` and `translation_review_router(TranslationReviewDeps(…))` (`translation_review.router`); no route guards: the grant decides, and a demo's is empty | **0.9.0**; translation review **0.10.0** |
 
 Layer 1 never imports an app's `User`: the rules take plain values (`is_admin`,
 `is_author`, the row's stored status and body, `is_first_user`, a token's `iat` and the
@@ -201,14 +201,19 @@ fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "
 The wire shapes (`TranslationReviewsResponse`, `TranslationReviewBatch`,
 `TranslationReviewClear`, `TranslationReviewOut`, `TranslationVerdict`, the token
 responses), the `kit.` scope (`is_kit_key`, `require_kit_keys`), grants over the app's own
-locales and areas (`review_grant`, `can_review_kit`, `assert_allowed`, `normalize_locales`,
-`normalize_areas`, `ReviewerProfile`), and the review token format (`new_review_token(prefix)`
+locales and areas (`review_grant(…, is_demo=False)` — a demo is granted nothing,
+`can_review_kit`, `assert_allowed`, `normalize_locales`, `normalize_areas`,
+`ReviewerProfile`), and the review token format (`new_review_token(prefix)`
 = prefix + 43 URL-safe characters, `hash_review_token` = SHA-256, `tokens_to_retire`,
-`review_token_is_live`, `review_token_expiry`).
+`review_token_is_live`, `review_token_expiry`). The four request bodies refuse unknown
+fields (0.10): a misspelt `suggestion` is a 422. `TranslationReviewOut` carries
+`reviewer_first_name` and `reviewer_last_name` beside `reviewer_name` (0.10).
 
-**An app that filters a listing by area in SQL** builds the filter from
-`area_like_patterns(grant.areas)` — the three arms of `in_areas` per area (`["legal"]` →
-`["legal", "legal.%", "kit.legal.%"]`, `None` = no filter) — and never by hand:
+**A key lies in an area** when it is the area, continues it with `.` or `:` (kastlan's
+`ns:key`, 0.10), or is the kit's wording for it under `kit.<area>.` — `in_areas`, and
+ui-kit's `keyInArea` on the page. **An app that filters a listing by area in SQL** builds
+the filter from `area_like_patterns(grant.areas)` — the four arms per area (`["legal"]` →
+`["legal", "legal.%", "legal:%", "kit.legal.%"]`, `None` = no filter) — and never by hand:
 
 ```python
 from eifi1_server_kit.translation_review import LIKE_ESCAPE, area_like_patterns
@@ -222,6 +227,42 @@ Kurvenschmiede found its listing narrowing with `key LIKE 'legal.%'` beside the 
 `in_areas`, so 0.2.1's `kit.<area>.` arm reached the verdict check and not the list. Name
 `LIKE_ESCAPE` in the query (SQLite has no default escape); `LIKE` is case-sensitive in
 PostgreSQL, as `in_areas` is.
+
+### `eifi1_server_kit.translation_review` — layer 2
+
+H1's three routes, the area filter, the reviewer's name and the export, written once
+(server-services §6, 0.10.0). The ports and the service come with
+`eifi1_server_kit.translation_review` and need no FastAPI; the routes are
+`eifi1_server_kit.translation_review.router`, the fake and the checks
+`eifi1_server_kit.translation_review.testing`.
+
+| Area | Names |
+|---|---|
+| Ports | `TranslationReviewer(id, first_name, last_name, locale, grant, kit_only=False)` (the app's `review_grant(…)`; keksdose's review token is the same view with `kit_only=True`); `TranslationReviewRow` (read-only: an app's mapped row satisfies it); `ReviewerName`; `NewVerdict`; `TranslationReviewStore[RowT]` (`verdicts(locales, areas)` with the reviewer's name, `put(verdicts)` an upsert per `(locale, key)`, `clear(pairs)` → how many existed, `by_reviewer(id)` oldest first); `Clock`, `utc_now` from `eifi1_server_kit.clock` |
+| Service | `TranslationReviewService(store, *, locale_codes, now=utc_now)`: `scope(viewer)` → the grant (403 `NO_REVIEW_ACCESS` without a locale; a token's areas `("kit",)`, 403 `NO_KIT_REVIEW_ACCESS` on a grant with an area limit), `list_reviews`, `save`, `clear`, `export(reviewer_id)`; `VERDICTS_EXPORT_KEY` (`"translation_verdicts"`) |
+| Routes (`translation_review.router`) | `TranslationReviewDeps(reviewer=, store=, locale_codes=, now=)`, `translation_review_router(deps, *, prefix="/translations", tags=("translations",))` |
+| Testing (`translation_review.testing`) | `InMemoryTranslationReviewStore` (records each write in `writes`), `MemoryVerdict`, `reviewer(**overrides)`; `check_store`, `check_round_trip` |
+
+| Route | Endpoint | Answer |
+|---|---|---|
+| `GET /translations/reviews` | `list_translation_reviews` | the caller's locales, areas and verdicts; 403 with no locale |
+| `PUT /translations/reviews` | `save_translation_reviews` | the rows written, with the caller's name |
+| `POST /translations/reviews/clear` | `clear_translation_reviews` | `{cleared}` |
+
+- **No route guard**: every route is "any signed-in", and the viewer's grant decides. A
+  demo is granted nothing (`review_grant(…, is_demo=True)`).
+- **The refusals are layer 1's**, answered by `install_contract_error_handlers`; in order:
+  the body (422, an unknown field too), a token naming a key outside the kit (403),
+  `assert_allowed` (422 for a locale the app does not ship, 403 outside the grant).
+- **The store filters by area with `area_like_patterns`**, and the service filters its
+  answer again with `in_areas`. **`reviewer_name` is in the reader's order**
+  (`full_name(first, last, viewer.locale)`), beside the two parts.
+- **The kit never commits.** Each request makes at most one store write (`put` or
+  `clear`), as its last step. An app's own routes (keksdose's review tokens, kastlan's
+  `GET /translations/documents`, which calls `scope(viewer)` for the same 403) go after
+  the kit's router.
+- **The export is keksdose's shape** for every app, under `data["translation_verdicts"]`:
+  `locale`, `string`, `text`, `verdict`, `suggestion`, `note`, `reviewed_at`, oldest first.
 
 ### `eifi1_server_kit.auth`
 
@@ -396,7 +437,7 @@ and their columns stay in the app.
 
 | Area | Names |
 |---|---|
-| The PATCH rule | `apply_patch(obj, update, *, not_nullable, defaults=None, skip=())` → the fields written; `PatchNullError` (422, `code: "not_nullable"`, `fields`), `PATCH_NULL_CODE` |
+| The PATCH rule | `apply_patch(obj, update, *, not_nullable, defaults=None, skip=())` → the fields written (`obj=None` when every field is skipped); `PatchNullError` (422, `code: "not_nullable"`, `fields`), `PATCH_NULL_CODE` |
 | The language | `canonical_locale(tag, offered)`, `parse_accept_language(header, offered)`, `profile_update_model(offered, name="ProfileUpdate")` |
 
 **One rule for every settings body** (§6.1), whatever its verb — keksdose's push writes
@@ -419,9 +460,12 @@ loud. `defaults={"overspend": True}` makes a `null` reset to a value instead of 
 (keksdose's push preferences). Every null is checked before anything is written, so a
 refused body never leaves the row half changed. `skip=("types",)` leaves a field to the
 caller: a null on it is still refused with the others, but it is neither written nor
-answered (notifications' `types`, which `apply_switches_patch` writes). A model without
-`extra="forbid"`, or a guard naming no field of the model, is a `TypeError` /
-`ValueError` on the first call.
+answered (notifications' `types`, which `apply_switches_patch` writes). A body whose
+every field is skipped has no row to write onto and passes `obj=None` (kastlan's
+notification settings, `types` alone): the nulls are checked, nothing is written, and the
+answer is `{}`. A model without `extra="forbid"`, a guard naming no field of the model,
+or `obj=None` with a field that isn't skipped is a `TypeError` / `ValueError` on the
+first call.
 
 **The account's language** (§6.2) is one canonical `locale` from the app's offered
 languages. `canonical_locale(tag, offered)` normalises case and `_` (`de_ch` → `de-CH`),
@@ -838,12 +882,17 @@ authenticated Kurvenschmiede mail that was only a fragment.
 `Mailer` is the protocol (`await mailer.send(to, message, kind="verification") -> bool`,
 never raises). The `kind` is what the mail is for, in its log lines and Resend's
 `Idempotency-Key`: a one-time link's `OneTimeTokenKind`, billing's `BillingNoticeKind`, or
-`AccountNoticeKind` for the two account notices with no token — `email_change_notice` (to
-the old address, user-admin §6.2) and `account_deletion` (the answer to a deletion
-request, §6.4; kastlan said `deletion`, Kurvenschmiede `deletion_request`).
+`AccountNoticeKind` for the account notices with no token — `email_change_notice` (to
+the old address, user-admin §6.2), `account_deletion` (the answer to a deletion
+request, §6.4; kastlan said `deletion`, Kurvenschmiede `deletion_request`) and
+`work_transferred_notice` (Kurvenschmiede: to an active former owner whose work an admin
+handed on, notifications §9.3).
 `ResendClient(api_key=, from_address=, timeout=10, client=None,
 reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
-under one `Idempotency-Key`, and never logs the recipient. **Set `reply_to`** from the
+under one `Idempotency-Key` — `MailMessage.idempotency_key` where the message has one,
+else a random `{kind}-{uuid}` — and never logs the recipient. A `409` (the key's first
+request still running, or the key used with another body) is not sent and not retried.
+**Set `reply_to`** from the
 app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address)`, i.e.
 `support@<the sender's domain>`. Cloudflare Email Routing forwards `support@` on all three
 domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` logs
@@ -860,7 +909,10 @@ the action line (`{label}: {page}` in the text half), and `MailMessage.headers` 
 `list_unsubscribe_headers(one_click)` — `List-Unsubscribe: <…>` and
 `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. `ResendClient` sends `headers` as
 Resend's `headers` object, `ConsoleMailer` logs them, and kastlan's SMTP transport sets
-them on its message. Account mail and billing's notices carry none.
+them on its message. Account mail and billing's notices carry none. A notification mail a
+job sends again carries `idempotency_key` (`MailMessage(…, idempotency_key=…)`, 1–256
+printable ASCII characters, no space), the send's request header to Resend, which
+`ConsoleMailer` ignores (`notifications`, "a failed send").
 
 ### `eifi1_server_kit.notifications`
 
@@ -877,7 +929,8 @@ off the event loop, its mailer). keksdose is the source
 | The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate`, `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
 | Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE` |
 | Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
-| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE` |
+| A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day)`), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
+| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE` |
 | Unsubscribe | `unsubscribe_token(secret, user_id, type_id)`, `read_unsubscribe_token(secret, token)` → `UnsubscribeClaim(user_id, type_id)`, `unsubscribe_key(secret)` |
 | The inbox | `InboxItem`, `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days) |
 | Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `PushEndpointTakenError` (409, `push_endpoint_taken`), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
@@ -919,11 +972,27 @@ the app channel (keksdose's guest deadline). **Quiet hours** fail open (half set
 end); the zone is the settings' `timezone`, and an unset or no longer resolvable one is
 `Europe/Zurich`, never UTC. **The digest** is due from its period's first local day until
 3 days after, once per period: store `digest_due`'s key as `digest_sent` in the
-transaction that writes its inbox row; its push's tag is `digest:2026-W42`.
+transaction that writes its inbox row (an app with no inbox: once the send answered
+`True`); its push's tag is `digest:2026-W42`.
+
+**A failed send** (§9.4): a notification mail a job sends is owed until it went, for 3
+days; one a request sends is tried once, after the commit, and a failure is logged; a
+push is never retried. Each scheduled run (never the run at the app's start) reads the
+events still due by `mail_due(event_day, today, sent=…)` and their recipients by
+`plan_delivery`, read again at every try, and skips a recipient with a marker,
+`MailMarker(user_id, type_id, event)`. The send carries the marker's
+`.idempotency_key(today)` as `MailMessage.idempotency_key`:
+`<type>:<event>:<user_id>:<YYYY-MM-DD>`, so two runs on one day send one mail (Resend
+keeps a key 24 hours). Sent: the marker row, `ON CONFLICT DO
+NOTHING`, committed per recipient; not sent: logged with the type and the event, nothing
+written. The event key is the app's, built by `mail_event` (kastlan:
+`mail_event(company_id, day)` → `"42:2026-10-13"`): ids and days, no personal data, no
+sealed content. The same job deletes markers older than `MAIL_MARKER_RETENTION`.
 
 **Push**: the payload is `{title, body, tag, data: {url, type}}` — `url` a path in the
 app, never `//` or a scheme — encoded under 3 KB with the body cut by "…". A 404 or 410
-deletes the device, anything else counts a failure, and 10 in a row reap it. TTL 24 h and
+deletes the device, anything else counts a failure, and 10 in a row reap it
+(`should_reap(count, limit=…)` takes the app's own limit). TTL 24 h and
 timeout 10 s, passed explicitly. The VAPID subject is `mailto:` the support address.
 
 **One-click unsubscribe**: `v1.<data>.<mac>`, signed with a key derived from the app's
@@ -937,7 +1006,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.9.0/eifi1_server_kit-0.9.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.10.0/eifi1_server_kit-0.10.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).

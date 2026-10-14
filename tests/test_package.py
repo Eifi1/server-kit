@@ -31,6 +31,7 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.auth",
         "eifi1_server_kit.billing",
         "eifi1_server_kit.billing.testing",
+        "eifi1_server_kit.clock",
         "eifi1_server_kit.cors",
         "eifi1_server_kit.demo",
         "eifi1_server_kit.errors",
@@ -43,6 +44,8 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.notifications",
         "eifi1_server_kit.settings",
         "eifi1_server_kit.translation_review",
+        "eifi1_server_kit.translation_review.router",
+        "eifi1_server_kit.translation_review.testing",
         "eifi1_server_kit.uploads",
         "eifi1_server_kit.user_admin",
     ):
@@ -71,3 +74,36 @@ def test_the_feedback_router_names_its_extra_without_fastapi(monkeypatch: pytest
     monkeypatch.setitem(sys.modules, "fastapi", None)
     with pytest.raises(ImportError, match=r"install the kit with its fastapi extra, eifi1-server-kit\[fastapi\]"):
         importlib.import_module("eifi1_server_kit.feedback.router")
+
+
+def test_translation_review_layer_2_loads_no_web_framework() -> None:
+    """The reviewer view, the store port, the service and ``translation_review.testing`` run
+    without FastAPI, httpx or SQLAlchemy (server-services §6.2.1). A fresh interpreter."""
+    probe = (
+        "import sys, eifi1_server_kit.translation_review, eifi1_server_kit.translation_review.testing;"
+        "print(sorted({name.split('.')[0] for name in sys.modules} & {'fastapi', 'httpx', 'sqlalchemy'}))"
+    )
+    loaded = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout
+    assert loaded.strip() == "[]"
+
+
+def test_the_translation_review_router_names_its_extra_without_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "eifi1_server_kit.translation_review.router", raising=False)
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+    with pytest.raises(
+        ImportError,
+        match=r"translation_review\.router needs FastAPI: install the kit with its fastapi extra, "
+        r"eifi1-server-kit\[fastapi\]",
+    ):
+        importlib.import_module("eifi1_server_kit.translation_review.router")
+
+
+def test_the_clock_is_one_object_for_both_services() -> None:
+    """0.10 moved ``Clock`` and ``utc_now`` to :mod:`eifi1_server_kit.clock`; feedback
+    re-exports the same objects under 0.9's names (§6.2.1)."""
+    from eifi1_server_kit import clock, feedback
+    from eifi1_server_kit.feedback import ports
+
+    assert feedback.utc_now is ports.utc_now is clock.utc_now
+    assert feedback.Clock is ports.Clock is clock.Clock
+    assert "Clock" in ports.__all__ and "utc_now" in ports.__all__
