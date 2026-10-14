@@ -7,9 +7,10 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from eifi1_server_kit.translation_review import (
     BATCH_MAX,
@@ -17,6 +18,8 @@ from eifi1_server_kit.translation_review import (
     KIT_AREA,
     LIKE_ESCAPE,
     MAX_LIVE_REVIEW_TOKENS,
+    NO_KIT_REVIEW_ACCESS,
+    NO_REVIEW_ACCESS,
     REVIEW_TOKEN_RANDOM_LENGTH,
     ReviewGrant,
     TranslationAccessError,
@@ -24,6 +27,7 @@ from eifi1_server_kit.translation_review import (
     TranslationLocaleError,
     TranslationReviewBatch,
     TranslationReviewClear,
+    TranslationReviewKey,
     TranslationReviewOut,
     TranslationReviewsResponse,
     TranslationReviewTokenResponse,
@@ -92,8 +96,32 @@ def test_the_wire_shapes() -> None:
     )
     listing = TranslationReviewsResponse(locales=["fr"], areas=[KIT_AREA], reviews=[out])
     assert listing.model_dump(mode="json")["reviews"][0]["verdict"] == "APPROVED"
+    # 0.10: the name's two parts, None unless given (auth §3.2), kk's subclasses' fields.
+    assert out.reviewer_first_name is None and out.reviewer_last_name is None
+    assert list(TranslationReviewOut.model_fields)[-3:] == ["reviewed_at", "reviewer_first_name", "reviewer_last_name"]
     assert TranslationReviewsResponse(locales=[], reviews=[]).areas is None
     assert TranslationReviewTokenResponse(token="kdr_x", expires_at=NOW).token == "kdr_x"
+
+
+@pytest.mark.parametrize(
+    ("model", "body"),
+    [
+        (TranslationReviewWrite, {**_item("fr", "kit.a", "NEEDS_CHANGE"), "sugestion": "Mieux"}),
+        (TranslationReviewBatch, {"items": [_item("fr", "kit.a")], "dry_run": True}),
+        (TranslationReviewKey, {"locale": "fr", "key": "kit.a", "verdict": "APPROVED"}),
+        (TranslationReviewClear, {"items": [{"locale": "fr", "key": "kit.a"}], "all": True}),
+    ],
+)
+def test_the_request_bodies_refuse_unknown_fields(model: type[BaseModel], body: dict[str, Any]) -> None:
+    """0.10, Kurvenschmiede's rule for every app (T5): a misspelt ``suggestion`` is refused,
+    not a verdict saved without it."""
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        model.model_validate(body)
+
+
+def test_a_nested_unknown_field_is_refused_through_the_batch() -> None:
+    with pytest.raises(ValidationError, match=r"items\.0\.sugestion"):
+        TranslationReviewBatch.model_validate({"items": [{**_item("fr", "kit.a"), "sugestion": "Mieux"}]})
 
 
 # ── key scope ───────────────────────────────────────────────────────────────
@@ -115,6 +143,15 @@ def test_areas() -> None:
     assert in_areas("anything", None)
 
 
+def test_in_areas_reaches_kastlans_namespaced_keys() -> None:
+    """0.10, H1's fourth arm (i18n-harmonization §2; ui-kit ``keyInArea``): kastlan's
+    ``ns:key`` lies in the area ``ns`` — ``legal:imprint.title`` in ``legal``."""
+    assert in_areas("legal:imprint.title", ["legal"]) and in_areas("doc_text:invoice.footer", ["doc_text"])
+    assert in_areas("legal:", ["legal"])
+    assert not in_areas("legalese:x", ["legal"]) and not in_areas("other:legal.x", ["legal"])
+    assert not in_areas("kit.legal:x", ["legal"]), "the kit's arm stays kit.<area>."
+
+
 def test_in_areas_reaches_the_kits_wording_for_an_area() -> None:
     # ui-kit 0.28: the legal pages' shared sections are kit words under kit.legal.*
     assert in_areas("kit.legal.sections.warranty.title", ["legal"])
@@ -129,7 +166,13 @@ def test_in_areas_reaches_the_kits_wording_for_an_area() -> None:
 def test_area_like_patterns_are_in_areas_in_sql(request: pytest.FixtureRequest) -> None:
     """Kurvenschmiede's finding: a listing filtered in SQL must match exactly what
     ``in_areas`` allows — run both over the same keys, through a real ``LIKE``."""
-    assert area_like_patterns(["legal"]) == ["legal", "legal.%", "kit.legal.%"]
+    assert area_like_patterns(["legal"]) == ["legal", "legal.%", "legal:%", "kit.legal.%"]
+    assert area_like_patterns(["price_list"]) == [
+        "price\\_list",
+        "price\\_list.%",
+        "price\\_list:%",
+        "kit.price\\_list.%",
+    ]
     assert area_like_patterns(None) is None and area_like_patterns([]) == []
 
     db = sqlite3.connect(":memory:")
@@ -153,6 +196,16 @@ def test_area_like_patterns_are_in_areas_in_sql(request: pytest.FixtureRequest) 
         "kit.price_list.a",
         "100%.x",
         "100x.x",
+        # 0.10's fourth arm: kastlan's `ns:key`.
+        "legal:imprint.title",
+        "legal:",
+        "legalese:x",
+        "kit.legal:x",
+        "other:legal.x",
+        "price_list:a",
+        "priceXlist:a",
+        "100%:x",
+        "100x:x",
     ]
     for areas in (["legal"], ["legal", "price_list"], ["100%"], ["kit"], []):
         patterns = area_like_patterns(areas)
@@ -181,6 +234,23 @@ def test_the_grant_follows_the_role() -> None:
     )
     assert review_grant(user, is_admin=False, is_reviewer=False, locale_codes=LOCALES) == ReviewGrant((), None)
     assert review_grant(_User(["fr"], []), is_admin=False, is_reviewer=True, locale_codes=LOCALES).areas is None
+
+
+def test_a_demo_is_granted_nothing_whatever_its_role() -> None:
+    """0.10 (server-services §6.2.2): keksdose's ``review_grant_of`` folded ``is_demo`` into
+    ``is_reviewer``; the kit takes it, and a demo admin is granted nothing too."""
+    user = _User(["fr"], ["legal"])
+    for is_admin, is_reviewer in ((True, False), (False, True), (True, True)):
+        grant = review_grant(user, is_admin=is_admin, is_reviewer=is_reviewer, locale_codes=LOCALES, is_demo=True)
+        assert grant == ReviewGrant((), None)
+    assert review_grant(user, is_admin=True, is_reviewer=False, locale_codes=LOCALES, is_demo=False).locales == LOCALES
+
+
+def test_the_refusals_sentences() -> None:
+    """The ``GET``'s 403 is keksdose's and kastlan's sentence; a limited token's is
+    keksdose's mint refusal (``translation_review_token_service.py:71``)."""
+    assert NO_REVIEW_ACCESS == "No translation review access"
+    assert NO_KIT_REVIEW_ACCESS == "No review access to the kit's wording"
 
 
 def test_who_may_review_the_kit() -> None:

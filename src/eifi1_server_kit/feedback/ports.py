@@ -13,11 +13,14 @@ string columns, claimed files and derived columns stay in its adapter.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Protocol
 
+# The clock is layer 2's, shared with the translation review since 0.10 (§6.2.1); the
+# same objects, re-exported here under the names 0.9 gave them.
+from eifi1_server_kit.clock import Clock, utc_now
 from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackStatus
 from eifi1_server_kit.uploads import CheckedUpload
 
@@ -31,15 +34,6 @@ __all__ = [
     "StoredAttachment",
     "utc_now",
 ]
-
-#: The service's clock: an aware UTC ``datetime`` (``resolved_at``, a crash's
-#: ``seen_at``). Not :data:`eifi1_server_kit.limiter.Clock`, which is a monotonic float.
-type Clock = Callable[[], datetime]
-
-
-def utc_now() -> datetime:
-    """The current time, aware, in UTC — the default :data:`Clock`."""
-    return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)

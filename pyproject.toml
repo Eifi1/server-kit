@@ -35,7 +35,8 @@ billing = ["httpx>=0.28.0"]
 # `UploadFile` reads the upload's multipart body with python-multipart; the ports, the
 # service and `feedback.testing` need neither, and the router says which extra it needs
 # when it is missing. The apps' floors, no ceiling: keksdose holds FastAPI below 0.137
-# itself (server-services-harmonization §2.1).
+# itself (server-services-harmonization §2.1). `translation_review.router` (0.10) needs
+# FastAPI only; its ports, service and testing module need neither.
 fastapi = ["fastapi>=0.115.0", "python-multipart>=0.0.18"]
 
 [project.urls]

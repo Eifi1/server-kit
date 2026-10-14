@@ -24,7 +24,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
   Four optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
   `mail` (`httpx>=0.28`) for `mail.ResendClient` only, `billing` (`httpx>=0.28`) for
   `billing.PaddleClient` only, and `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
-  for `feedback.router` only. No JWT library: the kit builds and checks claims, each app
+  for `feedback.router` and `translation_review.router` only. No JWT library: the kit builds and checks claims, each app
   signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
@@ -33,7 +33,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 | Layer | What | Status |
 |---|---|---|
 | **1 — contracts as code** | pure functions, Pydantic models, small classes, one Starlette middleware. **No** database models, migrations, sessions, repositories or routes | **0.1.0** |
-| **2 — services behind ports** | the feedback service written once against a repository / storage / clock port each app implements (`feedback.ports`, `feedback.service`), and the router factory `feedback_router(FeedbackDeps(…))` (`feedback.router`, the `fastapi` extra). The app's hooks: its own demo guard factory and admin guard as route dependencies, `foreign_row` (403 or 404), the actor on the ports (`get(id, *, viewer)`, `apply(row, changes, *, actor)`), its schema subclasses and `to_response`. The kit never commits | **0.9.0** |
+| **2 — services behind ports** | the feedback service written once against a repository / storage / clock port each app implements (`feedback.ports`, `feedback.service`), and the router factory `feedback_router(FeedbackDeps(…))` (`feedback.router`, the `fastapi` extra). The app's hooks: its own demo guard factory and admin guard as route dependencies, `foreign_row` (403 or 404), the actor on the ports (`get(id, *, viewer)`, `apply(row, changes, *, actor)`), its schema subclasses and `to_response`. The kit never commits. The translation review the same way: the reviewer view carrying the app's grant (`TranslationReviewer`), the store port (`TranslationReviewStore[RowT]`: `verdicts`, `put`, `clear`, `by_reviewer`), `TranslationReviewService` and `translation_review_router(TranslationReviewDeps(…))` (`translation_review.router`); no route guards: the grant decides, and a demo's is empty | **0.9.0**; translation review **0.10.0** |
 
 Layer 1 never imports an app's `User`: the rules take plain values (`is_admin`,
 `is_author`, the row's stored status and body, `is_first_user`, a token's `iat` and the
@@ -201,14 +201,19 @@ fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "
 The wire shapes (`TranslationReviewsResponse`, `TranslationReviewBatch`,
 `TranslationReviewClear`, `TranslationReviewOut`, `TranslationVerdict`, the token
 responses), the `kit.` scope (`is_kit_key`, `require_kit_keys`), grants over the app's own
-locales and areas (`review_grant`, `can_review_kit`, `assert_allowed`, `normalize_locales`,
-`normalize_areas`, `ReviewerProfile`), and the review token format (`new_review_token(prefix)`
+locales and areas (`review_grant(…, is_demo=False)` — a demo is granted nothing,
+`can_review_kit`, `assert_allowed`, `normalize_locales`, `normalize_areas`,
+`ReviewerProfile`), and the review token format (`new_review_token(prefix)`
 = prefix + 43 URL-safe characters, `hash_review_token` = SHA-256, `tokens_to_retire`,
-`review_token_is_live`, `review_token_expiry`).
+`review_token_is_live`, `review_token_expiry`). The four request bodies refuse unknown
+fields (0.10): a misspelt `suggestion` is a 422. `TranslationReviewOut` carries
+`reviewer_first_name` and `reviewer_last_name` beside `reviewer_name` (0.10).
 
-**An app that filters a listing by area in SQL** builds the filter from
-`area_like_patterns(grant.areas)` — the three arms of `in_areas` per area (`["legal"]` →
-`["legal", "legal.%", "kit.legal.%"]`, `None` = no filter) — and never by hand:
+**A key lies in an area** when it is the area, continues it with `.` or `:` (kastlan's
+`ns:key`, 0.10), or is the kit's wording for it under `kit.<area>.` — `in_areas`, and
+ui-kit's `keyInArea` on the page. **An app that filters a listing by area in SQL** builds
+the filter from `area_like_patterns(grant.areas)` — the four arms per area (`["legal"]` →
+`["legal", "legal.%", "legal:%", "kit.legal.%"]`, `None` = no filter) — and never by hand:
 
 ```python
 from eifi1_server_kit.translation_review import LIKE_ESCAPE, area_like_patterns
@@ -222,6 +227,42 @@ Kurvenschmiede found its listing narrowing with `key LIKE 'legal.%'` beside the 
 `in_areas`, so 0.2.1's `kit.<area>.` arm reached the verdict check and not the list. Name
 `LIKE_ESCAPE` in the query (SQLite has no default escape); `LIKE` is case-sensitive in
 PostgreSQL, as `in_areas` is.
+
+### `eifi1_server_kit.translation_review` — layer 2
+
+H1's three routes, the area filter, the reviewer's name and the export, written once
+(server-services §6, 0.10.0). The ports and the service come with
+`eifi1_server_kit.translation_review` and need no FastAPI; the routes are
+`eifi1_server_kit.translation_review.router`, the fake and the checks
+`eifi1_server_kit.translation_review.testing`.
+
+| Area | Names |
+|---|---|
+| Ports | `TranslationReviewer(id, first_name, last_name, locale, grant, kit_only=False)` (the app's `review_grant(…)`; keksdose's review token is the same view with `kit_only=True`); `TranslationReviewRow` (read-only: an app's mapped row satisfies it); `ReviewerName`; `NewVerdict`; `TranslationReviewStore[RowT]` (`verdicts(locales, areas)` with the reviewer's name, `put(verdicts)` an upsert per `(locale, key)`, `clear(pairs)` → how many existed, `by_reviewer(id)` oldest first); `Clock`, `utc_now` from `eifi1_server_kit.clock` |
+| Service | `TranslationReviewService(store, *, locale_codes, now=utc_now)`: `scope(viewer)` → the grant (403 `NO_REVIEW_ACCESS` without a locale; a token's areas `("kit",)`, 403 `NO_KIT_REVIEW_ACCESS` on a grant with an area limit), `list_reviews`, `save`, `clear`, `export(reviewer_id)`; `VERDICTS_EXPORT_KEY` (`"translation_verdicts"`) |
+| Routes (`translation_review.router`) | `TranslationReviewDeps(reviewer=, store=, locale_codes=, now=)`, `translation_review_router(deps, *, prefix="/translations", tags=("translations",))` |
+| Testing (`translation_review.testing`) | `InMemoryTranslationReviewStore` (records each write in `writes`), `MemoryVerdict`, `reviewer(**overrides)`; `check_store`, `check_round_trip` |
+
+| Route | Endpoint | Answer |
+|---|---|---|
+| `GET /translations/reviews` | `list_translation_reviews` | the caller's locales, areas and verdicts; 403 with no locale |
+| `PUT /translations/reviews` | `save_translation_reviews` | the rows written, with the caller's name |
+| `POST /translations/reviews/clear` | `clear_translation_reviews` | `{cleared}` |
+
+- **No route guard**: every route is "any signed-in", and the viewer's grant decides. A
+  demo is granted nothing (`review_grant(…, is_demo=True)`).
+- **The refusals are layer 1's**, answered by `install_contract_error_handlers`; in order:
+  the body (422, an unknown field too), a token naming a key outside the kit (403),
+  `assert_allowed` (422 for a locale the app does not ship, 403 outside the grant).
+- **The store filters by area with `area_like_patterns`**, and the service filters its
+  answer again with `in_areas`. **`reviewer_name` is in the reader's order**
+  (`full_name(first, last, viewer.locale)`), beside the two parts.
+- **The kit never commits.** Each request makes at most one store write (`put` or
+  `clear`), as its last step. An app's own routes (keksdose's review tokens, kastlan's
+  `GET /translations/documents`, which calls `scope(viewer)` for the same 403) go after
+  the kit's router.
+- **The export is keksdose's shape** for every app, under `data["translation_verdicts"]`:
+  `locale`, `string`, `text`, `verdict`, `suggestion`, `note`, `reviewed_at`, oldest first.
 
 ### `eifi1_server_kit.auth`
 

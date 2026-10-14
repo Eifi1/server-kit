@@ -34,7 +34,11 @@ models, sessions or commits. Import from the submodules:
 * :mod:`eifi1_server_kit.limiter` — an in-process sliding-window limiter, and the client's
   address counted from the right of ``X-Forwarded-For``;
 * :mod:`eifi1_server_kit.cors` — narrow, credential-free CORS for extra origins;
-* :mod:`eifi1_server_kit.translation_review` — the review schemas, key scope and tokens;
+* :mod:`eifi1_server_kit.translation_review` — the review schemas, key scope and tokens,
+  and layer 2 (0.10.0): the review service behind a store port each app implements, its
+  routes as ``translation_review.router.translation_review_router`` (the ``fastapi``
+  extra) and the fake and conformance checks in ``translation_review.testing``;
+* :mod:`eifi1_server_kit.clock` — layer 2's clock, an aware UTC ``datetime``;
 * :mod:`eifi1_server_kit.errors` — every kit refusal answered at its contract status.
 
 The contracts are ``docs/feedback-harmonization.md``, ``docs/auth-harmonization.md``,

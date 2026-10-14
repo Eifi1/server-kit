@@ -3,6 +3,10 @@
 Lifted from keksdose ``backend/keksdose/domain/schemas/translations.py:12-102``. The admin
 grant shapes (``AdminReviewerRequest`` / ``Response``) stay app-side: they carry the
 app's own role enum.
+
+The four request bodies refuse unknown fields (``extra="forbid"``, 0.10; Kurvenschmiede's
+rule, server-services §6.2.7): a misspelt ``suggestion`` is a 422, not a verdict saved
+without it.
 """
 
 from __future__ import annotations
@@ -10,7 +14,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 #: The longest string in any bundle is ~3.5k characters; ten times that leaves room
 #: without accepting a megabyte (keksdose ``translations.py:12-14``).
@@ -43,9 +47,14 @@ class TranslationReviewOut(BaseModel):
     verdict: TranslationVerdict
     note: str | None
     suggestion: str | None
-    #: The reviewer's display name; NULL once their account has been erased.
+    #: The reviewer's name in the READER's order (``auth.full_name`` with the reader's
+    #: locale; server-services §6.2.5); NULL once their account has been erased.
     reviewer_name: str | None
     reviewed_at: datetime
+    #: The name's two parts, for a page that writes them itself (auth §3.2: every API that
+    #: returns a person returns both); NULL once the account has been erased (0.10).
+    reviewer_first_name: str | None = None
+    reviewer_last_name: str | None = None
 
 
 class TranslationReviewsResponse(BaseModel):
@@ -63,6 +72,8 @@ class TranslationReviewsResponse(BaseModel):
 class TranslationReviewWrite(BaseModel):
     """One verdict to store (``PUT /translations/reviews`` item)."""
 
+    model_config = ConfigDict(extra="forbid")
+
     locale: str = Field(min_length=2, max_length=10)
     key: str = Field(min_length=1, max_length=255)
     text: str = Field(max_length=TEXT_MAX)
@@ -75,11 +86,15 @@ class TranslationReviewWrite(BaseModel):
 class TranslationReviewBatch(BaseModel):
     """``PUT /translations/reviews`` body."""
 
+    model_config = ConfigDict(extra="forbid")
+
     items: list[TranslationReviewWrite] = Field(min_length=1, max_length=BATCH_MAX)
 
 
 class TranslationReviewKey(BaseModel):
     """One (locale, key) to clear."""
+
+    model_config = ConfigDict(extra="forbid")
 
     locale: str = Field(min_length=2, max_length=10)
     key: str = Field(min_length=1, max_length=255)
@@ -88,6 +103,8 @@ class TranslationReviewKey(BaseModel):
 class TranslationReviewClear(BaseModel):
     """``POST /translations/reviews/clear`` body — back to "unreviewed", the undo for a
     verdict given by mistake."""
+
+    model_config = ConfigDict(extra="forbid")
 
     items: list[TranslationReviewKey] = Field(min_length=1, max_length=BATCH_MAX)
 
