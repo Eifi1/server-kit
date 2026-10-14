@@ -29,8 +29,8 @@ here; kastlan built its own on the same shape.
 * **A word for every mail** — the ``kind`` it is sent and logged under, which an
   operator greps three apps' logs for: a mail with a one-time link by its token's
   :class:`~eifi1_server_kit.auth.OneTimeTokenKind`, billing's notices by
-  :class:`~eifi1_server_kit.billing.BillingNoticeKind`, and the two account notices with
-  no token by :class:`AccountNoticeKind`.
+  :class:`~eifi1_server_kit.billing.BillingNoticeKind`, and the account notices with no
+  token by :class:`AccountNoticeKind`.
 
 * **A notification mail** (``docs/notifications-harmonization.md`` §3.6) is sent under its
   notification type's id and carries RFC 8058's one-click unsubscribe:
@@ -38,6 +38,10 @@ here; kastlan built its own on the same shape.
   linking the app's unsubscribe page (:class:`MailUnsubscribe`, which
   :func:`render_mail` lays out and turns into the headers). Account mail and billing's
   notices carry none: the recipient asked for them, and has no switch to turn them off.
+  One a job sends is owed until it went (§9.4): it carries
+  :attr:`MailMessage.idempotency_key` from
+  :meth:`~eifi1_server_kit.notifications.MailMarker.idempotency_key`, so two runs on one
+  day send it once.
 """
 
 from __future__ import annotations
@@ -98,6 +102,9 @@ _BEFORE_COLON: Mapping[str, str] = {"fr": "\u00a0"}
 _HEADER_NAME = re.compile(r"[!-9;-~]+")
 #: RFC 8058's second header: the body a mail client POSTs to the first one's URL.
 _ONE_CLICK = "List-Unsubscribe=One-Click"
+#: An ``Idempotency-Key``: 1–256 characters (Resend's range; outside it is a 400
+#: ``invalid_idempotency_key``), printable ASCII with no space — one HTTP header value.
+_IDEMPOTENCY_KEY = re.compile(r"[!-~]{1,256}")
 
 
 def _language(tag: str) -> str:
@@ -272,17 +279,33 @@ class MailMessage:
     :func:`list_unsubscribe_headers` — which :class:`ResendClient` sends as Resend's
     ``headers`` object and an SMTP transport sets on its message. A :class:`ValueError` for
     a name that is no header name, or a line break in a value.
+
+    ``idempotency_key`` is the send's own ``Idempotency-Key`` — a request header to the
+    provider, not a mail header — for a mail a job may send again (notifications §9.4,
+    :meth:`~eifi1_server_kit.notifications.MailMarker.idempotency_key`)::
+
+        message = replace(message, idempotency_key=marker.idempotency_key(today))
+
+    :class:`ResendClient` sends it on both tries; ``None`` (account mail) is a random key
+    per send. :class:`ConsoleMailer` ignores it. A :class:`ValueError` unless it is 1–256
+    characters of printable ASCII with no space: Resend refuses a longer one, and it is
+    one header line.
     """
 
     subject: str
     text: str
     html: str | None = None
     headers: Mapping[str, str] | None = None
+    idempotency_key: str | None = None
 
     def __post_init__(self) -> None:
         for name, value in (self.headers or {}).items():
             if not _HEADER_NAME.fullmatch(name) or any(char in value for char in "\r\n\x00"):
                 raise ValueError(f"a mail header is a name and a one-line value: {name[:40]!r}")
+        if self.idempotency_key is not None and not _IDEMPOTENCY_KEY.fullmatch(self.idempotency_key):
+            raise ValueError(
+                f"an idempotency key is 1–256 printable ASCII characters, no space: {self.idempotency_key[:60]!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,10 +385,12 @@ class AccountNoticeKind(enum.StrEnum):
     logged under (KS S5): each TELLS an address something rather than asking it to prove
     anything, so :class:`~eifi1_server_kit.auth.OneTimeTokenKind` has no word for them.
     Not ``MailKind``, which is :mod:`~eifi1_server_kit.user_admin`'s word for the mail an
-    admin sends again.
+    admin sends again. None has a switch or an unsubscribe link: they are about the
+    account itself.
 
-    The user-admin contract requires both of every app with an email change and an
-    account deletion::
+    The user-admin contract requires the first two of every app with an email change and
+    an account deletion; the third is Kurvenschmiede's, for its admin transfer of work
+    (notifications §9.3)::
 
         await mailer.send(user.email, message, kind=AccountNoticeKind.ACCOUNT_DELETION)
     """
@@ -378,6 +403,10 @@ class AccountNoticeKind(enum.StrEnum):
     #: be deleted, and how to undo it. keksdose's word (``account_deletion_service.py:279``);
     #: kastlan sent ``deletion`` and Kurvenschmiede ``deletion_request``.
     ACCOUNT_DELETION = "account_deletion"
+    #: To the former owner when an admin hands their work on to another account
+    #: (notifications §9.3), only while that account is ACTIVE: no switch, no unsubscribe
+    #: link. Kurvenschmiede's (``admin_service.transfer``); the words stay its own.
+    WORK_TRANSFERRED_NOTICE = "work_transferred_notice"
 
 
 class Mailer(Protocol):
@@ -390,7 +419,8 @@ class Mailer(Protocol):
         label, which the recipient's address never is: a
         :class:`~eifi1_server_kit.auth.OneTimeTokenKind` (``verification``,
         ``password_reset``, ``invitation``, ``email_change``), an
-        :class:`AccountNoticeKind` (``email_change_notice``, ``account_deletion``), a
+        :class:`AccountNoticeKind` (``email_change_notice``, ``account_deletion``,
+        ``work_transferred_notice``), a
         :class:`~eifi1_server_kit.billing.BillingNoticeKind`, or — for a notification mail —
         its notification type's id (``share_granted``; notifications §3.6). An app whose own
         ``send`` takes a narrower kind widens it to its registry's ids.
@@ -468,8 +498,18 @@ class ResendClient:
     **At most one retry**, and only where a second attempt can help: a transport error (no
     connection, a timeout) or an answer of ``429`` / ``5xx``. A ``4xx`` — a bad key, an
     unverified sender — fails at once. Both attempts carry the same ``Idempotency-Key``, so
-    a first attempt that did reach Resend before the timeout is not sent twice. No queue,
-    no delivery tracking: a handful of mails, each awaited by somebody at the app.
+    a first attempt that did reach Resend before the timeout is not sent twice: the
+    message's :attr:`~MailMessage.idempotency_key` where it has one (a job's notification
+    mail, notifications §9.4), else a random ``{kind}-{uuid}``. No queue, no delivery
+    tracking: a handful of mails, each awaited by somebody at the app.
+
+    **Resend's idempotency** (its docs, 2026-10-14): a key is kept 24 hours; the same key
+    with the same body answers the first request's answer, and nothing is sent again; a
+    ``409`` is the same key while its first request is still in progress
+    (``concurrent_idempotent_requests``) or with another body
+    (``invalid_idempotent_request``). A ``409`` is "not sent" here and not retried: the
+    request that holds the key has the mail, and a job's next run tries again under the
+    next day's key.
 
     The log lines name the ``kind`` and Resend's answer, never the recipient.
     """
@@ -516,7 +556,8 @@ class ResendClient:
 
     async def send(self, to: str, message: MailMessage, *, kind: str = "other") -> bool:
         """Send ``message`` to ``to``; whether Resend accepted it. Never raises."""
-        headers = {"Authorization": f"Bearer {self._api_key}", "Idempotency-Key": f"{kind}-{uuid.uuid4()}"}
+        key = message.idempotency_key if message.idempotency_key is not None else f"{kind}-{uuid.uuid4()}"
+        headers = {"Authorization": f"Bearer {self._api_key}", "Idempotency-Key": key}
         payload = self._payload(to, message)
         sent = await self._attempt(headers, payload, kind=kind, attempt=1)
         if sent is None:

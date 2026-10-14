@@ -219,10 +219,14 @@ def push_outcome(status: int | None) -> PushOutcome:
     return PushOutcome.FAILED
 
 
-def should_reap(failure_count: int) -> bool:
-    """Whether the daily job deletes a device: :data:`PUSH_MAX_FAILURES` failures in a row
-    (keksdose ``reap_dead_subscriptions``)."""
-    return failure_count >= PUSH_MAX_FAILURES
+def should_reap(failure_count: int, *, limit: int = PUSH_MAX_FAILURES) -> bool:
+    """Whether the daily job deletes a device: ``limit`` failures in a row,
+    :data:`PUSH_MAX_FAILURES` unless the app sets its own (keksdose's ``push_max_failures``
+    setting, ``reap_dead_subscriptions``). A ``limit`` below 1 is a :class:`ValueError`: it
+    would reap a device that never failed."""
+    if limit < 1:
+        raise ValueError(f"a reap limit is 1 or more: {limit}")
+    return failure_count >= limit
 
 
 def vapid_subject(support_address: str) -> str:

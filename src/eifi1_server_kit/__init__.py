@@ -23,8 +23,9 @@ models, sessions or commits. Import from the submodules:
 * :mod:`eifi1_server_kit.mail` — mail texts per language, one escaped layout as a whole
   document, Resend and console transports, a notification mail's one-click unsubscribe;
 * :mod:`eifi1_server_kit.notifications` — notifications: the app's types, the settings
-  resource and its PATCH, delivery, quiet hours and the digest's period, Web Push's
-  shapes and outcomes, the signed unsubscribe token, the inbox's shapes;
+  resource and its PATCH, delivery, quiet hours and the digest's period, a job's mail
+  owed until it went, Web Push's shapes and outcomes, the signed unsubscribe token, the
+  inbox's shapes;
 * :mod:`eifi1_server_kit.feedback` — the feedback contract (schemas, enums, rules,
   crash filing, erasure, attachment URLs), and layer 2: the feedback service behind ports
   each app implements, its routes as ``feedback.router.feedback_router`` (the ``fastapi``

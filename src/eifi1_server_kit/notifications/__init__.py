@@ -12,14 +12,18 @@ cited per rule.
   the switches as they apply, and the PATCH's rules for ``types``;
 * :mod:`~eifi1_server_kit.notifications.delivery` — who gets an inbox row, a push, a mail;
 * :mod:`~eifi1_server_kit.notifications.timing` — quiet hours, the zone, the digest's period;
+* :mod:`~eifi1_server_kit.notifications.retry` — a job's notification mail that failed to
+  send: the window it is owed in, the marker, the ``Idempotency-Key`` (§9.4);
 * :mod:`~eifi1_server_kit.notifications.push` — the device shapes, the payload, a push
   service's answer, the VAPID subject;
 * :mod:`~eifi1_server_kit.notifications.unsubscribe` — the signed one-click token;
 * :mod:`~eifi1_server_kit.notifications.inbox` — the inbox's shapes;
 * :mod:`~eifi1_server_kit.notifications.errors` — the coded refusals.
 
-The mail's half — ``List-Unsubscribe`` and the footer line — is in
-:mod:`eifi1_server_kit.mail` (:class:`~eifi1_server_kit.mail.MailUnsubscribe`), and the
+The mail's half — ``List-Unsubscribe`` and the footer line, and a job's mail's
+``Idempotency-Key`` — is in :mod:`eifi1_server_kit.mail`
+(:class:`~eifi1_server_kit.mail.MailUnsubscribe`,
+:attr:`~eifi1_server_kit.mail.MailMessage.idempotency_key`), and the
 PATCH's plain fields go through :func:`eifi1_server_kit.settings.apply_patch` with
 ``skip=SETTINGS_SKIP``.
 """
@@ -75,6 +79,14 @@ from eifi1_server_kit.notifications.resource import (
     apply_switches_patch,
     resolve_switches,
 )
+from eifi1_server_kit.notifications.retry import (
+    MAIL_EVENT_PATTERN,
+    MAIL_LATE_DAYS,
+    MAIL_MARKER_RETENTION,
+    MailMarker,
+    mail_due,
+    mail_event,
+)
 from eifi1_server_kit.notifications.timing import (
     DEFAULT_ZONE,
     DIGEST_CADENCES,
@@ -100,6 +112,9 @@ __all__ = [
     "DIGEST_CADENCES",
     "DIGEST_LATE_DAYS",
     "INBOX_RETENTION",
+    "MAIL_EVENT_PATTERN",
+    "MAIL_LATE_DAYS",
+    "MAIL_MARKER_RETENTION",
     "PUSH_MAX_FAILURES",
     "PUSH_PAYLOAD_LIMIT",
     "PUSH_TEST_TYPE",
@@ -117,6 +132,7 @@ __all__ = [
     "InboxMarkRead",
     "InboxMarkReadResponse",
     "InboxResponse",
+    "MailMarker",
     "NotificationError",
     "NotificationSettingsResponse",
     "NotificationSettingsUpdate",
@@ -146,6 +162,8 @@ __all__ = [
     "digest_tag",
     "in_quiet_hours",
     "is_known_zone",
+    "mail_due",
+    "mail_event",
     "plan_delivery",
     "push_outcome",
     "read_unsubscribe_token",

@@ -245,6 +245,17 @@ def test_an_app_without_a_digest_refuses_types_null_alone() -> None:
         apply_patch({}, body, not_nullable=SETTINGS_NOT_NULLABLE, skip=SETTINGS_SKIP)
 
 
+def test_a_body_of_types_alone_has_no_row_to_write() -> None:
+    """kastlan's 0.36 finding 3: ``types`` is the whole body, so there is no row — ``None``,
+    not a throwaway object. Rule 3 still holds; a body with a plain field needs its row."""
+    sent = KastlanUpdate.model_validate({"types": {"invoices_overdue": {"email": True}}})
+    assert apply_patch(None, sent, not_nullable=SETTINGS_SKIP, skip=SETTINGS_SKIP) == {}
+    with pytest.raises(PatchNullError):
+        apply_patch(None, KastlanUpdate.model_validate({"types": None}), not_nullable=SETTINGS_SKIP, skip=SETTINGS_SKIP)
+    with pytest.raises(TypeError, match="every field of KeksdoseUpdate is skipped; not skipped: quiet_hours_start,"):
+        apply_patch(None, KeksdoseUpdate(), not_nullable=SETTINGS_NOT_NULLABLE, skip=SETTINGS_SKIP)
+
+
 def test_rule_4_a_type_the_account_doesnt_receive() -> None:
     """kastlan's tenant: the registry knows the type, the account doesn't receive it."""
     tenant = KASTLAN.receivable(lambda _type: False)

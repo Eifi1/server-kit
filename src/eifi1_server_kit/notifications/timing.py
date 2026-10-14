@@ -15,7 +15,8 @@
   :data:`DIGEST_LATE_DAYS` days after it, so a missed run doesn't skip it and a doubled
   run doesn't repeat it (decision 5). The app stores the key it sent (``digest_sent
   VARCHAR(16)`` on its settings row) in the transaction that writes the digest's inbox
-  row; an app with no inbox, when the mail is handed to the mailer. keksdose sent on the
+  row; an app with no inbox, once the mail's send answered ``True`` (§9.2 decision 9), as
+  a job's notification mail writes its marker (:mod:`~.retry`). keksdose sent on the
   Monday or the 1st only, with no marker (``push_notifications.py:1094-1119``).
 """
 
@@ -151,7 +152,9 @@ def digest_due(
     into the period: Monday to Thursday for a week, the 1st to the 4th for a month. Store
     the answer as the new ``sent`` in the transaction that writes the digest's inbox row,
     whether or not quiet hours let the push go: a marker set on the push would write a new
-    row every day of the grace. ``now`` is aware.
+    row every day of the grace. An app with no inbox stores it once the mail's send
+    answered ``True``, so a failed send is tried again the next day of the grace (§9.2
+    decision 9). ``now`` is aware.
     """
     _require_aware(now)
     if late_days < 0:

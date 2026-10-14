@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -173,10 +174,16 @@ async def test_the_console_mailer_logs_the_link(caplog: pytest.LogCaptureFixture
 
 
 def test_the_account_notices_have_their_words() -> None:
-    """KS S5: the two account mails with no token. ``email_change_notice`` is the three
-    apps' word already; the deletion mail is keksdose's ``account_deletion`` (kastlan sent
-    ``deletion``, Kurvenschmiede ``deletion_request``). No word repeats a token's."""
-    assert [str(kind) for kind in AccountNoticeKind] == ["email_change_notice", "account_deletion"]
+    """KS S5: the account mails with no token. ``email_change_notice`` is the three apps'
+    word already; the deletion mail is keksdose's ``account_deletion`` (kastlan sent
+    ``deletion``, Kurvenschmiede ``deletion_request``); ``work_transferred_notice`` tells an
+    active former owner that an admin handed their work on (notifications §9.3). No word
+    repeats a token's."""
+    assert [str(kind) for kind in AccountNoticeKind] == [
+        "email_change_notice",
+        "account_deletion",
+        "work_transferred_notice",
+    ]
     assert not {str(kind) for kind in AccountNoticeKind} & {str(kind) for kind in OneTimeTokenKind}
 
 
@@ -427,3 +434,59 @@ async def test_the_console_mailer_logs_the_headers(caplog: pytest.LogCaptureFixt
         assert await ConsoleMailer().send("ada@example.com", message, kind="share_granted")
     assert "[email:console] share_granted to=ada@example.com" in caplog.text
     assert f"List-Unsubscribe: <{ONE_CLICK}>\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\n" in caplog.text
+
+
+# ── a job's notification mail: its own Idempotency-Key (notifications §9.4) ─
+
+KEY = "invoices_overdue:42:2026-10-13:17:2026-10-14"
+
+
+def test_a_message_has_no_key_unless_given_one() -> None:
+    assert MESSAGE.idempotency_key is None
+    assert render_mail("en", RESET, link=LINK, name="Ada", hours=1, unsubscribe=WAY_OUT).idempotency_key is None
+    assert replace(MESSAGE, idempotency_key=KEY).idempotency_key == KEY
+    assert MailMessage(subject="s", text="t", idempotency_key="x" * 256).idempotency_key == "x" * 256
+
+
+@pytest.mark.parametrize("key", ["", " ", " a", "a b", "a\r\nBcc: b@example.com", "a\tb", "Zürich", "x" * 257])
+def test_an_idempotency_key_is_one_header_line_of_at_most_256(key: str) -> None:
+    """Resend takes 1–256 characters (a 400 ``invalid_idempotency_key`` otherwise), and the
+    key is a request header's value: refused here, not at the send, which never raises."""
+    with pytest.raises(ValueError, match="idempotency key is 1–256 printable ASCII"):
+        MailMessage(subject="s", text="t", idempotency_key=key)
+
+
+async def test_resend_sends_the_messages_key_on_both_tries() -> None:
+    """Two runs on one day send one mail: Resend answers the second from the first."""
+    resend = _Resend(503, 200)
+    assert await resend.client().send("ada@example.com", replace(MESSAGE, idempotency_key=KEY), kind="invoices_overdue")
+    assert [request.headers["Idempotency-Key"] for request in resend.requests] == [KEY, KEY]
+    payload = json.loads(resend.requests[0].content)
+    assert "idempotency_key" not in payload and "headers" not in payload, "a request header, not a mail header"
+
+
+async def test_resend_without_a_key_sends_a_new_one_per_mail() -> None:
+    resend = _Resend(200, 200)
+    client = resend.client()
+    assert await client.send("ada@example.com", MESSAGE, kind="verification")
+    assert await client.send("ada@example.com", MESSAGE, kind="verification")
+    first, second = (request.headers["Idempotency-Key"] for request in resend.requests)
+    assert first != second and first.startswith("verification-") and second.startswith("verification-")
+
+
+async def test_a_409_on_the_key_is_not_sent_and_not_retried(caplog: pytest.LogCaptureFixture) -> None:
+    """Resend's 409: the key's first request is still running
+    (``concurrent_idempotent_requests``) — it has the mail, and its run writes the marker —
+    or the key went with another body today (``invalid_idempotent_request``); tomorrow's
+    key is a new one."""
+    resend = _Resend(409)
+    with caplog.at_level(logging.WARNING, logger="eifi1_server_kit.mail"):
+        sent = await resend.client().send("ada@example.com", replace(MESSAGE, idempotency_key=KEY), kind="x_y")
+    assert sent is False and len(resend.requests) == 1
+    assert "Resend refused the x_y mail (attempt 1): 409" in caplog.text
+
+
+async def test_the_console_mailer_ignores_the_key(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
+        assert await ConsoleMailer().send("ada@example.com", replace(MESSAGE, idempotency_key=KEY), kind="x_y")
+    assert "[email:console] x_y to=ada@example.com" in caplog.text and KEY not in caplog.text

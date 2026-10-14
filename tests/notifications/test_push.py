@@ -226,6 +226,20 @@ def test_ten_failures_in_a_row_reap_the_device() -> None:
     assert should_reap(10) and should_reap(11)
 
 
+def test_the_app_may_set_its_own_reap_limit() -> None:
+    """keksdose's 0.36 finding 2: its ``push_max_failures`` setting is the limit."""
+    assert not should_reap(4, limit=5) and should_reap(5, limit=5)
+    assert not should_reap(0, limit=1) and should_reap(1, limit=1)
+    assert not should_reap(10, limit=20) and should_reap(20, limit=20)
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_a_reap_limit_below_one_is_refused(limit: int) -> None:
+    """It would reap a device that never failed."""
+    with pytest.raises(ValueError, match=f"a reap limit is 1 or more: {limit}"):
+        should_reap(0, limit=limit)
+
+
 def test_the_vapid_subject_is_the_support_address() -> None:
     assert vapid_subject("support@keksdose.app") == "mailto:support@keksdose.app"
     assert vapid_subject(" support@kastlan.ch ") == "mailto:support@kastlan.ch"

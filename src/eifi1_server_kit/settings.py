@@ -88,7 +88,7 @@ class PatchNullError(ValueError):
 
 
 def apply_patch(
-    obj: object,
+    obj: object | None,
     update: BaseModel,
     *,
     not_nullable: Iterable[str],
@@ -125,12 +125,21 @@ def apply_patch(
     first for a JSON column. Answers ``{name: value}`` for every field written, in the
     model's order — for the app's audit or its "did the locale change" check.
 
+    **``obj=None`` when every field is skipped**: a body whose fields all have their own
+    code (notifications' settings in an app with no push and no digest: ``types`` alone)
+    has nothing to write onto. Rule 3 is still checked; nothing is written, and the answer
+    is ``{}``::
+
+        apply_patch(None, body, not_nullable=SETTINGS_SKIP, skip=SETTINGS_SKIP)
+
     Programming errors, raised as :class:`TypeError` / :class:`ValueError` so a test meets
     them on the first call: a model that doesn't forbid unknown fields (rule 4 — without
     ``extra="forbid"`` a typo would be a silent no-op), and a ``not_nullable``, ``defaults``
     or ``skip`` name that is no field of the model (a typo there would switch the guard off
     without a word), or one name in both ``not_nullable`` and ``defaults``, or in both
-    ``skip`` and ``defaults`` (a skipped field is not written, so it has no default here).
+    ``skip`` and ``defaults`` (a skipped field is not written, so it has no default here),
+    or ``obj=None`` with a field that is not skipped (a :class:`TypeError` whatever the
+    body sent: a write onto nothing would be lost).
     """
     model = type(update)
     if model.model_config.get("extra") != "forbid":
@@ -145,6 +154,11 @@ def apply_patch(
         raise ValueError(f"a field is either not nullable or reset to a default, not both: {', '.join(both)}")
     if both := sorted(skipped & resets.keys()):
         raise ValueError(f"a skipped field is the caller's to write, so it has no default: {', '.join(both)}")
+    if obj is None and (unskipped := [name for name in fields if name not in skipped]):
+        raise TypeError(
+            f"apply_patch(None, …) writes nothing, so every field of {model.__name__} is skipped; "
+            f"not skipped: {', '.join(unskipped)}"
+        )
 
     sent = [name for name in fields if name in update.model_fields_set]
     if nulls := [name for name in sent if name in refused_null and getattr(update, name) is None]:
