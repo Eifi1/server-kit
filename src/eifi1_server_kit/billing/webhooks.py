@@ -130,8 +130,10 @@ def row_changes(
     * Always ``provider``, and the provider's ``provider_customer_id`` and
       ``provider_subscription_id`` where the event names them — the link the portal and a
       deletion's cancellation need (§12.23).
-    * A snapshot also sets ``current_period_end`` and ``cancel_at_period_end`` where it
-      carries them, and ``updated_from_event_at`` (the ordering guard's mark).
+    * A snapshot also sets ``current_period_end``, ``cancel_at_period_end`` and
+      ``provider_price_id`` (the price it pays, §15.2.10) where it carries them, and
+      ``updated_from_event_at`` (the ordering guard's mark) — under a grant too, so a plan
+      switch under a grant still shows that it landed (the overview's ``paid``).
     * Unless a grant holds, a snapshot then sets ``status``, ``source`` (``provider``) and,
       given ``plan_code``, the plan. While a grant holds those stay as the grant set them,
       and :func:`~eifi1_server_kit.billing.in_good_standing` reads the provider's paid
@@ -156,6 +158,8 @@ def row_changes(
         changes["current_period_end"] = event.current_period_end
     if event.cancel_at_period_end is not None:
         changes["cancel_at_period_end"] = event.cancel_at_period_end
+    if event.plan_price_id is not None:
+        changes["provider_price_id"] = event.plan_price_id
     changes["updated_from_event_at"] = event.occurred_at
     if grant_holds:
         return changes
@@ -198,7 +202,9 @@ async def dispatch[RowT: SubscriptionRow](
        :attr:`~DispatchOutcome.DUPLICATE` too, and nothing else happens;
     3. **load** the payer's row — by ``event.payer_ref`` first (the checkout's custom data,
        :func:`~eifi1_server_kit.billing.checkout_custom_data`), else by the provider's
-       subscription or customer id. None → :attr:`~DispatchOutcome.NO_PAYER`;
+       subscription id. **Never by the customer id** (§15.2.11): one Paddle customer per
+       e-mail address serves every app and every company a person pays for, so it would
+       land one payer's event on another's row. None → :attr:`~DispatchOutcome.NO_PAYER`;
     4. **the ordering guard** (§5): a snapshot older than the row's
        ``updated_from_event_at`` → :attr:`~DispatchOutcome.STALE`. A notice never moves
        the mark, so a late notice cannot hide a newer state;

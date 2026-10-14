@@ -1,14 +1,16 @@
 """The provider's API behind one port, and what the routes check before they call it.
 
-``docs/billing-harmonization.md`` §14.2, §14.4–§14.6 and §14.8 (with §12.23 and §12.37) in
+``docs/billing-harmonization.md`` §14.2, §14.4–§14.6, §14.8 (with §12.23 and §12.37) and §15 in
 ``Eifi1/ui-kit``. No httpx here: :class:`BillingProviderClient` is the port every app's
 billing service calls, :func:`billing_provider_client` answers the deployment's client —
 :class:`~eifi1_server_kit.billing.PaddleClient` (the ``billing`` extra) for Paddle with a
 key, :class:`NoProviderClient` otherwise — and the rest is pure.
 
-**Four calls, each a hosted page or a change at the provider** (§2.8): a checkout for one
-price, a customer-portal session, a cancellation, and undoing a cancellation the period's
-end would carry out. No card field, payment method or invoice copy is ever in an app.
+**Seven calls, each a hosted page, a figure or a change at the provider** (§2.8, §15.2):
+a checkout for one price, a customer-portal session, a cancellation, undoing a
+cancellation the period's end would carry out, a plan switch's preview and the switch
+itself, and the shared customer for an e-mail address. No card field, payment method or
+invoice copy is ever in an app.
 
 **The seam is module-level, not a FastAPI override** (§14.8, keksdose's review): a
 deletion's cancellation runs in the service layer, where a request's dependency overrides
@@ -30,8 +32,36 @@ it with :class:`~eifi1_server_kit.billing.testing.FakeBillingProvider`::
             price_id=settings.billing_price_id(body.plan, body.currency, body.interval),   # 503
             custom_data=checkout_custom_data(payer_ref(payer), app=settings.billing_app),
             customer_id=row.provider_customer_id,
+            customer_email=payer.sign_in_email,         # without a customer: found or created
         )                                                                   # 502 billing_provider_unavailable
         return CheckoutAnswer(url=url)
+
+**The shared customer** (§15.2.11): one Paddle customer per e-mail address, across the
+apps. The row's ``provider_customer_id`` once a webhook linked it; before that the client
+finds or creates the customer for the payer's sign-in e-mail (kastlan: the admin who checks
+out) and puts it on the transaction. The id isn't written to the row at checkout:
+``at_provider`` keeps meaning "the webhook linked this payer". An app reads only its own
+subscription, and finds a webhook's row by the payer reference, then the subscription id —
+never the customer id, which another app's or another company's payment shares.
+
+**The plan switch** (§15.2.10): immediate and prorated both ways — an upgrade charges the
+difference now, a downgrade credits the unused part — and a declined upgrade changes
+nothing. Both routes answer :class:`~eifi1_server_kit.billing.PlanSwitchPreview`, behind
+the app's demo guard, for whoever may check out::
+
+    @router.post("/billing/plan", response_model=PlanSwitchPreview)       # and /billing/plan/preview
+    async def switch(body: PlanSwitchRequest, payer: Payer = Depends(current_payer)) -> PlanSwitchPreview:
+        settings.require_billing_enabled()                                  # 404
+        row = await row_of(payer)
+        require_plan_switch(row, now())                                     # 409 billing_not_subscribed
+        price_id = switch_price(PLANS, row, body, settings, sold=SOLD)      # 422 / 409 billing_plan_unchanged
+        answer = await billing_client().change_plan(                        # preview_plan_change for the preview
+            subscription_id=row.provider_subscription_id, price_id=price_id
+        )                                                                   # 502 billing_provider_unavailable
+        return plan_switch_preview(answer, PLANS[body.plan], await usage_of(payer), interval=body.interval)
+
+The row follows through the ``subscription.updated`` Paddle sends: its plan, and its
+``provider_price_id`` even under a grant (the overview's ``paid``).
 
 **The way back is configuration, never a request field** (§14.4): the pay page's
 ``successUrl`` or the hosted checkout's redirect lands on the app's subscription page with
@@ -55,7 +85,7 @@ from eifi1_server_kit.billing.standing import SubscriptionRow, SubscriptionSourc
 if TYPE_CHECKING:
     import httpx
 
-    from eifi1_server_kit.billing.schemas import CheckoutRequest
+    from eifi1_server_kit.billing.schemas import CheckoutRequest, PlanSwitchRequest, ProviderSwitchPreview
 
 __all__ = [
     "CHECKOUT_RETURN_PARAM",
@@ -69,8 +99,10 @@ __all__ = [
     "cancel_for_deletion",
     "checkout_return_url",
     "require_new_checkout",
+    "require_plan_switch",
     "resume_after_withdrawal",
     "sold_plan",
+    "switch_price",
 ]
 
 logger = logging.getLogger("eifi1_server_kit.billing")
@@ -91,7 +123,7 @@ CHECKOUT_RETURN_VALUE = "done"
 
 
 class BillingProviderClient(Protocol):
-    """The provider's four calls (§14.2), as every app's billing service makes them.
+    """The provider's calls (§14.2, §15.2), as every app's billing service makes them.
     :class:`~eifi1_server_kit.billing.PaddleClient` is the one implementation;
     :class:`NoProviderClient` refuses, and the tests' fake records
     (:class:`~eifi1_server_kit.billing.testing.FakeBillingProvider`).
@@ -108,12 +140,15 @@ class BillingProviderClient(Protocol):
         custom_data: Mapping[str, str],
         customer_id: str | None = None,
         locale: str | None = None,
+        customer_email: str | None = None,
     ) -> str:
         """The provider's checkout for one price (quantity 1), carrying ``custom_data``
         (:func:`~eifi1_server_kit.billing.checkout_custom_data`; the client adds its app
-        tag) and the payer's customer when known. ``locale`` — the buyer's, as the app
-        stores it (``de-CH``) — reaches only a hosted checkout, as Paddle names it
-        (:func:`~eifi1_server_kit.billing.paddle_locale`)."""
+        tag) and the payer's customer: ``customer_id`` when the row has one, else the one
+        :meth:`customer_for` answers for ``customer_email`` (§15.2.11) — the payer's
+        sign-in e-mail; with neither, the checkout asks for one. ``locale`` — the buyer's,
+        as the app stores it (``de-CH``) — reaches only a hosted checkout, as Paddle names
+        it (:func:`~eifi1_server_kit.billing.paddle_locale`)."""
         ...
 
     async def portal_url(
@@ -133,6 +168,22 @@ class BillingProviderClient(Protocol):
 
     async def remove_scheduled_cancel(self, *, subscription_id: str) -> None:
         """Undo a cancellation at the period's end (§14.8)."""
+        ...
+
+    async def preview_plan_change(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        """What switching the subscription to ``price_id`` would charge or credit now, and
+        the next charge (§15.2.10) — nothing changes."""
+        ...
+
+    async def change_plan(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        """Switch the subscription to ``price_id`` (quantity 1), immediately and prorated;
+        a declined charge changes nothing (a 502). Answers the figures the switch was made
+        on."""
+        ...
+
+    async def customer_for(self, *, email: str) -> str:
+        """The provider's customer for ``email`` — found, else created (§15.2.11): one
+        customer per address across the apps."""
         ...
 
 
@@ -158,6 +209,7 @@ class NoProviderClient:
         custom_data: Mapping[str, str],
         customer_id: str | None = None,
         locale: str | None = None,
+        customer_email: str | None = None,
     ) -> str:
         raise self._refuse()
 
@@ -174,6 +226,15 @@ class NoProviderClient:
         raise self._refuse()
 
     async def remove_scheduled_cancel(self, *, subscription_id: str) -> None:
+        raise self._refuse()
+
+    async def preview_plan_change(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        raise self._refuse()
+
+    async def change_plan(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        raise self._refuse()
+
+    async def customer_for(self, *, email: str) -> str:
         raise self._refuse()
 
 
@@ -268,10 +329,65 @@ def require_new_checkout(row: SubscriptionRow, now: datetime) -> None:
       says it runs.
 
     A subscription already set to cancel at its period's end never blocks: the payer may
-    subscribe again, to another plan.
+    subscribe again, to another plan. A plan change while one runs is the plan switch
+    (:func:`require_plan_switch`).
     """
     if _provider_subscription_runs(row, now):
         raise BillingError(BillingErrorCode.BILLING_ALREADY_SUBSCRIBED)
+
+
+def require_plan_switch(row: SubscriptionRow, now: datetime) -> None:
+    """Refuse a plan switch while no provider subscription runs (§15.2.10): 409
+    ``billing_not_subscribed`` — the inverse of :func:`require_new_checkout`, by the same
+    rule, so exactly one of the two passes for any row. The page offers the checkout
+    instead. A subscription set to cancel at its period's end doesn't run here either: the
+    payer subscribes again, to the plan they want, through a checkout."""
+    if not _provider_subscription_runs(row, now):
+        raise BillingError(BillingErrorCode.BILLING_NOT_SUBSCRIBED)
+
+
+def switch_price(
+    catalogue: Mapping[str, PlanSpec],
+    row: SubscriptionRow,
+    request: PlanSwitchRequest,
+    settings: BillingSettings,
+    *,
+    sold: Collection[str] | None = None,
+) -> str:
+    """The provider's price id a plan switch asks for (§15.2.10): ``request``'s plan per
+    its interval, in the currency the row pays (its ``provider_price_id`` as the settings
+    name it — a switch keeps the subscription's currency).
+
+    * 422 ``billing_plan_not_sold``: a plan the catalogue doesn't have, one outside
+      ``sold`` (a payer on a plan no longer sold keeps it until switching away, but never
+      switches to one), or one without a price for that currency and interval;
+    * 409 ``billing_plan_unchanged``: the price the row pays now;
+    * 503 ``billing_not_configured``: the row has no ``provider_price_id`` yet (no
+      snapshot has written it: a row from before 0.12 until its next
+      ``subscription.updated``) or one the settings don't name, or the settings lack the
+      current price id for a combination that IS sold
+      (:meth:`~eifi1_server_kit.billing.BillingSettings.billing_price_id`).
+
+    Call it after :func:`require_plan_switch`.
+    """
+    paying = row.provider_price_id
+    ref = settings.billing_price_ref(paying) if paying else None
+    if ref is None:
+        raise BillingError(
+            BillingErrorCode.BILLING_NOT_CONFIGURED, f"No known price on the row ({paying or 'none yet'})"
+        )
+    code = normalize_plan(request.plan)
+    plan = catalogue.get(code)
+    on_sale = sold is None or code in {normalize_plan(item) for item in sold}
+    if plan is None or not on_sale or plan.price(ref.currency, request.interval) is None:
+        raise BillingError(
+            BillingErrorCode.BILLING_PLAN_NOT_SOLD,
+            f"The {code} plan is not sold in {ref.currency} per {request.interval}",
+        )
+    price_id = settings.billing_price_id(code, ref.currency, request.interval)
+    if price_id == paying:
+        raise BillingError(BillingErrorCode.BILLING_PLAN_UNCHANGED)
+    return price_id
 
 
 async def cancel_for_deletion(row: SubscriptionRow, client: BillingProviderClient) -> CancelOutcome | None:

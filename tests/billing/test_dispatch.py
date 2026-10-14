@@ -327,6 +327,7 @@ def test_row_changes_names_the_contracts_columns() -> None:
         "provider_subscription_id",
         "current_period_end",
         "cancel_at_period_end",
+        "provider_price_id",
         "updated_from_event_at",
         "status",
         "source",
@@ -336,8 +337,29 @@ def test_row_changes_names_the_contracts_columns() -> None:
     assert held == {
         "provider": BillingProvider.PADDLE,
         "provider_subscription_id": "sub_1",
+        "provider_price_id": "pri_pro_y",
         "updated_from_event_at": NOW,
     }
+    # A snapshot without a price leaves the row's.
+    assert "provider_price_id" not in row_changes(_event(plan_price_id=None))
+
+
+async def test_a_switch_under_a_grant_writes_the_price_it_pays() -> None:
+    """§15.2.10: the row keeps the price it pays, written by every snapshot that carries
+    one — a grant's included, whose plan, status and source stay the grant's — so the
+    overview's ``paid`` shows that a switch landed."""
+    granted = Row(
+        plan_code="pro",
+        status=SubscriptionStatus.COMPED,
+        source=SubscriptionSource.MANUAL,
+        provider_subscription_id="sub_1",
+        provider_price_id="pri_pro_y_2025",
+    )
+    store, payers = _Store(), _Payers({"user:1": granted})
+    switched = _event(provider_type="subscription.updated", kind=EventKind.SUBSCRIPTION_UPDATED)
+    assert await _dispatch(switched, store, payers) is DispatchOutcome.GRANT_HOLDS
+    assert (granted.plan_code, granted.status, granted.source) == ("pro", "comped", "manual")
+    assert granted.provider_price_id == "pri_pro_y"
 
 
 # --- the answer policy -------------------------------------------------------------------

@@ -2,7 +2,8 @@
 ``Eifi1/ui-kit``; since ui-kit 0.34 the contract's body carries every settled amendment).
 
 Layer 1, like the rest of the kit: pure functions, Pydantic models and ports — no tables and
-no routes, and one request each for checkout, portal, cancel and undoing a cancel, through
+no routes, and one request each for checkout, portal, cancel, undoing a cancel, a plan
+switch's preview and the switch, and the shared customer (§15), through
 :mod:`~eifi1_server_kit.billing.paddle`, only with the ``billing`` extra
 (``eifi1-server-kit[billing]``, httpx; imported lazily, so importing this package never
 needs it). The subscription row and the event table, the routes, the read-only gate's
@@ -32,7 +33,8 @@ a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy, depre
 * :mod:`~eifi1_server_kit.billing.provider` — the provider's port
   (:class:`BillingProviderClient`), the deployment's client
   (:func:`billing_provider_client`), and what a route checks first (:func:`sold_plan`,
-  :func:`require_new_checkout`); a deletion's cancellation and its undoing
+  :func:`require_new_checkout`; for a plan switch :func:`require_plan_switch` and
+  :func:`switch_price`); a deletion's cancellation and its undoing
   (:func:`cancel_for_deletion`, :func:`resume_after_withdrawal`); the checkout's way back
   (:func:`checkout_return_url`);
 * :mod:`~eifi1_server_kit.billing.paddle` — :class:`PaddleClient`, Paddle Billing's API
@@ -45,8 +47,10 @@ a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy, depre
   policy;
 * :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, the plans
   (:class:`PlanOut` with :class:`PlanPrices`, :func:`plans_out`), checkout, the operator's plans
-  (:class:`AdminPlan`, :func:`admin_plans_out`) and plan change, and a sync reply's refused
-  changes;
+  (:class:`AdminPlan`, :func:`admin_plans_out`) and plan change, the payer's plan switch
+  (:class:`PlanSwitchRequest`, :class:`PlanSwitchPreview`, :func:`plan_switch_preview`) and
+  what the payer pays (:class:`PaidPrice`, the overview's ``paid``), and a sync reply's
+  refused changes;
 * :mod:`~eifi1_server_kit.billing.errors` — :class:`BillingError` and
   :class:`PlanLimitError`, both answered by
   :func:`~eifi1_server_kit.errors.install_contract_error_handlers`.
@@ -67,6 +71,7 @@ from eifi1_server_kit.billing.errors import (
 )
 from eifi1_server_kit.billing.events import (
     APP_KEY,
+    BUYER_KEY,
     PADDLE_EVENT_KINDS,
     PADDLE_STATUSES,
     PAYER_REF_KEY,
@@ -126,8 +131,10 @@ from eifi1_server_kit.billing.provider import (
     cancel_for_deletion,
     checkout_return_url,
     require_new_checkout,
+    require_plan_switch,
     resume_after_withdrawal,
     sold_plan,
+    switch_price,
 )
 from eifi1_server_kit.billing.schemas import (
     AdminPlan,
@@ -135,14 +142,19 @@ from eifi1_server_kit.billing.schemas import (
     BillingStatus,
     CheckoutAnswer,
     CheckoutRequest,
+    PaidPrice,
     PlanChangeRequest,
     PlanChangeResponse,
     PlanIntervalPrices,
     PlanOut,
     PlanPrices,
+    PlanSwitchPreview,
+    PlanSwitchRequest,
     PortalRequest,
+    ProviderSwitchPreview,
     SyncRefusal,
     admin_plans_out,
+    plan_switch_preview,
     plans_out,
 )
 from eifi1_server_kit.billing.settings import BillingProvider, BillingSettings, PaddleEnvironment, PriceRef
@@ -181,6 +193,7 @@ __all__ = [
     "BETA_FREE_MONTHS",
     "BILLING_ERROR_DETAIL",
     "BILLING_ERROR_STATUS",
+    "BUYER_KEY",
     "CHECKOUT_RETURN_PARAM",
     "CHECKOUT_RETURN_VALUE",
     "CURRENCY_EXPONENTS",
@@ -228,6 +241,7 @@ __all__ = [
     "PaddleClient",
     "PaddleEnvironment",
     "PaddleError",
+    "PaidPrice",
     "PlanChangeRequest",
     "PlanChangeResponse",
     "PlanCode",
@@ -236,10 +250,13 @@ __all__ = [
     "PlanOut",
     "PlanPrices",
     "PlanSpec",
+    "PlanSwitchPreview",
+    "PlanSwitchRequest",
     "PoisonEventError",
     "PortalRequest",
     "PortalTarget",
     "PriceRef",
+    "ProviderSwitchPreview",
     "ResumeOutcome",
     "SubscriptionRow",
     "SubscriptionSource",
@@ -269,12 +286,15 @@ __all__ = [
     "paddle_locale",
     "parse_webhook_event",
     "plan_catalogue",
+    "plan_switch_preview",
     "plans_out",
     "refuse_billing_read_only",
     "require_new_checkout",
+    "require_plan_switch",
     "resume_after_withdrawal",
     "row_changes",
     "sold_plan",
+    "switch_price",
     "trial_ends_at",
     "verify_paddle_signature",
     "verify_webhook_signature",

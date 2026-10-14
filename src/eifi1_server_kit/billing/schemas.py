@@ -1,5 +1,5 @@
-"""Billing's wire shapes (``docs/billing-harmonization.md`` §3.1, §4, §6, §12.5, §14.5 and
-§14.12 in ``Eifi1/ui-kit``).
+"""Billing's wire shapes (``docs/billing-harmonization.md`` §3.1, §4, §6, §12.5, §14.5,
+§14.12 and §15.2.10 in ``Eifi1/ui-kit``).
 
 Like the other kit schemas, meant to be used as they are or SUBCLASSED: the app adds its
 fields and narrows a type. The request bodies refuse unknown fields (``extra="forbid"``): a
@@ -12,7 +12,7 @@ float: a plan's prices are integer minor units (§4), formatted by the kit's
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from typing import Annotated, Self, TypedDict
 
@@ -22,6 +22,7 @@ from eifi1_server_kit.auth.schemas import UtcDateTime
 from eifi1_server_kit.billing.errors import BILLING_ERROR_DETAIL, BillingErrorCode
 from eifi1_server_kit.billing.plans import (
     BillingCurrency,
+    BillingInterval,
     Currency,
     Interval,
     MinorUnits,
@@ -31,6 +32,7 @@ from eifi1_server_kit.billing.plans import (
     normalize_plan,
 )
 from eifi1_server_kit.billing.provider import PortalTarget
+from eifi1_server_kit.billing.settings import PriceRef
 from eifi1_server_kit.billing.standing import (
     SubscriptionRow,
     SubscriptionSource,
@@ -45,14 +47,19 @@ __all__ = [
     "BillingStatus",
     "CheckoutAnswer",
     "CheckoutRequest",
+    "PaidPrice",
     "PlanChangeRequest",
     "PlanChangeResponse",
     "PlanIntervalPrices",
     "PlanOut",
     "PlanPrices",
+    "PlanSwitchPreview",
+    "PlanSwitchRequest",
     "PortalRequest",
+    "ProviderSwitchPreview",
     "SyncRefusal",
     "admin_plans_out",
+    "plan_switch_preview",
     "plans_out",
 ]
 
@@ -63,6 +70,18 @@ class BillingStatus(BaseModel):
     billing page, its nav entry, banners and search entries."""
 
     billing_enabled: bool
+
+
+class PaidPrice(BaseModel):
+    """What the payer pays at the provider (§15.2.10): ``{plan, interval, currency}`` — the
+    row's ``provider_price_id`` as the settings name it
+    (:meth:`~eifi1_server_kit.billing.BillingSettings.billing_price_ref`). The overview's
+    ``paid``. Under a grant the row keeps the grant's plan, so this is what shows that a
+    plan switch landed, and ui-kit's ``checkoutFingerprint`` reads its plan and interval."""
+
+    plan: PlanCode
+    interval: Interval
+    currency: Currency
 
 
 class BillingOverview(BaseModel):
@@ -101,6 +120,10 @@ class BillingOverview(BaseModel):
     #: True: both show — a payer who bought under a grant keeps the way to the invoices and
     #: to "Cancel" (§12.26).
     at_provider: bool = False
+    #: The price the row says the payer pays (§15.2.10), from its ``provider_price_id``;
+    #: ``None`` with no price yet (no provider snapshot), one the settings don't name, or
+    #: without ``price_ref``. It stays after the subscription ended: ``status`` says that.
+    paid: PaidPrice | None = None
 
     @classmethod
     def from_row(
@@ -113,6 +136,7 @@ class BillingOverview(BaseModel):
         now: datetime,
         retry_grace: timedelta | None = None,
         launch: datetime | None = None,
+        price_ref: Callable[[str], PriceRef | None] | None = None,
     ) -> Self:
         """The overview of ``row``, whose plan is ``plan`` (the catalogue's entry for
         ``row.plan_code`` — another plan is a :class:`ValueError`), with the payer's
@@ -120,9 +144,13 @@ class BillingOverview(BaseModel):
 
         Pass ``launch=settings.billing_launch_at``: a beta row stored before the launch
         date was known has no ``comped_until``, and both the standing and the
-        ``comped_until`` shown read it as the launch plus 12 months (§3.2)."""
+        ``comped_until`` shown read it as the launch plus 12 months (§3.2).
+
+        Pass ``price_ref=settings.billing_price_ref`` for ``paid`` (§15.2.10): the row's
+        ``provider_price_id`` as a plan, interval and currency."""
         if normalize_plan(row.plan_code) != plan.code:
             raise ValueError(f"the row's plan is {row.plan_code!r}, not {plan.code!r}")
+        ref = price_ref(row.provider_price_id) if price_ref is not None and row.provider_price_id else None
         return cls(
             plan=plan.code,
             status=SubscriptionStatus(row.status),
@@ -136,6 +164,7 @@ class BillingOverview(BaseModel):
             usage=dict(usage),
             currency=BillingCurrency(str(currency).strip().upper()),
             at_provider=row.provider_customer_id is not None,
+            paid=None if ref is None else PaidPrice(plan=ref.plan, interval=ref.interval, currency=ref.currency),
         )
 
 
@@ -287,6 +316,85 @@ class CheckoutRequest(BaseModel):
     plan: PlanCode
     interval: Interval
     currency: Currency
+
+
+class PlanSwitchRequest(BaseModel):
+    """``POST /billing/plan/preview`` and ``POST /billing/plan`` ``{plan, interval}``
+    (§15.2.10): the plan to switch to and how often it is paid. No currency: a switch keeps
+    the subscription's (another currency is a new checkout after the old one ends). The
+    price comes from :func:`~eifi1_server_kit.billing.switch_price`::
+
+        @router.post("/billing/plan/preview", response_model=PlanSwitchPreview)
+        async def preview(body: PlanSwitchRequest, payer: Payer = Depends(current_payer)) -> PlanSwitchPreview:
+            settings.require_billing_enabled()                          # 404
+            row = await row_of(payer)
+            require_plan_switch(row, now())                             # 409 billing_not_subscribed
+            price_id = switch_price(PLANS, row, body, settings, sold=SOLD)   # 422, 409 billing_plan_unchanged
+            answer = await billing_client().preview_plan_change(
+                subscription_id=row.provider_subscription_id, price_id=price_id
+            )                                                           # 502
+            return plan_switch_preview(answer, PLANS[body.plan], await usage_of(payer), interval=body.interval)
+
+    ``POST /billing/plan`` is the same with ``change_plan``; the row follows through the
+    ``subscription.updated`` Paddle sends.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plan: PlanCode
+    interval: Interval
+
+
+class ProviderSwitchPreview(BaseModel):
+    """The provider's figures for a plan switch (§15.2.10), what
+    :meth:`~eifi1_server_kit.billing.BillingProviderClient.preview_plan_change` and
+    ``change_plan`` answer: Paddle's ``PATCH /subscriptions/{id}/preview``, prorated
+    immediately.
+
+    * ``currency`` — the subscription's.
+    * ``now_minor`` — charged now, minor units; NEGATIVE for a credit (a downgrade's unused
+      part, which Paddle keeps on the customer's balance and takes off the next charges).
+    * ``next_minor`` — the next charge, ``None`` where the provider names none.
+    * ``next_billed_at`` — when, ``None`` likewise.
+    """
+
+    currency: Currency
+    now_minor: int
+    next_minor: MinorUnits | None = None
+    next_billed_at: UtcDateTime | None = None
+
+
+class PlanSwitchPreview(ProviderSwitchPreview):
+    """The answer to ``POST /billing/plan/preview`` and ``POST /billing/plan``
+    (§15.2.10): the provider's figures plus ``{plan, interval, over_limit, limits,
+    usage}`` — what ui-kit's ``PlanSwitchConfirm`` shows before the payer agrees. A
+    downgrade over the new limits is allowed (§3.4: a limit gates creation only), so
+    ``over_limit`` names the dimensions over it, in the plan's order, for the lines.
+    Build it with :func:`plan_switch_preview`."""
+
+    plan: PlanCode
+    interval: Interval
+    over_limit: list[str]
+    limits: dict[str, int | None]
+    usage: dict[str, int]
+
+
+def plan_switch_preview(
+    answer: ProviderSwitchPreview, plan: PlanSpec, usage: Mapping[str, int], *, interval: BillingInterval | str
+) -> PlanSwitchPreview:
+    """The route's answer (§15.2.10): the provider's ``answer`` for a switch to ``plan``
+    per ``interval``, with the payer's ``usage`` and the dimensions it exceeds on the new
+    plan (:func:`~eifi1_server_kit.billing.dimensions_over_limit`)."""
+    return PlanSwitchPreview.model_validate(
+        {
+            **answer.model_dump(),
+            "plan": plan.code,
+            "interval": interval,
+            "over_limit": dimensions_over_limit(plan, usage),
+            "limits": dict(plan.limits),
+            "usage": dict(usage),
+        }
+    )
 
 
 class PortalRequest(BaseModel):

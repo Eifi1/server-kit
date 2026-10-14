@@ -82,6 +82,7 @@ from eifi1_server_kit.billing.standing import SubscriptionStatus
 
 __all__ = [
     "APP_KEY",
+    "BUYER_KEY",
     "PADDLE_EVENT_KINDS",
     "PADDLE_STATUSES",
     "PAYER_REF_KEY",
@@ -119,9 +120,13 @@ PAYER_REF_KEY = "payer_ref"
 #: The key of the app's tag in a checkout's custom data (§14.3): the settings'
 #: ``billing_app``.
 APP_KEY = "app"
+#: The key of the buying person in a checkout's custom data (§15.2.11): kastlan's buying
+#: admin, ``"user:<id>"``, which its webhook stores as ``provider_payer_user_id`` so that
+#: only that admin opens the portal's overview.
+BUYER_KEY = "buyer"
 
 
-def checkout_custom_data(payer_ref: str, *, app: str | None = None) -> dict[str, str]:
+def checkout_custom_data(payer_ref: str, *, app: str | None = None, buyer: str | None = None) -> dict[str, str]:
     """The custom data to put into a checkout, so its webhooks find the payer and the app:
     ``{"payer_ref": "user:42", "app": "keksdose"}`` (or ``"company:7"``, ``"kastlan"``).
 
@@ -134,6 +139,11 @@ def checkout_custom_data(payer_ref: str, *, app: str | None = None) -> dict[str,
     webhook receives every app's events, and the tag is how each keeps only its own
     (:func:`parse_webhook_event`). The kit's client adds its own tag whatever is passed
     here (:class:`~eifi1_server_kit.billing.PaddleClient`), so an app can't forget it.
+
+    ``buyer`` is the person who checks out where the payer is not a person (§15.2.11):
+    kastlan's company pays, and its buying admin's ``"user:<id>"`` goes in as ``"buyer"``
+    (:data:`BUYER_KEY`), read back as :attr:`NormalisedEvent.buyer`. Like the payer
+    reference, an app's own opaque id — never an address.
     """
     if not payer_ref.strip():
         raise ValueError("a payer reference is a non-empty string")
@@ -142,6 +152,10 @@ def checkout_custom_data(payer_ref: str, *, app: str | None = None) -> dict[str,
         if not app.strip():
             raise ValueError("an app tag is a non-empty string")
         data[APP_KEY] = app
+    if buyer is not None:
+        if not buyer.strip():
+            raise ValueError("a buyer reference is a non-empty string")
+        data[BUYER_KEY] = buyer
     return data
 
 
@@ -212,6 +226,13 @@ class NormalisedEvent(BaseModel):
     def app(self) -> str | None:
         """The app's tag the checkout carried (§14.3), or ``None`` for an untagged event."""
         value = self.custom_data.get(APP_KEY)
+        return value if isinstance(value, str) and value else None
+
+    @property
+    def buyer(self) -> str | None:
+        """The buying person the checkout carried (§15.2.11, kastlan's
+        ``provider_payer_user_id``), or ``None``."""
+        value = self.custom_data.get(BUYER_KEY)
         return value if isinstance(value, str) and value else None
 
 

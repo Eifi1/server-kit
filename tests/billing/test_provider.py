@@ -25,6 +25,7 @@ from eifi1_server_kit.billing import (
     PaddleClient,
     PaddleEnvironment,
     PlanSpec,
+    PlanSwitchRequest,
     SubscriptionSource,
     SubscriptionStatus,
     billing_provider_client,
@@ -32,8 +33,10 @@ from eifi1_server_kit.billing import (
     checkout_return_url,
     plan_catalogue,
     require_new_checkout,
+    require_plan_switch,
     resume_after_withdrawal,
     sold_plan,
+    switch_price,
 )
 from eifi1_server_kit.billing.testing import FakeBillingProvider, PaddleApiFake
 from tests.billing._rows import NOW, Row
@@ -79,6 +82,9 @@ async def test_without_paddle_and_a_key_there_is_no_client(fields: dict[str, Any
         client.portal_url(customer_id="ctm_1"),
         client.cancel(subscription_id="sub_1"),
         client.remove_scheduled_cancel(subscription_id="sub_1"),
+        client.preview_plan_change(subscription_id="sub_1", price_id="pri_1"),
+        client.change_plan(subscription_id="sub_1", price_id="pri_1"),
+        client.customer_for(email="payer@example.com"),
     )
     for call in calls:
         with pytest.raises(BillingError, match="No payment provider client") as refused:
@@ -199,7 +205,7 @@ def test_a_payer_who_bought_under_a_grant_is_subscribed_too() -> None:
     (``source = provider`` only) let this payer pay twice."""
     for source in (SubscriptionSource.BETA, SubscriptionSource.MANUAL):
         bought = _subscribed(status=SubscriptionStatus.COMPED, source=source, comped_until=NOW + 30 * DAY)
-        with pytest.raises(BillingError, match="change it in the customer portal"):
+        with pytest.raises(BillingError, match="change its plan instead"):
             require_new_checkout(bought, NOW)
         # Its period over (a cancelled subscription writes canceled_at there): free to buy again.
         require_new_checkout(_subscribed(status="comped", source=source, current_period_end=NOW - DAY), NOW)
@@ -225,6 +231,99 @@ def test_a_payer_who_bought_under_a_grant_is_subscribed_too() -> None:
 )
 def test_nothing_running_lets_the_checkout_through(row: Row) -> None:
     require_new_checkout(row, NOW)
+    # §15.2.10: the inverse — nothing to switch, the page offers the checkout.
+    with pytest.raises(BillingError) as refused:
+        require_plan_switch(row, NOW)
+    assert (refused.value.status_code, refused.value.code) == (409, BillingErrorCode.BILLING_NOT_SUBSCRIBED)
+
+
+# --- the plan switch (§15.2.10) --------------------------------------------------------------
+
+SWITCH_SETTINGS = BillingSettings(
+    billing_price_ids={
+        "pro": {"CHF": {"year": ["pri_pro_chf_y", "pri_pro_chf_y_2025"], "month": "pri_pro_chf_m"}},
+        "legacy": {"CHF": {"year": "pri_legacy_chf_y"}},
+        "max": {"CHF": {"year": "pri_max_chf_y"}, "EUR": {"year": "pri_max_eur_y"}},
+    }
+)
+MAX = PlanSpec(code="max", limits={"budgets": 9}, prices={("CHF", "year"): 9000, ("EUR", "year"): 9000}, sort=3)
+PRO_MONTHLY = PlanSpec(code="pro", limits={"budgets": 5}, prices={("CHF", "year"): 3000, ("CHF", "month"): 300}, sort=1)
+SWITCH_PLANS = plan_catalogue([FREE, PRO_MONTHLY, LEGACY, MAX])
+
+
+def _switch(plan: str = "max", interval: str = "year") -> PlanSwitchRequest:
+    return PlanSwitchRequest.model_validate({"plan": plan, "interval": interval})
+
+
+@pytest.mark.parametrize("status", ["active", "trialing", "past_due"])
+def test_a_running_subscription_may_switch(status: str) -> None:
+    require_plan_switch(_subscribed(status=status), NOW)
+    # Bought under a grant: its period says it runs.
+    require_plan_switch(_subscribed(status="comped", source="manual", comped_until=NOW + DAY), NOW)
+
+
+def test_the_switch_takes_the_price_in_the_currency_it_pays() -> None:
+    """The plan and interval asked for, in the row's currency: a switch keeps it."""
+    row = _subscribed(provider_price_id="pri_pro_chf_y")
+    assert switch_price(SWITCH_PLANS, row, _switch(), SWITCH_SETTINGS) == "pri_max_chf_y"
+    assert switch_price(SWITCH_PLANS, row, _switch("PRO", "Month"), SWITCH_SETTINGS) == "pri_pro_chf_m"
+    # From a retired price to the plan's current one is a switch, not "unchanged".
+    retired = _subscribed(provider_price_id="pri_pro_chf_y_2025")
+    assert switch_price(SWITCH_PLANS, retired, _switch("pro"), SWITCH_SETTINGS) == "pri_pro_chf_y"
+    # A payer on a plan no longer sold may switch away, to a sold one.
+    on_legacy = _subscribed(plan_code="legacy", provider_price_id="pri_legacy_chf_y")
+    assert switch_price(SWITCH_PLANS, on_legacy, _switch("pro"), SWITCH_SETTINGS, sold=("pro", "max")) == (
+        "pri_pro_chf_y"
+    )
+
+
+def test_the_price_it_pays_now_is_unchanged() -> None:
+    with pytest.raises(BillingError) as refused:
+        switch_price(SWITCH_PLANS, _subscribed(provider_price_id="pri_pro_chf_y"), _switch("pro"), SWITCH_SETTINGS)
+    assert (refused.value.status_code, refused.value.code) == (409, BillingErrorCode.BILLING_PLAN_UNCHANGED)
+
+
+@pytest.mark.parametrize(
+    ("request_", "sold"),
+    [
+        (_switch("legacy"), ("pro", "max")),  # no switch TO a plan no longer sold
+        (_switch("unknown"), None),  # not in the catalogue
+        (_switch("free"), None),  # free: no price at all
+        (_switch("max", "month"), None),  # no monthly price
+        (_switch("legacy"), None),  # sold, but not in EUR (below)
+    ],
+)
+def test_a_switch_to_a_plan_not_sold_is_422(request_: PlanSwitchRequest, sold: tuple[str, ...] | None) -> None:
+    for paying in ("pri_pro_chf_y", "pri_max_eur_y"):
+        row = _subscribed(provider_price_id=paying)
+        if paying == "pri_pro_chf_y" and request_.plan == "legacy" and sold is None:
+            assert switch_price(SWITCH_PLANS, row, request_, SWITCH_SETTINGS) == "pri_legacy_chf_y"
+            continue
+        with pytest.raises(BillingError) as refused:
+            switch_price(SWITCH_PLANS, row, request_, SWITCH_SETTINGS, sold=sold)
+        assert (refused.value.status_code, refused.value.code) == (422, BillingErrorCode.BILLING_PLAN_NOT_SOLD)
+
+
+@pytest.mark.parametrize("paying", [None, "", "pri_unknown"])
+def test_a_row_without_a_known_price_is_not_configured(paying: str | None) -> None:
+    """A row from before 0.12 until its next snapshot, or a price the settings lost: 503."""
+    with pytest.raises(BillingError) as refused:
+        switch_price(SWITCH_PLANS, _subscribed(provider_price_id=paying), _switch(), SWITCH_SETTINGS)
+    assert (refused.value.status_code, refused.value.code) == (503, BillingErrorCode.BILLING_NOT_CONFIGURED)
+
+
+def test_a_sold_combination_without_its_price_id_is_not_configured() -> None:
+    """The catalogue sells max in EUR per year; settings without that id are the deployment's fault."""
+    settings = BillingSettings(billing_price_ids={"pro": {"EUR": {"year": "pri_pro_eur_y"}}})
+    with pytest.raises(BillingError) as refused:
+        switch_price(SWITCH_PLANS, _subscribed(provider_price_id="pri_pro_eur_y"), _switch(), settings)
+    assert refused.value.code is BillingErrorCode.BILLING_NOT_CONFIGURED
+
+
+def test_a_switch_request_takes_no_currency_or_price() -> None:
+    for extra in ({"currency": "EUR"}, {"price_id": "pri_x"}):
+        with pytest.raises(ValueError, match="Extra inputs"):
+            PlanSwitchRequest.model_validate({"plan": "pro", "interval": "year", **extra})
 
 
 # --- the deletion's cancellation, and undoing it (§14.8) ------------------------------------
