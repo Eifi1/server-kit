@@ -86,3 +86,10 @@ REWORKABLE_STATUSES: frozenset[FeedbackStatus] = frozenset(FeedbackStatus) - AUT
 AWAITING_STATUSES: frozenset[FeedbackStatus] = frozenset(
     {FeedbackStatus.OPEN, FeedbackStatus.IN_EVALUATION, FeedbackStatus.NEEDS_LIVE_TEST}
 )
+
+#: The decided statuses (contract §9.7, B2): a status-only move into one of them tells the
+#: author nothing, so the admin's detail nudges toward a reply with that ``status_to``
+#: (kit ``FEEDBACK_DECIDED_STATUSES``). A reply notifies; a status alone does not.
+DECIDED_STATUSES: frozenset[FeedbackStatus] = frozenset(
+    {FeedbackStatus.DONE, FeedbackStatus.WONT_DO, FeedbackStatus.POSTPONED}
+)

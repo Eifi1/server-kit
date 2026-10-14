@@ -22,6 +22,12 @@ What changed against keksdose, all by the contract or the apps' reviews:
   it must never answer a crashed page with an error;
 * ``context`` is capped at :data:`~eifi1_server_kit.feedback.context.MAX_CONTEXT_SIZE`
   and ``body`` at :data:`MAX_BODY_LENGTH` (Kurvenschmiede's caps, recommended for all).
+
+Round 0.38 (0.11, §9.3, §9.7–§9.9): the report gains optional public-feedback fields;
+``outcome`` is frozen (a PATCH naming it is a 422 "outcome is read-only; post a reply");
+replies, comments and votes have their own shapes, and the public list and detail are
+SEPARATE models (:class:`FeedbackPublicListItem`, :class:`FeedbackPublicResponse`), so a
+field added to :class:`FeedbackResponse` later never reaches the public by default.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from eifi1_server_kit.feedback.attachments import DEFAULT_ATTACHMENT_URL_POLICY,
 from eifi1_server_kit.feedback.context import MAX_CONTEXT_SIZE, context_size
 from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackStatus
 from eifi1_server_kit.feedback.errors import FeedbackValidationError
+from eifi1_server_kit.feedback.public import COMMENT_MAX, REPLY_MAX
 
 #: How many files one report carries besides its one screenshot (keksdose
 #: ``schemas/feedback.py:14`` ``MAX_ATTACHMENT_URLS``; the kit's dialog stops at it).
@@ -49,9 +56,16 @@ MAX_BODY_LENGTH = 50_000
 MAX_SCREENSHOT_URL_LENGTH = 500
 
 #: The columns a row cannot be without: an explicit ``null`` for one is refused rather
-#: than written (keksdose ``schemas/feedback.py:80`` ``_NOT_NULLABLE``). ``outcome`` is
-#: deliberately absent — it IS nullable, and clearing it is a real edit.
-NOT_NULLABLE_FIELDS: tuple[str, ...] = ("status", "title", "body", "category")
+#: than written (keksdose ``schemas/feedback.py:80`` ``_NOT_NULLABLE``). ``public`` joined
+#: in 0.11 (§9.3: NOT NULL). ``outcome`` is not here: since 0.11 it is refused whole.
+NOT_NULLABLE_FIELDS: tuple[str, ...] = ("status", "title", "body", "category", "public")
+
+#: Why a PATCH naming ``outcome`` is refused (§9.7): the answer is a list of replies now.
+OUTCOME_READ_ONLY = "outcome is read-only; post a reply"
+
+#: How the public list may be sorted (§9.6): ``newest`` (the default), ``votes`` (most,
+#: then newest) or ``updated``.
+PublicSort = Literal["newest", "votes", "updated"]
 
 
 class FeedbackCreate(BaseModel):
@@ -127,7 +141,12 @@ class FeedbackUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=MAX_TITLE_LENGTH)
     body: str | None = Field(default=None, max_length=MAX_BODY_LENGTH)
     category: FeedbackCategory | None = None
+    #: Frozen since 0.11 (§9.7): kept so an app's subclass still names it, but any PATCH
+    #: that names it, ``null`` included, is a 422 :data:`OUTCOME_READ_ONLY`.
     outcome: str | None = None
+    #: "Visible to others" (§9.3): an admin any time; the author while the report is open,
+    #: or at any status on a ``filed_private`` report.
+    public: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -136,10 +155,13 @@ class FeedbackUpdate(BaseModel):
 
         An explicit ``{"title": null}`` was assigned straight onto a NOT NULL column and
         came back as a 500 from the flush. A blank title is refused like the create route
-        refuses it; a blank body is stored as ""; ``outcome: null`` clears the outcome.
+        refuses it; a blank body is stored as "". ``outcome`` in any form is refused
+        (§9.7): nothing writes it any more.
         """
         if not isinstance(data, dict):
             return data
+        if "outcome" in data:
+            raise FeedbackValidationError(OUTCOME_READ_ONLY)
         for name in NOT_NULLABLE_FIELDS:
             if name in data and data[name] is None:
                 raise FeedbackValidationError(f"{name} cannot be null")
@@ -150,6 +172,28 @@ class FeedbackUpdate(BaseModel):
         if isinstance(body, str) and not body.strip():
             data = {**data, "body": ""}
         return data
+
+
+class FeedbackPublicReplyResponse(BaseModel):
+    """One reply as the public detail shows it (§9.10): never ``status_from``."""
+
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
+    id: int
+    #: Others: the first name; an admin: the full name; ``None``: the app's word for its
+    #: admin ("Admin") — a loop's reply, a migrated outcome, an erased admin.
+    author_name: str | None = None
+    body: str
+    #: The status the reply moved the report to; ``None``: no status change.
+    status_to: FeedbackStatus | None = None
+    created_at: datetime
+
+
+class FeedbackReplyResponse(FeedbackPublicReplyResponse):
+    """One reply on the admin's and the author's report (§9.7)."""
+
+    #: The status before the move: the admin view only (``None`` elsewhere).
+    status_from: FeedbackStatus | None = None
 
 
 class FeedbackResponse(BaseModel):
@@ -180,6 +224,119 @@ class FeedbackResponse(BaseModel):
     resolved_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Public feedback (§9.3), all optional: an app without public parts sends them null.
+    #: The admin: the full name; the author: their own full name. ``None``: no name.
+    author_name: str | None = None
+    #: The viewer wrote it.
+    mine: bool | None = None
+    #: "Visible to others"; a CRASH is never public, whatever this says.
+    public: bool | None = None
+    #: Made public by the round-0.38 migration: its author may switch it off at any status.
+    filed_private: bool | None = None
+    #: The people who want it (the author's own vote included) and whether the viewer is one.
+    votes: int | None = None
+    voted: bool | None = None
+    #: The comments: an admin counts the hidden ones too.
+    comment_count: int | None = None
+    #: The answers, oldest first; ``status_from`` for an admin only.
+    replies: list[FeedbackReplyResponse] | None = None
+
+
+def _trimmed(value: object) -> object:
+    return value.strip() if isinstance(value, str) else value
+
+
+class FeedbackReplyCreate(BaseModel):
+    """``POST /feedback/{id}/replies`` (§9.7), admin only: the answer, 1–:data:`REPLY_MAX`
+    characters after trimming, and the status it moves the report to, if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=REPLY_MAX)
+    status: FeedbackStatus | None = None
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _trim(cls, value: object) -> object:
+        return _trimmed(value)
+
+
+class FeedbackCommentCreate(BaseModel):
+    """``POST /feedback/{id}/comments`` (§9.8): plain text, 1–:data:`COMMENT_MAX`
+    characters after trimming, no files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=COMMENT_MAX)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _trim(cls, value: object) -> object:
+        return _trimmed(value)
+
+
+class FeedbackCommentHide(BaseModel):
+    """``PATCH /feedback/{id}/comments/{comment_id}`` (§9.8), admin only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hidden: bool
+
+
+class FeedbackCommentResponse(BaseModel):
+    """One comment (§9.8, §9.10): the same shape for every viewer."""
+
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
+    id: int
+    #: Others: the first name; the writer and an admin: the full name; ``None``: "A user"
+    #: (an erased writer, an incomplete name, or a hidden comment for others).
+    author_name: str | None = None
+    mine: bool = False
+    #: keksdose's migrated comments whose writer is an admin.
+    staff: bool = False
+    #: ``None`` when hidden, but for its writer and an admin.
+    body: str | None
+    hidden: bool = False
+    created_at: datetime
+
+
+class FeedbackVoteResponse(BaseModel):
+    """``PUT`` / ``DELETE /feedback/{id}/vote`` (§9.6): the count after, and the viewer's."""
+
+    votes: int
+    voted: bool
+
+
+class FeedbackPublicListItem(BaseModel):
+    """One row of the public list (§9.3, §9.9): titles only, no body — a SEPARATE model,
+    so nothing added to :class:`FeedbackResponse` reaches the public by default."""
+
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
+    id: int
+    title: str
+    category: FeedbackCategory
+    status: FeedbackStatus
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+    #: The first name, or ``None`` ("A user").
+    author_name: str | None = None
+    mine: bool = False
+    votes: int = 0
+    voted: bool = False
+    #: Visible comments only.
+    comment_count: int = 0
+
+
+class FeedbackPublicResponse(FeedbackPublicListItem):
+    """The public detail (§9.3, §9.9): the public body and the replies; the comments are
+    fetched beside it (``GET /feedback/{id}/comments``)."""
+
+    #: :func:`~eifi1_server_kit.feedback.public_body`: no file lines, no attachment URL.
+    body: str
+    replies: list[FeedbackPublicReplyResponse] = Field(default_factory=list)
 
 
 class FeedbackAttachmentResponse(BaseModel):

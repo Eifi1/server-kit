@@ -14,6 +14,15 @@ re-exported from :mod:`eifi1_server_kit.feedback`: import it as
 * :func:`check_round_trip` — an upload, then its download through the URL the upload
   answered, over the app's own client; it also checks that ``policy.prefix`` is the mount.
 
+Public feedback (0.11, ``docs/feedback-harmonization.md`` §9.14): the fakes
+:class:`InMemoryReplyStore`, :class:`InMemoryCommentStore`, :class:`InMemoryVoteStore`
+and :class:`InMemoryPeopleLookup` (each logs its calls in ``calls``, so a test counts one
+call per store per page); :class:`InMemoryFeedbackRepository` is a
+:class:`~eifi1_server_kit.feedback.PublicFeedbackRepository` too; the conformance checks
+:func:`check_reply_store`, :func:`check_comment_store`, :func:`check_vote_store` and
+:func:`check_public_repository`; and :func:`assert_public_view`, which walks a public
+answer for any key outside §9.10's lists and any attachment URL.
+
 Synthetic data only: every file is made here, with a fresh token in it, so two runs on
 the same database never share a content-addressed key.
 """
@@ -37,23 +46,49 @@ from eifi1_server_kit.feedback.ports import (
     AttachmentStorage,
     Clock,
     FeedbackActor,
+    FeedbackCommentStore,
+    FeedbackReplyStore,
     FeedbackRepository,
     FeedbackRow,
+    FeedbackVoteStore,
     NewFeedback,
+    NewFeedbackComment,
+    NewFeedbackReply,
+    PublicFeedbackRepository,
+    PublicListEntry,
     StoredAttachment,
     utc_now,
 )
+from eifi1_server_kit.feedback.public import (
+    PUBLIC_COMMENT_FIELDS,
+    PUBLIC_PAGE_MAX,
+    PUBLIC_REPLY_FIELDS,
+    PUBLIC_REPORT_FIELDS,
+    is_public,
+)
+from eifi1_server_kit.feedback.schemas import PublicSort
 from eifi1_server_kit.feedback.service import _served_type
 from eifi1_server_kit.uploads import EXTENSION_MEDIA_TYPES, CheckedUpload, check_upload, content_addressed_key
 
 __all__ = [
     "InMemoryAttachmentStorage",
+    "InMemoryCommentStore",
     "InMemoryFeedbackRepository",
+    "InMemoryPeopleLookup",
+    "InMemoryReplyStore",
+    "InMemoryVoteStore",
+    "MemoryCommentRow",
     "MemoryFeedbackRow",
+    "MemoryReplyRow",
     "actor",
+    "assert_public_view",
+    "check_comment_store",
+    "check_public_repository",
+    "check_reply_store",
     "check_repository",
     "check_round_trip",
     "check_storage",
+    "check_vote_store",
     "fixed_clock",
 ]
 
@@ -81,6 +116,36 @@ class MemoryFeedbackRow:
     outcome: str | None = None
     resolved_at: datetime | None = None
     crash_fingerprint: str | None = None
+    #: Public feedback (§9.3).
+    public: bool = True
+    filed_private: bool = False
+
+
+@dataclass(slots=True)
+class MemoryReplyRow:
+    """One reply in memory (§9.7); satisfies :class:`~eifi1_server_kit.feedback.FeedbackReplyRow`."""
+
+    id: int
+    feedback_id: int
+    author_id: int | None
+    body: str
+    status_from: FeedbackStatus | None
+    status_to: FeedbackStatus | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class MemoryCommentRow:
+    """One comment in memory (§9.8); satisfies :class:`~eifi1_server_kit.feedback.FeedbackCommentRow`."""
+
+    id: int
+    feedback_id: int
+    user_id: int | None
+    body: str
+    created_at: datetime
+    staff: bool = False
+    hidden_at: datetime | None = None
+    hidden_by: int | None = None
 
 
 def _newest_first[RowT: FeedbackRow](rows: Collection[RowT]) -> list[RowT]:
@@ -94,6 +159,9 @@ class InMemoryFeedbackRepository:
     viewer)`` hides a row from :meth:`get` as Kurvenschmiede's ``visible_to`` or kastlan's
     RLS would; ``now`` stamps ``created_at`` and ``updated_at``. ``policy`` is the app's,
     whose prefix finds a body's rework lines in :meth:`urls_named_except`.
+
+    A :class:`~eifi1_server_kit.feedback.PublicFeedbackRepository` too: :meth:`public_page`
+    counts in ``votes`` and ``comments`` (the fake stores), as an app's SQL joins its tables.
     """
 
     def __init__(
@@ -103,6 +171,8 @@ class InMemoryFeedbackRepository:
         hidden: Callable[[MemoryFeedbackRow, FeedbackActor], bool] | None = None,
         now: Clock = utc_now,
         policy: AttachmentUrlPolicy = DEFAULT_ATTACHMENT_URL_POLICY,
+        votes: InMemoryVoteStore | None = None,
+        comments: InMemoryCommentStore | None = None,
     ) -> None:
         #: Every row, by id.
         self.rows: dict[int, MemoryFeedbackRow] = {}
@@ -112,6 +182,8 @@ class InMemoryFeedbackRepository:
         self.hidden = hidden
         self.now = now
         self.policy = policy
+        self.votes = votes
+        self.comments = comments
 
     async def get(self, feedback_id: int, *, viewer: FeedbackActor) -> MemoryFeedbackRow | None:
         row = self.rows.get(feedback_id)
@@ -152,6 +224,7 @@ class InMemoryFeedbackRepository:
             crash_fingerprint=new.crash_fingerprint,
             created_at=at,
             updated_at=at,
+            public=new.public,
         )
         self.rows[row.id] = row
         self.writes.append(("add", row.id))
@@ -180,6 +253,215 @@ class InMemoryFeedbackRepository:
                     policy=self.policy,
                 )
         return urls
+
+    async def public_page(
+        self,
+        *,
+        viewer_id: int,
+        sort: PublicSort,
+        status: FeedbackStatus | None,
+        category: FeedbackCategory | None,
+        q: str | None,
+        limit: int,
+        offset: int,
+    ) -> Sequence[PublicListEntry[MemoryFeedbackRow]]:
+        rows = [
+            row
+            for row in self.rows.values()
+            if is_public(row.category, row.public)
+            and (status is None or row.status == status)
+            and (category is None or row.category == category)
+            and (q is None or q.casefold() in row.title.casefold())
+        ]
+        ids = [row.id for row in rows]
+        tallies = self.votes.tally(ids, viewer_id=viewer_id) if self.votes is not None else {}
+        counts = self.comments.tally(ids, include_hidden=False) if self.comments is not None else {}
+        entries = [
+            PublicListEntry(row, *tallies.get(row.id, (0, False)), comment_count=counts.get(row.id, 0)) for row in rows
+        ]
+        if sort == "updated":
+            entries.sort(key=lambda entry: (entry.row.updated_at, entry.row.id), reverse=True)
+        else:
+            entries.sort(key=lambda entry: (entry.row.created_at, entry.row.id), reverse=True)
+            if sort == "votes":
+                entries.sort(key=lambda entry: entry.votes, reverse=True)
+        return entries[offset : offset + limit]
+
+    async def get_public(self, feedback_id: int) -> MemoryFeedbackRow | None:
+        return self.rows.get(feedback_id)
+
+
+class InMemoryReplyStore:
+    """A :class:`~eifi1_server_kit.feedback.FeedbackReplyStore` of :class:`MemoryReplyRow`.
+    ``added`` records each ``add`` with its actor — where an app fires ``feedback_answered``."""
+
+    def __init__(self, *, now: Clock = utc_now) -> None:
+        self.rows: dict[int, MemoryReplyRow] = {}
+        self.calls: list[str] = []
+        self.added: list[tuple[MemoryReplyRow, FeedbackActor | None]] = []
+        self.now = now
+
+    async def for_reports(self, ids: Collection[int]) -> Mapping[int, Sequence[MemoryReplyRow]]:
+        self.calls.append("for_reports")
+        found: dict[int, list[MemoryReplyRow]] = {}
+        for row in sorted(self.rows.values(), key=lambda row: (row.created_at, row.id)):
+            if row.feedback_id in ids:
+                found.setdefault(row.feedback_id, []).append(row)
+        return found
+
+    async def add(self, new: NewFeedbackReply, *, actor: FeedbackActor | None) -> MemoryReplyRow:
+        self.calls.append("add")
+        row = MemoryReplyRow(
+            id=max(self.rows, default=0) + 1,
+            feedback_id=new.feedback_id,
+            author_id=new.author_id,
+            body=new.body,
+            status_from=new.status_from,
+            status_to=new.status_to,
+            created_at=self.now(),
+        )
+        self.rows[row.id] = row
+        self.added.append((row, actor))
+        return row
+
+    async def by_author(self, user_id: int) -> Sequence[MemoryReplyRow]:
+        self.calls.append("by_author")
+        return [row for row in self.rows.values() if row.author_id == user_id]
+
+    async def apply(self, reply: MemoryReplyRow, changes: Mapping[str, Any]) -> MemoryReplyRow:
+        self.calls.append("apply")
+        for name, value in changes.items():
+            setattr(reply, name, value)
+        return reply
+
+
+class InMemoryCommentStore:
+    """A :class:`~eifi1_server_kit.feedback.FeedbackCommentStore` of :class:`MemoryCommentRow`.
+    ``added`` records each ``add`` with its actor — where an app fires ``feedback_comment``."""
+
+    def __init__(self, *, now: Clock = utc_now) -> None:
+        self.rows: dict[int, MemoryCommentRow] = {}
+        self.calls: list[str] = []
+        self.added: list[tuple[MemoryCommentRow, FeedbackActor]] = []
+        self.now = now
+
+    def _ordered(self) -> list[MemoryCommentRow]:
+        return sorted(self.rows.values(), key=lambda row: (row.created_at, row.id))
+
+    def tally(self, ids: Collection[int], *, include_hidden: bool) -> dict[int, int]:
+        """The counts, without logging a call: :meth:`InMemoryFeedbackRepository.public_page`'s join."""
+        counts: dict[int, int] = {}
+        for row in self.rows.values():
+            if row.feedback_id in ids and (include_hidden or row.hidden_at is None):
+                counts[row.feedback_id] = counts.get(row.feedback_id, 0) + 1
+        return counts
+
+    async def for_report(self, feedback_id: int) -> Sequence[MemoryCommentRow]:
+        self.calls.append("for_report")
+        return [row for row in self._ordered() if row.feedback_id == feedback_id]
+
+    async def counts(self, ids: Collection[int], *, include_hidden: bool) -> Mapping[int, int]:
+        self.calls.append("counts")
+        return self.tally(ids, include_hidden=include_hidden)
+
+    async def commenters(self, feedback_id: int) -> Sequence[int]:
+        self.calls.append("commenters")
+        out: list[int] = []
+        for row in self._ordered():
+            if row.feedback_id == feedback_id and row.user_id is not None and row.user_id not in out:
+                out.append(row.user_id)
+        return out
+
+    async def add(self, new: NewFeedbackComment, *, actor: FeedbackActor) -> MemoryCommentRow:
+        self.calls.append("add")
+        row = MemoryCommentRow(
+            id=max(self.rows, default=0) + 1,
+            feedback_id=new.feedback_id,
+            user_id=new.user_id,
+            body=new.body,
+            created_at=self.now(),
+        )
+        self.rows[row.id] = row
+        self.added.append((row, actor))
+        return row
+
+    async def get(self, feedback_id: int, comment_id: int) -> MemoryCommentRow | None:
+        self.calls.append("get")
+        row = self.rows.get(comment_id)
+        return row if row is not None and row.feedback_id == feedback_id else None
+
+    async def apply(
+        self, comment: MemoryCommentRow, changes: Mapping[str, Any], *, actor: FeedbackActor | None
+    ) -> MemoryCommentRow:
+        self.calls.append("apply")
+        for name, value in changes.items():
+            setattr(comment, name, value)
+        return comment
+
+    async def delete(self, comment: MemoryCommentRow) -> None:
+        self.calls.append("delete")
+        self.rows.pop(comment.id, None)
+
+    async def by_author(self, user_id: int) -> Sequence[MemoryCommentRow]:
+        self.calls.append("by_author")
+        return [row for row in self._ordered() if row.user_id == user_id]
+
+    async def clear_hidden_by(self, user_id: int) -> int:
+        self.calls.append("clear_hidden_by")
+        cleared = [row for row in self.rows.values() if row.hidden_by == user_id]
+        for row in cleared:
+            row.hidden_by = None
+        return len(cleared)
+
+
+class InMemoryVoteStore:
+    """A :class:`~eifi1_server_kit.feedback.FeedbackVoteStore`: ``(feedback_id, user_id)`` →
+    when it was cast."""
+
+    def __init__(self, *, now: Clock = utc_now) -> None:
+        self.rows: dict[tuple[int, int], datetime] = {}
+        self.calls: list[str] = []
+        self.now = now
+
+    def tally(self, ids: Collection[int], *, viewer_id: int) -> dict[int, tuple[int, bool]]:
+        """The counts, without logging a call: :meth:`InMemoryFeedbackRepository.public_page`'s join."""
+        counts: dict[int, tuple[int, bool]] = {}
+        for feedback_id, user_id in self.rows:
+            if feedback_id in ids:
+                votes, voted = counts.get(feedback_id, (0, False))
+                counts[feedback_id] = (votes + 1, voted or user_id == viewer_id)
+        return counts
+
+    async def counts(self, ids: Collection[int], *, viewer_id: int) -> Mapping[int, tuple[int, bool]]:
+        self.calls.append("counts")
+        return self.tally(ids, viewer_id=viewer_id)
+
+    async def put(self, feedback_id: int, user_id: int) -> None:
+        self.calls.append("put")
+        self.rows.setdefault((feedback_id, user_id), self.now())
+
+    async def delete(self, feedback_id: int, user_id: int) -> None:
+        self.calls.append("delete")
+        self.rows.pop((feedback_id, user_id), None)
+
+    async def delete_by_author(self, user_id: int) -> int:
+        self.calls.append("delete_by_author")
+        mine = [key for key in self.rows if key[1] == user_id]
+        for key in mine:
+            del self.rows[key]
+        return len(mine)
+
+
+class InMemoryPeopleLookup:
+    """A :class:`~eifi1_server_kit.feedback.PeopleLookup` over ``{user_id: (first, last)}``."""
+
+    def __init__(self, names: Mapping[int, tuple[str, str]] | None = None) -> None:
+        self.people = dict(names or {})
+        self.calls: list[str] = []
+
+    async def names(self, user_ids: Collection[int]) -> Mapping[int, tuple[str, str]]:
+        self.calls.append("names")
+        return {user_id: self.people[user_id] for user_id in user_ids if user_id in self.people}
 
 
 class InMemoryAttachmentStorage:
@@ -473,3 +755,249 @@ async def check_round_trip(client: Any, *, policy: AttachmentUrlPolicy, headers:
         downloaded.headers.get("content-disposition", "").startswith("inline"), "download: a picture is shown inline"
     )
     _check(downloaded.headers.get("x-content-type-options") == "nosniff", "download: nosniff")
+
+
+# --- public feedback's conformance checks (0.11, feedback §9.14) ------------------------
+
+
+async def check_reply_store(store: FeedbackReplyStore[Any], *, feedback_id: int, admin: FeedbackActor) -> None:
+    """Does the app's reply store keep the port's promises (§9.7)? Raises
+    :class:`AssertionError` naming the first that fails. ``feedback_id`` is an existing
+    report; it asserts only on the two replies it adds."""
+    token = secrets.token_hex(8)
+    first = await store.add(
+        NewFeedbackReply(
+            feedback_id=feedback_id,
+            author_id=admin.id,
+            body=f"First answer ({token})",
+            status_from=FeedbackStatus.OPEN,
+            status_to=FeedbackStatus.IN_EVALUATION,
+        ),
+        actor=admin,
+    )
+    second = await store.add(
+        NewFeedbackReply(feedback_id=feedback_id, author_id=None, body=f"A loop's answer ({token})"), actor=None
+    )
+    _check(isinstance(first.id, int) and first.id != second.id, "add: each reply has its own id, set by the flush")
+    _check(isinstance(first.created_at, datetime), "add: created_at is set (server_default now())")
+    _check(
+        FeedbackStatus(first.status_from or "") is FeedbackStatus.OPEN
+        and FeedbackStatus(first.status_to or "") is FeedbackStatus.IN_EVALUATION,
+        "add: status_from and status_to read back",
+    )
+    _check(second.status_from is None and second.status_to is None, "add: no status change reads back as None")
+    found = (await store.for_reports([feedback_id, _MISSING_ID])).get(feedback_id, ())
+    ours = [reply.id for reply in found if reply.id in {first.id, second.id}]
+    _check(ours == [first.id, second.id], "for_reports: the report's replies, oldest first")
+    _check(not (await store.for_reports([_MISSING_ID])).get(_MISSING_ID), "for_reports: a report with none has none")
+    by_admin = {reply.id for reply in await store.by_author(admin.id)}
+    _check(first.id in by_admin and second.id not in by_admin, "by_author: the replies that person wrote")
+    await store.apply(first, {"author_id": None, "body": "[erased]"})
+    again = [reply for reply in (await store.for_reports([feedback_id]))[feedback_id] if reply.id == first.id]
+    _check(
+        len(again) == 1 and again[0].author_id is None and again[0].body == "[erased]",
+        "apply: author_id and body read back",
+    )
+
+
+async def check_comment_store(
+    store: FeedbackCommentStore[Any],
+    *,
+    feedback_id: int,
+    author: FeedbackActor,
+    other: FeedbackActor,
+    admin: FeedbackActor,
+) -> None:
+    """Does the app's comment store keep the port's promises (§9.8)? Raises
+    :class:`AssertionError` naming the first that fails. ``feedback_id`` is an existing
+    report WITHOUT comments; ``clear_hidden_by(admin.id)`` clears that account's hides on
+    the whole test database."""
+    token = secrets.token_hex(8)
+    first = await store.add(NewFeedbackComment(feedback_id, author.id, f"Same here ({token})"), actor=author)
+    second = await store.add(NewFeedbackComment(feedback_id, other.id, f"And here ({token})"), actor=other)
+    third = await store.add(NewFeedbackComment(feedback_id, author.id, f"Still ({token})"), actor=author)
+    _check(len({first.id, second.id, third.id}) == 3, "add: each comment has its own id, set by the flush")
+    _check(not first.staff and first.hidden_at is None and first.hidden_by is None, "add: not staff, not hidden")
+    order = [comment.id for comment in await store.for_report(feedback_id)]
+    _check(order == [first.id, second.id, third.id], "for_report: the report's comments, oldest first")
+    found = await store.get(feedback_id, second.id)
+    _check(found is not None and found.id == second.id, "get: the comment")
+    _check(await store.get(_MISSING_ID, second.id) is None, "get: not under another report")
+    _check(await store.get(feedback_id, _MISSING_ID) is None, "get: a missing id is None")
+    _check(
+        list(await store.commenters(feedback_id)) == [author.id, other.id], "commenters: each once, first comment first"
+    )
+    await store.apply(second, {"hidden_at": utc_now(), "hidden_by": admin.id}, actor=admin)
+    _check((await store.counts([feedback_id], include_hidden=True)).get(feedback_id) == 3, "counts: hidden included")
+    _check((await store.counts([feedback_id], include_hidden=False)).get(feedback_id) == 2, "counts: visible only")
+    _check(await store.clear_hidden_by(admin.id) >= 1, "clear_hidden_by: how many rows")
+    cleared = await store.get(feedback_id, second.id)
+    _check(
+        cleared is not None and cleared.hidden_by is None and cleared.hidden_at is not None,
+        "clear_hidden_by: hidden_by NULL, the comment still hidden",
+    )
+    mine = {comment.id for comment in await store.by_author(author.id)}
+    _check({first.id, third.id} <= mine and second.id not in mine, "by_author: the comments that person wrote")
+    await store.delete(third)
+    _check(await store.get(feedback_id, third.id) is None, "delete: gone")
+
+
+async def check_vote_store(
+    store: FeedbackVoteStore, *, feedback_id: int, voter: FeedbackActor, other: FeedbackActor
+) -> None:
+    """Does the app's vote store keep the port's promises (§9.6)? Raises
+    :class:`AssertionError` naming the first that fails. ``feedback_id`` is an existing
+    report neither person has voted on; ``delete_by_author(other.id)`` deletes every vote
+    ``other`` cast on the test database."""
+
+    async def tally(person: FeedbackActor) -> tuple[int, bool]:
+        return (await store.counts([feedback_id, _MISSING_ID], viewer_id=person.id)).get(feedback_id, (0, False))
+
+    before, voted = await tally(voter)
+    _check(not voted and not (await tally(other))[1], "a report neither person has voted on")
+    await store.put(feedback_id, voter.id)
+    await store.put(feedback_id, voter.id)
+    _check(await tally(voter) == (before + 1, True), "put: twice is one vote, and the viewer's")
+    await store.put(feedback_id, other.id)
+    _check(await tally(voter) == (before + 2, True), "counts: every vote")
+    await store.delete(feedback_id, voter.id)
+    await store.delete(feedback_id, voter.id)
+    _check(await tally(voter) == (before + 1, False), "delete: gone, and none to delete is no error")
+    _check(await tally(other) == (before + 1, True), "counts: voted is the viewer's")
+    _check(await store.delete_by_author(other.id) >= 1, "delete_by_author: how many")
+    _check(await tally(other) == (before, False), "delete_by_author: that person's votes are gone")
+    _check(
+        (await store.counts([_MISSING_ID], viewer_id=voter.id)).get(_MISSING_ID, (0, False)) == (0, False),
+        "counts: a report without votes",
+    )
+
+
+async def _whole_public_list(
+    repository: PublicFeedbackRepository[Any], *, viewer_id: int, sort: PublicSort, q: str | None, **filters: Any
+) -> list[PublicListEntry[Any]]:
+    entries: list[PublicListEntry[Any]] = []
+    offset, previous = 0, [-1]
+    while True:
+        found = list(
+            await repository.public_page(
+                viewer_id=viewer_id,
+                sort=sort,
+                status=filters.get("status"),
+                category=filters.get("category"),
+                q=q,
+                limit=PUBLIC_PAGE_MAX,
+                offset=offset,
+            )
+        )
+        ids = [entry.row.id for entry in found]
+        _check(ids != previous, "public_page: the offset moves on to the next page")
+        entries += found
+        if len(found) < PUBLIC_PAGE_MAX:
+            return entries
+        previous, offset = ids, offset + PUBLIC_PAGE_MAX
+
+
+async def check_public_repository(
+    repository: Any,
+    *,
+    votes: FeedbackVoteStore,
+    author: FeedbackActor,
+    other: FeedbackActor,
+    search: bool = True,
+) -> None:
+    """Does the app's repository keep :class:`~eifi1_server_kit.feedback.PublicFeedbackRepository`'s
+    promises (§9.9)? Raises :class:`AssertionError` naming the first that fails.
+
+    ``repository`` is the app's :class:`~eifi1_server_kit.feedback.FeedbackRepository`
+    that implements the public reads; ``votes`` its vote store. It files four reports as
+    ``author`` — two public, one private, one CRASH — has ``other`` vote on one, and reads
+    them back through ``public_page`` (with ``q``, or page by page where ``search`` is
+    False — titles sealed) and ``get_public``. It asserts only on the rows it adds.
+    """
+    token = secrets.token_hex(8)
+
+    def report(title: str, **fields: Any) -> NewFeedback:
+        values: dict[str, Any] = {
+            "user_id": author.id,
+            "title": f"{title} ({token})",
+            "body": "Filed by the public conformance check.",
+            "category": FeedbackCategory.BUG,
+            "status": FeedbackStatus.OPEN,
+            "context": {"route": "/check"},
+        }
+        values.update(fields)
+        return NewFeedback(**values)
+
+    wanted = await repository.add(report("Wanted"))
+    private = await repository.add(report("Private", public=False))
+    crash = await repository.add(
+        report("[crash] Error: check", category=FeedbackCategory.CRASH, crash_fingerprint=secrets.token_hex(16))
+    )
+    newer = await repository.add(report("Newer"))
+    await votes.put(wanted.id, other.id)
+    await votes.put(wanted.id, author.id)
+    _check(bool(wanted.public) and not private.public, "add: public reads back")
+
+    found = await repository.get_public(private.id)
+    _check(found is not None and found.id == private.id, "get_public: the row by id, whatever its flag")
+    _check(await repository.get_public(_MISSING_ID) is None, "get_public: a missing id is None")
+
+    ours = {wanted.id, private.id, crash.id, newer.id}
+
+    async def listed(sort: PublicSort, **filters: Any) -> list[PublicListEntry[Any]]:
+        entries = await _whole_public_list(
+            repository, viewer_id=other.id, sort=sort, q=token if search else None, **filters
+        )
+        return [entry for entry in entries if entry.row.id in ours]
+
+    newest = await listed("newest")
+    _check([entry.row.id for entry in newest] == [newer.id, wanted.id], "public_page: public rows only, newest first")
+    by_id = {entry.row.id: entry for entry in newest}
+    _check(
+        (by_id[wanted.id].votes, by_id[wanted.id].voted, by_id[wanted.id].comment_count) == (2, True, 0),
+        "public_page: the counts, voted the viewer's",
+    )
+    _check((by_id[newer.id].votes, by_id[newer.id].voted) == (0, False), "public_page: a row without votes")
+    most = await listed("votes")
+    _check([entry.row.id for entry in most] == [wanted.id, newer.id], "public_page(sort=votes): most wanted first")
+    _check(len(await listed("updated")) == 2, "public_page(sort=updated): the same rows")
+    _check(len(await listed("newest", status=FeedbackStatus.OPEN)) == 2, "public_page(status): that status")
+    _check(not await listed("newest", status=FeedbackStatus.DONE), "public_page(status): only that status")
+    _check(not await listed("newest", category=FeedbackCategory.IDEA), "public_page(category): only that category")
+
+
+def _public_kind(keys: Collection[str]) -> tuple[str, frozenset[str]]:
+    if "staff" in keys:
+        return "comment", PUBLIC_COMMENT_FIELDS
+    if "status_to" in keys and "title" not in keys:
+        return "reply", PUBLIC_REPLY_FIELDS
+    return "report", PUBLIC_REPORT_FIELDS
+
+
+def assert_public_view(payload: Any, *, policy: AttachmentUrlPolicy = DEFAULT_ATTACHMENT_URL_POLICY) -> None:
+    """Does a public answer say only what §9.10 lets it? Raises :class:`AssertionError`.
+
+    ``payload`` is the JSON (or a Pydantic model) of a public list, detail, comment list,
+    comment or vote. Each object is read as a report, a reply (``status_to``, no
+    ``title``) or a comment (``staff``) and may carry only that list's keys — never
+    ``user_id``, ``user_email``, ``context``, ``public``, ``filed_private``,
+    ``status_from``, a file column — and no string anywhere may hold ``policy.prefix``:
+    no attachment URL or key. A CRASH is never in it.
+    """
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json")
+    if isinstance(payload, list):
+        for item in payload:
+            assert_public_view(item, policy=policy)
+        return
+    _check(isinstance(payload, Mapping), f"a public answer is an object or a list, not {type(payload).__name__}")
+    kind, allowed = _public_kind(payload)
+    extra = sorted(set(payload) - allowed)
+    _check(not extra, f"a public {kind} carries {extra}")
+    _check(payload.get("category") != FeedbackCategory.CRASH.value, "a CRASH report is never public")
+    for key, value in payload.items():
+        if isinstance(value, str):
+            _check(policy.prefix not in value, f"a public {kind}'s {key} names an attachment URL")
+        elif isinstance(value, list):
+            for item in value:
+                assert_public_view(item, policy=policy)

@@ -238,6 +238,19 @@ def name_incomplete(first: str | None, last: str | None, *, is_demo: bool = Fals
     return not (first or "").strip() or not (last or "").strip()
 
 
+def first_name_of(first: str | None, last: str | None) -> str | None:
+    """The name other people see (feedback §9.5): ``first`` trimmed when ``last`` is not
+    blank, otherwise ``None``.
+
+    **No first-word guessing**: "王小明", "Dr. Anna Muster" and "Muster, Anna" all break it.
+    An account whose old display name moved whole into ``first_name`` (keksdose 0114,
+    Kurvenschmiede) is :func:`name_incomplete` and shows no name until it completes it;
+    ``None`` is drawn as "A user", the same as an erased author.
+    """
+    given, family = (first or "").strip(), (last or "").strip()
+    return given if given and family else None
+
+
 #: The orders :func:`full_name` writes a name in — its every form, for erasure.
 _NAME_ORDER_LOCALES: tuple[str, ...] = ("en", "hu", "zh")
 

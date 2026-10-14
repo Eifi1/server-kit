@@ -6,7 +6,8 @@ once against its own adapters, and ``check_round_trip`` over its own client.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,7 @@ from eifi1_server_kit.feedback import (
     FeedbackActor,
     FeedbackCategory,
     FeedbackStatus,
+    NewFeedback,
     StoredAttachment,
 )
 from eifi1_server_kit.feedback.testing import (
@@ -212,3 +214,118 @@ async def test_check_round_trip_fails_where_the_prefix_is_not_the_mount() -> Non
         elsewhere = AttachmentUrlPolicy(POLICY.key_pattern, prefix="/api/v2/feedback/attachments/")
         with pytest.raises(AssertionError, match="upload: 201, not 404"):
             await check_round_trip(world.client, policy=elsewhere, headers=World.signed_in(AUTHOR))
+
+
+# --- public feedback's checks (0.11, §9.14) ----------------------------------------------------
+
+
+def _public_fakes() -> tuple[InMemoryFeedbackRepository, Any, Any]:
+    from eifi1_server_kit.feedback.testing import InMemoryCommentStore, InMemoryVoteStore
+
+    votes, comments = InMemoryVoteStore(), InMemoryCommentStore()
+    return InMemoryFeedbackRepository(emails=EMAILS, votes=votes, comments=comments), votes, comments
+
+
+async def test_the_public_fakes_pass_their_checks() -> None:
+    from eifi1_server_kit.feedback.testing import (
+        InMemoryReplyStore,
+        check_comment_store,
+        check_public_repository,
+        check_reply_store,
+        check_vote_store,
+    )
+
+    admin = actor(id=9, is_admin=True)
+    _, votes, comments = _public_fakes()
+    await check_reply_store(InMemoryReplyStore(), feedback_id=1, admin=admin)
+    await check_comment_store(comments, feedback_id=1, author=AUTHOR, other=STRANGER, admin=admin)
+    await check_vote_store(votes, feedback_id=1, voter=AUTHOR, other=STRANGER)
+    repository, votes, _ = _public_fakes()
+    await check_public_repository(repository, votes=votes, author=AUTHOR, other=STRANGER)
+    # Titles sealed: the check pages through the whole list instead of searching.
+    repository, votes, _ = _public_fakes()
+    for _ in range(150):
+        await repository.add(
+            NewFeedback(
+                user_id=STRANGER.id,
+                title="Noise",
+                body="",
+                category=FeedbackCategory.IDEA,
+                status=FeedbackStatus.OPEN,
+                context=None,
+            )
+        )
+    await check_public_repository(repository, votes=votes, author=AUTHOR, other=STRANGER, search=False)
+
+
+async def test_a_broken_reply_store_fails_its_check() -> None:
+    from eifi1_server_kit.feedback.testing import InMemoryReplyStore, MemoryReplyRow, check_reply_store
+
+    class NewestFirst(InMemoryReplyStore):
+        async def for_reports(self, ids: Collection[int]) -> Mapping[int, Sequence[MemoryReplyRow]]:
+            return {key: list(reversed(rows)) for key, rows in (await super().for_reports(ids)).items()}
+
+    with pytest.raises(AssertionError, match="oldest first"):
+        await check_reply_store(NewestFirst(), feedback_id=1, admin=AUTHOR)
+
+
+async def test_a_broken_comment_or_vote_store_fails_its_check() -> None:
+    from eifi1_server_kit.feedback.testing import (
+        InMemoryCommentStore,
+        InMemoryVoteStore,
+        check_comment_store,
+        check_vote_store,
+    )
+
+    class CountsHidden(InMemoryCommentStore):
+        def tally(self, ids: Collection[int], *, include_hidden: bool) -> dict[int, int]:
+            return super().tally(ids, include_hidden=True)
+
+    with pytest.raises(AssertionError, match="visible only"):
+        await check_comment_store(CountsHidden(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=AUTHOR)
+
+    class Doubles(InMemoryVoteStore):
+        async def put(self, feedback_id: int, user_id: int) -> None:
+            await super().put(feedback_id, user_id)
+            self.rows[(feedback_id, user_id + 1000)] = self.now()
+
+    with pytest.raises(AssertionError, match="twice is one vote"):
+        await check_vote_store(Doubles(), feedback_id=1, voter=AUTHOR, other=STRANGER)
+    voted = InMemoryVoteStore()
+    await voted.put(1, AUTHOR.id)
+    with pytest.raises(AssertionError, match="neither person has voted"):
+        await check_vote_store(voted, feedback_id=1, voter=AUTHOR, other=STRANGER)
+
+
+async def test_a_public_page_that_shows_private_rows_fails_its_check() -> None:
+    from eifi1_server_kit.feedback import PublicListEntry
+    from eifi1_server_kit.feedback.testing import InMemoryVoteStore, check_public_repository
+
+    class Leaky(InMemoryFeedbackRepository):
+        async def public_page(self, **query: Any) -> Sequence[PublicListEntry[MemoryFeedbackRow]]:
+            return [PublicListEntry(row, 0, False, 0) for row in self.rows.values()]
+
+    votes = InMemoryVoteStore()
+    with pytest.raises(AssertionError, match="public rows only"):
+        await check_public_repository(Leaky(emails=EMAILS, votes=votes), votes=votes, author=AUTHOR, other=STRANGER)
+
+
+def test_assert_public_view_walks_every_object() -> None:
+    from eifi1_server_kit.feedback import FeedbackVoteResponse
+    from eifi1_server_kit.feedback.testing import assert_public_view
+
+    reply = {"id": 1, "author_name": None, "body": "ok", "status_to": None, "created_at": "x"}
+    report = {"id": 1, "title": "t", "category": "BUG", "body": "b", "replies": [reply], "votes": 1}
+    comment = {"id": 1, "author_name": None, "mine": False, "staff": False, "body": None, "hidden": True}
+    assert_public_view([report, comment])
+    assert_public_view(FeedbackVoteResponse(votes=1, voted=True))
+    for bad, message in (
+        ({**report, "user_id": 2}, r"a public report carries \['user_id'\]"),
+        ({**report, "replies": [{**reply, "status_from": "OPEN"}]}, "a public reply carries"),
+        ({**comment, "user_email": "a@b"}, "a public comment carries"),
+        ({**report, "body": "/api/v1/feedback/attachments/x.png"}, "names an attachment URL"),
+        ({**report, "category": "CRASH"}, "never public"),
+        ("text", "an object or a list"),
+    ):
+        with pytest.raises(AssertionError, match=message):
+            assert_public_view(bad)

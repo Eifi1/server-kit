@@ -15,9 +15,10 @@ and, for whatever no endpoint caught,
 :func:`eifi1_server_kit.errors.install_contract_error_handlers` — without it an app-wide
 ``ValueError`` handler answers these with its own status.
 
-Layer 2 (:mod:`eifi1_server_kit.feedback.service`, ``feedback.router``) raises three more:
-:class:`FeedbackNotFoundError` and :class:`AttachmentNotFoundError` (404) and
-:class:`FeedbackThrottledError` (429 with ``Retry-After``). The router raises no
+Layer 2 (:mod:`eifi1_server_kit.feedback.service`, ``feedback.router``) raises four more:
+:class:`FeedbackNotFoundError` and :class:`AttachmentNotFoundError` (404),
+:class:`FeedbackThrottledError` (429 with ``Retry-After``) and, since 0.11,
+:class:`FeedbackConflictError` (409). The router raises no
 ``HTTPException`` of its own; the installer answers all of them.
 """
 
@@ -28,6 +29,9 @@ from eifi1_server_kit.limiter import retry_after_header
 #: The upload throttle's sentence, keksdose's (``upload_guards.py:97``); its support door
 #: raises it too, through :func:`eifi1_server_kit.feedback.throttle_upload`.
 THROTTLED_DETAIL = "Too many attachments uploaded — please try again later."
+#: The comment and vote windows' sentences (§9.2 decision 19), on the same 429.
+COMMENTS_THROTTLED_DETAIL = "Too many comments — please try again later."
+VOTES_THROTTLED_DETAIL = "Too many votes — please try again later."
 
 
 class FeedbackError(ValueError):
@@ -72,6 +76,13 @@ class FeedbackNotFoundError(FeedbackError):
 
     def __init__(self, detail: str = "Feedback not found") -> None:
         super().__init__(detail)
+
+
+class FeedbackConflictError(FeedbackError):
+    """The request contradicts the report's state (→ 409): the author taking back the vote
+    their report is (§9.6, "Your report counts as your vote")."""
+
+    status_code = 409
 
 
 class AttachmentNotFoundError(FeedbackError):

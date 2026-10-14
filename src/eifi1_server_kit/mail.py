@@ -407,6 +407,11 @@ class AccountNoticeKind(enum.StrEnum):
     #: (notifications §9.3), only while that account is ACTIVE: no switch, no unsubscribe
     #: link. Kurvenschmiede's (``admin_service.transfer``); the words stay its own.
     WORK_TRANSFERRED_NOTICE = "work_transferred_notice"
+    #: To an author of reports made public by the round-0.38 migration (feedback §9.12):
+    #: which reports others now see, what they never see, and how to keep one private.
+    #: Once per person, through the app's once-marker (``feedback_published:<user_id>``).
+    #: About the person's own data, so no switch and no unsubscribe link (kk, KS).
+    FEEDBACK_PUBLISHED = "feedback_published"
 
 
 class Mailer(Protocol):

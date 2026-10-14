@@ -35,6 +35,14 @@ Each request builds a :class:`~eifi1_server_kit.feedback.FeedbackService` on the
 request's repository; each flow makes at most one repository write, as its last step, and
 the kit never commits (§2.7).
 
+**Public feedback** (0.11, ``docs/feedback-harmonization.md`` §9.9): with ``deps.replies``
+the router adds ``POST /{feedback_id}/replies`` (``create_reply``); with
+``deps.public_viewer`` (which needs ``comments``, ``votes`` and ``people``) eight more —
+``list_public``, ``get_public``, ``list_comments``, ``create_comment``, ``hide_comment``,
+``delete_comment``, ``vote``, ``unvote``. They go after the inbox and before the PATCH, so
+``/public`` comes before any ``/{feedback_id}`` GET the app adds after this router. The
+existing answers fill the new fields from the stores given (one call per store a page).
+
 No ``from __future__ import annotations`` here, on purpose: the endpoints' parameter
 types are the app's models, closed over in the factory, and FastAPI cannot resolve a
 string annotation that names a local.
@@ -46,27 +54,36 @@ from typing import Annotated, Any, Literal
 
 from eifi1_server_kit.feedback import service as _service
 from eifi1_server_kit.feedback.attachments import AttachmentUrlPolicy
-from eifi1_server_kit.feedback.enums import FeedbackStatus
+from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackStatus
 from eifi1_server_kit.feedback.ports import (
     AttachmentStorage,
     Clock,
     FeedbackActor,
-    FeedbackRepository,
     FeedbackRow,
     utc_now,
 )
+from eifi1_server_kit.feedback.public import PUBLIC_PAGE_MAX, PUBLIC_PAGE_SIZE
 from eifi1_server_kit.feedback.schemas import (
     CrashReportCreate,
     CrashReportResponse,
     FeedbackAttachmentResponse,
+    FeedbackCommentCreate,
+    FeedbackCommentHide,
+    FeedbackCommentResponse,
     FeedbackCreate,
+    FeedbackPublicListItem,
+    FeedbackPublicResponse,
+    FeedbackReplyCreate,
+    FeedbackReplyResponse,
     FeedbackResponse,
     FeedbackUpdate,
+    FeedbackVoteResponse,
+    PublicSort,
 )
 from eifi1_server_kit.limiter import FeedbackLimiters
 
 try:
-    from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, status
+    from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile, status
 except ImportError as exc:
     raise ImportError(
         "eifi1_server_kit.feedback.router needs FastAPI: install the kit with its fastapi extra, "
@@ -115,6 +132,29 @@ class FeedbackDeps[RowT: FeedbackRow]:
     require_utf8_text: bool = False
     limiters: Callable[[Request], FeedbackLimiters] = app_state_limiters
     now: Clock = utc_now
+    # Public feedback (0.11, feedback §9.9, §9.14).
+    #: The app's dependency answering a ``FeedbackReplyStore``: mounts ``create_reply``.
+    replies: Callable[..., Any] | None = None
+    #: The app's dependencies answering a ``FeedbackCommentStore``, a ``FeedbackVoteStore``
+    #: and a ``PeopleLookup``: each required with ``public_viewer``.
+    comments: Callable[..., Any] | None = None
+    votes: Callable[..., Any] | None = None
+    people: Callable[..., Any] | None = None
+    #: Who sees the public parts, on the viewer (an admin always does, a demo never):
+    #: keksdose every signed-in user, Kurvenschmiede ADMIN / MEMBER / REVIEWER. ``None``
+    #: mounts no public route (kastlan).
+    public_viewer: Callable[[FeedbackActor], bool] | None = None
+    #: ``q`` searches the title; False where titles are sealed (Kurvenschmiede): a 422.
+    public_search: bool = True
+    reply_response_model: type[FeedbackReplyResponse] = FeedbackReplyResponse
+    comment_response_model: type[FeedbackCommentResponse] = FeedbackCommentResponse
+    public_item_model: type[FeedbackPublicListItem] = FeedbackPublicListItem
+    public_response_model: type[FeedbackPublicResponse] = FeedbackPublicResponse
+
+
+async def _absent() -> None:
+    """A store the app did not give."""
+    return None
 
 
 def _default_response(model: type[FeedbackResponse]) -> Callable[[Any, str | None], FeedbackResponse]:
@@ -129,23 +169,61 @@ def feedback_router[RowT: FeedbackRow](
 ) -> APIRouter:
     """The contract's seven routes (§3.3), on ``APIRouter(prefix=prefix, tags=tags)``, in
     this order: ``POST /attachments``, ``GET /attachments/{key}``, ``POST ""``,
-    ``POST /crash``, ``GET /my``, ``GET ""``, ``PATCH /{feedback_id}``.
+    ``POST /crash``, ``GET /my``, ``GET ""``, then public feedback's routes (§9.9: the
+    eight with ``public_viewer``, ``POST /{feedback_id}/replies`` with ``replies``), and
+    ``PATCH /{feedback_id}`` last.
 
     Raises :class:`ValueError` when ``deps.create_model.attachment_url_policy`` is not
-    ``deps.policy``: two policies would let a report name a key the download refuses.
+    ``deps.policy``: two policies would let a report name a key the download refuses; and
+    when ``deps.public_viewer`` is set without ``comments``, ``votes`` or ``people``.
     """
     if deps.create_model.attachment_url_policy != deps.policy:
         raise ValueError(
             "feedback_router: create_model.attachment_url_policy is not deps.policy, so a report "
             "could name a key the download refuses"
         )
+    if deps.public_viewer is not None:
+        missing = [name for name in ("comments", "votes", "people") if getattr(deps, name) is None]
+        if missing:
+            raise ValueError(f"feedback_router: public_viewer needs {', '.join(missing)}")
     create_model = deps.create_model
     update_model = deps.update_model
     response_model = deps.response_model
     to_response = deps.to_response or _default_response(response_model)
 
-    def service(repository: FeedbackRepository[RowT]) -> _service.FeedbackService[RowT]:
-        return _service.FeedbackService(repository, policy=deps.policy, foreign_row=deps.foreign_row, now=deps.now)
+    async def get_service(
+        repository: Annotated[Any, Depends(deps.repository)],
+        replies: Annotated[Any, Depends(deps.replies or _absent)],
+        comments: Annotated[Any, Depends(deps.comments or _absent)],
+        votes: Annotated[Any, Depends(deps.votes or _absent)],
+        people: Annotated[Any, Depends(deps.people or _absent)],
+    ) -> _service.FeedbackService[RowT]:
+        return _service.FeedbackService(
+            repository,
+            policy=deps.policy,
+            foreign_row=deps.foreign_row,
+            now=deps.now,
+            replies=replies,
+            comments=comments,
+            votes=votes,
+            people=people,
+            public_viewer=deps.public_viewer,
+            public_search=deps.public_search,
+        )
+
+    Service = Annotated[_service.FeedbackService[Any], Depends(get_service)]  # noqa: N806
+
+    async def answer(
+        actor: FeedbackActor, service: _service.FeedbackService[RowT], pairs: Sequence[tuple[RowT, str | None]]
+    ) -> list[FeedbackResponse]:
+        """The admin's view for an admin, the author's for anyone else (§9.3)."""
+        if actor.is_admin:
+            return await service.admin_view(
+                actor, pairs, to_response=to_response, reply_model=deps.reply_response_model
+            )
+        return await service.author_view(
+            actor, [row for row, _ in pairs], to_response=to_response, reply_model=deps.reply_response_model
+        )
 
     router = APIRouter(prefix=prefix, tags=list(tags))
 
@@ -196,29 +274,30 @@ def feedback_router[RowT: FeedbackRow](
     async def create(
         payload: create_model,  # type: ignore[valid-type]
         actor: Annotated[FeedbackActor, Depends(deps.actor)],
-        repository: Annotated[FeedbackRepository[RowT], Depends(deps.repository)],
+        service: Service,
     ) -> FeedbackResponse:
         """File a report: the first status and the identity in ``context`` are the server's."""
-        return to_response(await service(repository).create(actor, payload), None)
+        row = await service.create(actor, payload)
+        return (await answer(actor, service, [(row, None)]))[0]
 
     @router.post("/crash", response_model=CrashReportResponse, status_code=status.HTTP_202_ACCEPTED)
     async def report_crash(
         payload: CrashReportCreate,
         request: Request,
         actor: Annotated[FeedbackActor, Depends(deps.actor)],
-        repository: Annotated[FeedbackRepository[RowT], Depends(deps.repository)],
+        service: Service,
     ) -> CrashReportResponse:
         """File a crash the client's error boundary caught: always a 202, ``stored: false``
         for a demo or a spent window."""
-        return await service(repository).report_crash(actor, payload, limiter=deps.limiters(request).crash)
+        return await service.report_crash(actor, payload, limiter=deps.limiters(request).crash)
 
     @router.get("/my", response_model=list[response_model])  # type: ignore[valid-type]
     async def list_my(
         actor: Annotated[FeedbackActor, Depends(deps.actor)],
-        repository: Annotated[FeedbackRepository[RowT], Depends(deps.repository)],
+        service: Service,
     ) -> list[FeedbackResponse]:
         """The caller's own reports, newest first."""
-        return [to_response(row, None) for row in await service(repository).list_mine(actor)]
+        return await answer(actor, service, [(row, None) for row in await service.list_mine(actor)])
 
     @router.get(
         "",
@@ -227,12 +306,34 @@ def feedback_router[RowT: FeedbackRow](
     )
     async def list_all(
         actor: Annotated[FeedbackActor, Depends(deps.actor)],
-        repository: Annotated[FeedbackRepository[RowT], Depends(deps.repository)],
+        service: Service,
         status_filter: FeedbackStatus | None = None,
     ) -> list[FeedbackResponse]:
         """Every report, newest first, each with its author's address — the inbox."""
-        rows = await service(repository).inbox(actor, status_filter)
-        return [to_response(row, address) for row, address in rows]
+        rows = await service.inbox(actor, status_filter)
+        return await service.admin_view(actor, rows, to_response=to_response, reply_model=deps.reply_response_model)
+
+    if deps.public_viewer is not None:
+        _public_routes(router, deps, Service)
+
+    if deps.replies is not None:
+
+        @router.post(
+            "/{feedback_id}/replies",
+            response_model=response_model,
+            status_code=status.HTTP_201_CREATED,
+            dependencies=[Depends(deps.admin_guard), Depends(deps.demo_guard("feedback"))],
+        )
+        async def create_reply(
+            feedback_id: int,
+            payload: FeedbackReplyCreate,
+            actor: Annotated[FeedbackActor, Depends(deps.actor)],
+            service: Service,
+        ) -> FeedbackResponse:
+            """An admin's answer, with the status it moves the report to, if any: the
+            report comes back with its replies."""
+            row = await service.reply(actor, feedback_id, payload)
+            return (await answer(actor, service, [(row, None)]))[0]
 
     @router.patch(
         "/{feedback_id}",
@@ -243,9 +344,106 @@ def feedback_router[RowT: FeedbackRow](
         feedback_id: int,
         payload: update_model,  # type: ignore[valid-type]
         actor: Annotated[FeedbackActor, Depends(deps.actor)],
-        repository: Annotated[FeedbackRepository[RowT], Depends(deps.repository)],
+        service: Service,
     ) -> FeedbackResponse:
         """Triage a report, edit one's own, or send one back for rework."""
-        return to_response(await service(repository).update(actor, feedback_id, payload), None)
+        row = await service.update(actor, feedback_id, payload)
+        return (await answer(actor, service, [(row, None)]))[0]
 
     return router
+
+
+def _public_routes(router: APIRouter, deps: FeedbackDeps[Any], Service: Any) -> None:  # noqa: N803
+    """The eight public routes of §9.9, in their order, on ``router``."""
+    item_model = deps.public_item_model
+    detail_model = deps.public_response_model
+    comment_model = deps.comment_response_model
+    Actor = Annotated[FeedbackActor, Depends(deps.actor)]  # noqa: N806
+
+    @router.get("/public", response_model=list[item_model])  # type: ignore[valid-type]
+    async def list_public(
+        actor: Actor,
+        service: Service,
+        sort: PublicSort = "newest",
+        status_filter: FeedbackStatus | None = None,
+        category: FeedbackCategory | None = None,
+        q: Annotated[str | None, Query(max_length=200)] = None,
+        limit: Annotated[int, Query(ge=1, le=PUBLIC_PAGE_MAX)] = PUBLIC_PAGE_SIZE,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> list[FeedbackPublicListItem]:
+        """The public reports, titles only: newest first, most wanted, or recently updated."""
+        entries = await service.list_public(
+            actor, sort=sort, status=status_filter, category=category, q=q, limit=limit, offset=offset
+        )
+        return list(await service.public_item(actor, entries, model=item_model))
+
+    @router.get("/public/{feedback_id}", response_model=detail_model)
+    async def get_public(feedback_id: int, actor: Actor, service: Service) -> FeedbackPublicResponse:
+        """One public report: the public body and the replies."""
+        row = await service.get_public(actor, feedback_id)
+        result: FeedbackPublicResponse = await service.public_view(actor, row, model=detail_model)
+        return result
+
+    @router.get("/{feedback_id}/comments", response_model=list[comment_model])  # type: ignore[valid-type]
+    async def list_comments(feedback_id: int, actor: Actor, service: Service) -> list[FeedbackCommentResponse]:
+        """A report's comments, oldest first."""
+        return list(await service.comments(actor, feedback_id, model=comment_model))
+
+    @router.post(
+        "/{feedback_id}/comments",
+        response_model=comment_model,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(deps.demo_guard("feedback"))],
+    )
+    async def create_comment(
+        feedback_id: int, payload: FeedbackCommentCreate, request: Request, actor: Actor, service: Service
+    ) -> FeedbackCommentResponse:
+        """Comment on a report one sees."""
+        result: FeedbackCommentResponse = await service.comment(
+            actor, feedback_id, payload, limiter=deps.limiters(request).comment, model=comment_model
+        )
+        return result
+
+    @router.patch(
+        "/{feedback_id}/comments/{comment_id}",
+        response_model=comment_model,
+        dependencies=[Depends(deps.admin_guard), Depends(deps.demo_guard("feedback"))],
+    )
+    async def hide_comment(
+        feedback_id: int, comment_id: int, payload: FeedbackCommentHide, actor: Actor, service: Service
+    ) -> FeedbackCommentResponse:
+        """Hide or unhide a comment (an admin)."""
+        result: FeedbackCommentResponse = await service.hide_comment(
+            actor, feedback_id, comment_id, payload, model=comment_model
+        )
+        return result
+
+    @router.delete(
+        "/{feedback_id}/comments/{comment_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        dependencies=[Depends(deps.demo_guard("feedback"))],
+    )
+    async def delete_comment(feedback_id: int, comment_id: int, actor: Actor, service: Service) -> Response:
+        """Delete one's own comment."""
+        await service.delete_comment(actor, feedback_id, comment_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @router.put(
+        "/{feedback_id}/vote",
+        response_model=FeedbackVoteResponse,
+        dependencies=[Depends(deps.demo_guard("feedback"))],
+    )
+    async def vote(feedback_id: int, request: Request, actor: Actor, service: Service) -> FeedbackVoteResponse:
+        """ "I want this too": idempotent."""
+        result: FeedbackVoteResponse = await service.vote(actor, feedback_id, limiter=deps.limiters(request).vote)
+        return result
+
+    @router.delete(
+        "/{feedback_id}/vote",
+        response_model=FeedbackVoteResponse,
+        dependencies=[Depends(deps.demo_guard("feedback"))],
+    )
+    async def unvote(feedback_id: int, request: Request, actor: Actor, service: Service) -> FeedbackVoteResponse:
+        """Take one's vote back; the author's report stays their vote (409)."""
+        result: FeedbackVoteResponse = await service.unvote(actor, feedback_id, limiter=deps.limiters(request).vote)
+        return result

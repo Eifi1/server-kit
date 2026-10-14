@@ -9,6 +9,7 @@ from eifi1_server_kit.auth import (
     addresses_for_reset,
     env_list_match,
     erasure_identifiers,
+    first_name_of,
     full_name,
     invitation_accepts,
     name_incomplete,
@@ -186,3 +187,23 @@ def test_anonymise_feedback_takes_them_unchanged() -> None:
         f"User: {ERASED_MARK}\nReported by {ERASED_MARK} ({ERASED_MARK}), once {ERASED_MARK}. "
         "Ada says the Bank of May is down."
     )
+
+
+@pytest.mark.parametrize(
+    ("first", "last", "expected"),
+    [
+        ("Anna", "Muster", "Anna"),
+        (" Anna ", " Muster ", "Anna"),
+        ("Anna Muster", "", None),
+        ("王小明", "", None),
+        ("Dr. Anna Muster", "  ", None),
+        ("  ", "Muster", None),
+        (None, "Muster", None),
+        ("Anna", None, None),
+        (None, None, None),
+    ],
+)
+def test_first_name_of_never_guesses_at_a_first_word(first: str | None, last: str | None, expected: str | None) -> None:
+    """Feedback §9.5: the first name only when the last name is there; a whole old display
+    name moved into ``first_name`` shows no name at all."""
+    assert first_name_of(first, last) == expected
