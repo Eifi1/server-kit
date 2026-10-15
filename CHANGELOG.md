@@ -10,6 +10,32 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.12.0] (2026-10-15)
+
+server-kit 0.12.0: the backend half of round 0.39 (ui-kit 0.39) — the Paddle billing
+amendment, `docs/billing-harmonization.md` §15, settled after the three apps' reviews. Each
+app keeps its own pay host and any host serves any app's checkout; plan changes go through
+the kits (a preview, then an immediate prorated switch); one Paddle customer per e-mail
+address across the apps. Billing stays off until the sandbox run.
+
+### ⚠ BREAKING CHANGES
+
+* **billing:** `SubscriptionRow` requires `provider_price_id` (each app adds the column), and
+  the provider port's three new methods must be implemented by any app-side client.
+* **translation_review:** `can_review_kit` refuses every area-limited grant, as `scope()`
+  does (decision T2); no app has such a grant.
+
+### Added — billing §15 (round 0.39)
+
+* **billing:** the port's `preview_plan_change`, `change_plan` (Paddle
+  `PATCH /subscriptions/{id}[/preview]`, `prorated_immediately`) and `customer_for` (by e-mail,
+  else created); `checkout_url(customer_email=)`; `require_plan_switch`, `switch_price` (422
+  `billing_plan_not_sold`, 409 `billing_plan_unchanged`), `plan_switch_preview`,
+  `PlanSwitchRequest`, `ProviderSwitchPreview`, `PlanSwitchPreview`, `PaidPrice`,
+  `BillingOverview.paid`, `BUYER_KEY`, `NormalisedEvent.buyer`, the code
+  `billing_not_subscribed`; `row_changes` writes `provider_price_id`; fakes and a
+  `plan_switched` step. `billing_already_subscribed` no longer points at the portal.
+
 ## [0.11.1] (2026-10-14)
 
 The apps' 0.38 adoption findings, released as one batch with ui-kit 0.38.1 once all three

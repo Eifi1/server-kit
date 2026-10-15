@@ -1053,7 +1053,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.11.1/eifi1_server_kit-0.11.1-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.12.0/eifi1_server_kit-0.12.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
