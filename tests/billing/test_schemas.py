@@ -1,4 +1,4 @@
-"""Billing's wire shapes (billing contract §4, §6, §12.5, §14.5, §14.12)."""
+"""Billing's wire shapes (billing contract §4, §6, §12.5, §14.5, §14.12, §15.2.10)."""
 
 from __future__ import annotations
 
@@ -14,21 +14,27 @@ from eifi1_server_kit.billing import (
     BillingCurrency,
     BillingInterval,
     BillingOverview,
+    BillingSettings,
     BillingStatus,
     CheckoutAnswer,
     CheckoutRequest,
+    PaidPrice,
     PlanChangeRequest,
     PlanChangeResponse,
     PlanIntervalPrices,
     PlanOut,
     PlanPrices,
     PlanSpec,
+    PlanSwitchPreview,
+    PlanSwitchRequest,
     PortalRequest,
+    ProviderSwitchPreview,
     SubscriptionSource,
     SubscriptionStatus,
     SyncRefusal,
     admin_plans_out,
     plan_catalogue,
+    plan_switch_preview,
     plans_out,
 )
 from tests.billing._rows import NOW, Row
@@ -59,6 +65,7 @@ def test_the_overview_is_built_from_the_row() -> None:
         "usage": {"budgets": 1},
         "currency": "CHF",
         "at_provider": False,
+        "paid": None,
     }
     assert not BillingOverview.from_row(
         row, plan=FREE, usage={}, currency=BillingCurrency.EUR, now=NOW + 10 * DAY
@@ -327,3 +334,59 @@ def test_a_sync_refusal_names_the_refused_changes() -> None:
         SyncRefusal(change_ids=[])
     with pytest.raises(ValidationError):
         SyncRefusal(change_ids=[""])
+
+
+# --- the plan switch (§15.2.10) --------------------------------------------------------------
+
+PRICES = BillingSettings(billing_price_ids={"pro": {"CHF": {"year": "pri_pro_y"}, "EUR": {"month": "pri_pro_m"}}})
+
+
+def test_the_overview_says_what_the_payer_pays() -> None:
+    """The row's price as plan, interval and currency — under a grant too, whose plan stays
+    the grant's: that is what shows a switch landed."""
+    granted = Row(plan_code="free", status="comped", source="manual", provider_price_id="pri_pro_m")
+    overview = BillingOverview.from_row(
+        granted, plan=FREE, usage={}, currency="CHF", now=NOW, price_ref=PRICES.billing_price_ref
+    )
+    assert overview.paid == PaidPrice(plan="pro", interval="month", currency="EUR")
+    assert overview.model_dump(mode="json")["paid"] == {"plan": "pro", "interval": "month", "currency": "EUR"}
+    # No price on the row, one the settings don't name, or no price_ref: None.
+    for row, ref in (
+        (Row(), PRICES.billing_price_ref),
+        (Row(provider_price_id="pri_gone"), PRICES.billing_price_ref),
+        (Row(provider_price_id="pri_pro_y"), None),
+    ):
+        assert BillingOverview.from_row(row, plan=FREE, usage={}, currency="CHF", now=NOW, price_ref=ref).paid is None
+
+
+def test_a_switch_request_is_normalised_and_closed() -> None:
+    assert PlanSwitchRequest.model_validate({"plan": " Pro ", "interval": "YEAR"}).model_dump() == {
+        "plan": "pro",
+        "interval": BillingInterval.YEAR,
+    }
+    with pytest.raises(ValidationError):
+        PlanSwitchRequest.model_validate({"plan": "pro", "interval": "week"})
+
+
+def test_the_preview_carries_the_figures_and_the_over_limit_lines() -> None:
+    """A downgrade over the new limit is allowed (§3.4); the confirm shows the lines."""
+    answer = ProviderSwitchPreview(currency="CHF", now_minor=-2500, next_minor=3000, next_billed_at=NOW + DAY)
+    preview = plan_switch_preview(answer, PRO, {"budgets": 7}, interval="year")
+    assert isinstance(preview, PlanSwitchPreview)
+    assert preview.model_dump(mode="json") == {
+        "currency": "CHF",
+        "now_minor": -2500,
+        "next_minor": 3000,
+        "next_billed_at": "2026-10-09T12:00:00Z",
+        "plan": "pro",
+        "interval": "year",
+        "over_limit": ["budgets"],
+        "limits": {"budgets": 5},
+        "usage": {"budgets": 7},
+    }
+    within = plan_switch_preview(
+        ProviderSwitchPreview(currency="EUR", now_minor=0), PRO, {}, interval=BillingInterval.MONTH
+    )
+    assert (within.over_limit, within.next_minor, within.next_billed_at) == ([], None, None)
+    with pytest.raises(ValidationError):
+        ProviderSwitchPreview(currency="CHF", now_minor=0, next_minor=-1)

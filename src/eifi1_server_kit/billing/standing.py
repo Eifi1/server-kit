@@ -77,8 +77,14 @@ class SubscriptionRow(Protocol):
     """What the kit reads of the app's subscription row (§3.2). An ORM row satisfies it as
     it is; the provider's ids and ``plan_code`` are the app's columns too, read where the
     kit needs them: ``provider_customer_id`` for the overview's ``at_provider`` (§14.5),
-    ``provider_subscription_id`` for a second checkout, a deletion's cancellation and its
-    undoing (§14.6, §14.8).
+    ``provider_subscription_id`` for a second checkout, a plan switch, a deletion's
+    cancellation and its undoing (§14.6, §14.8, §15.2.10), and ``provider_price_id`` — the
+    price the payer pays, written by every snapshot — for a plan switch and the overview's
+    ``paid`` (§15.2.10).
+
+    .. versionchanged:: 0.12.0
+       ``provider_price_id`` is new and required (breaking): each app adds the column
+       (``VARCHAR(200) NULL``), which :func:`~eifi1_server_kit.billing.row_changes` writes.
 
     Naive datetimes are read as UTC, as everywhere in the kit (kastlan's columns are naive).
     """
@@ -109,6 +115,9 @@ class SubscriptionRow(Protocol):
 
     @property
     def provider_subscription_id(self) -> str | None: ...
+
+    @property
+    def provider_price_id(self) -> str | None: ...
 
     @property
     def updated_from_event_at(self) -> datetime | None: ...

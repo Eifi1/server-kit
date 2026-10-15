@@ -52,7 +52,12 @@ def test_the_billing_codes_and_statuses_are_the_contracts() -> None:
         "billing_not_at_provider": 409,
         "billing_already_subscribed": 409,
         "billing_plan_not_sold": 422,
+        # §15.2.10's plan switch.
+        "billing_not_subscribed": 409,
+        "billing_plan_unchanged": 409,
     }
+    # §15.2.10: the 409 no longer sends the payer to the portal.
+    assert "portal" not in BILLING_ERROR_DETAIL[BillingErrorCode.BILLING_ALREADY_SUBSCRIBED]
     assert set(BILLING_ERROR_DETAIL) == set(BillingErrorCode)
     # The read-only detail names no status and no owner: a guest reads it too (§12.6).
     assert "plan" in BILLING_ERROR_DETAIL[BillingErrorCode.BILLING_READ_ONLY]

@@ -23,7 +23,8 @@ only its CLI — argparse, the payer lookup, the local-only guard, ``--end-grant
 * :func:`sign_paddle`, :func:`signed_paddle_event` — its ``Paddle-Signature``;
 * :func:`post_signed` — the local CLI's POST, refused for any host but this machine;
 * :class:`FakeBillingProvider` — a :class:`~eifi1_server_kit.billing.BillingProviderClient`
-  without HTTP that records every call, for the app's module-level seam (§14.8);
+  without HTTP that records every call, for the app's module-level seam (§14.8) — the plan
+  switch, its preview and the shared customer included (§15);
 * :class:`PaddleApiFake` — Paddle's API as an ``httpx.MockTransport``, answering Paddle's
   documented examples (:data:`PADDLE_API_EXAMPLES`), for testing a
   :class:`~eifi1_server_kit.billing.PaddleClient` itself.
@@ -50,6 +51,7 @@ from eifi1_server_kit.billing.errors import BillingError, BillingErrorCode
 from eifi1_server_kit.billing.events import checkout_custom_data
 from eifi1_server_kit.billing.paddle import PaddleError
 from eifi1_server_kit.billing.provider import PortalTarget
+from eifi1_server_kit.billing.schemas import ProviderSwitchPreview
 from eifi1_server_kit.billing.signatures import PADDLE_SIGNATURE_HEADER
 
 if TYPE_CHECKING:
@@ -69,17 +71,20 @@ __all__ = [
 ]
 
 #: A step of a subscription's life, in the order it lives them (§13.4).
-PaddleStep = Literal["trial", "checkout", "renewal", "cancel_scheduled", "payment_failed", "cancelled"]
+PaddleStep = Literal["trial", "checkout", "renewal", "plan_switched", "cancel_scheduled", "payment_failed", "cancelled"]
 
 #: Each step's Paddle event type and the subscription status it carries.
 #: ``cancel_scheduled`` is the payer cancelling for the period's end — a
 #: ``subscription.updated``, still ``active``, with ``scheduled_change.action`` ``cancel`` —
 #: which the kit promotes to ``subscription_canceled`` (§12.26's "Cancel" produces it).
+#: ``plan_switched`` is a plan switch landing (§15.2.10): a ``subscription.updated``,
+#: ``active``, on the new ``price_id``, its period as it was.
 PADDLE_STEPS: Mapping[PaddleStep, tuple[str, str]] = types.MappingProxyType(
     {
         "trial": ("subscription.trialing", "trialing"),
         "checkout": ("subscription.created", "active"),
         "renewal": ("subscription.updated", "active"),
+        "plan_switched": ("subscription.updated", "active"),
         "cancel_scheduled": ("subscription.updated", "active"),
         "payment_failed": ("subscription.past_due", "past_due"),
         "cancelled": ("subscription.canceled", "canceled"),
@@ -94,6 +99,7 @@ PADDLE_STEP_PERIODS: Mapping[PaddleStep, timedelta] = types.MappingProxyType(
         "trial": timedelta(days=14),
         "checkout": timedelta(days=365),
         "renewal": timedelta(days=730),
+        "plan_switched": timedelta(days=365),
         "cancel_scheduled": timedelta(days=365),
         "payment_failed": timedelta(days=365),
     }
@@ -210,6 +216,13 @@ class FakeBillingProvider:
 
     A portal request without a customer is 409 ``billing_not_at_provider``, as the real
     client answers it, and not recorded: it never reaches the provider.
+
+    The plan switch (§15.2.10): ``preview_plan_change`` and ``change_plan`` answer
+    ``preview`` (by default a charge of 10.00 CHF now and 79.00 on 2027-10-08) and record
+    into :attr:`previews` and :attr:`switches`. The shared customer (§15.2.11):
+    ``customer_for`` records into :attr:`customers` and answers ``ctm_fake_<n>``, the same
+    id for the same address; a checkout with ``customer_email`` and no ``customer_id``
+    asks it, as the real client does, and records the id it got.
     """
 
     def __init__(
@@ -218,10 +231,21 @@ class FakeBillingProvider:
         fail: bool = False,
         checkout_url: str = "https://checkout.example/txn_test",
         portal_url: str = "https://portal.example/ctm_test",
+        preview: ProviderSwitchPreview | None = None,
     ) -> None:
         self.fail = fail
         self.checkout_answer = checkout_url
         self.portal_answer = portal_url
+        self.preview_answer = preview or ProviderSwitchPreview(
+            currency="CHF", now_minor=1000, next_minor=7900, next_billed_at=datetime(2027, 10, 8, 9, 0, tzinfo=UTC)
+        )
+        #: Every ``preview_plan_change`` call's arguments.
+        self.previews: list[dict[str, object]] = []
+        #: Every ``change_plan`` call's arguments.
+        self.switches: list[dict[str, object]] = []
+        #: Every ``customer_for`` call's arguments.
+        self.customers: list[dict[str, object]] = []
+        self._customer_ids: dict[str, str] = {}
         #: Every ``checkout_url`` call's arguments.
         self.checkouts: list[dict[str, object]] = []
         #: Every ``portal_url`` call's arguments.
@@ -242,11 +266,19 @@ class FakeBillingProvider:
         custom_data: Mapping[str, str],
         customer_id: str | None = None,
         locale: str | None = None,
+        customer_email: str | None = None,
     ) -> str:
-        self.checkouts.append(
-            {"price_id": price_id, "custom_data": dict(custom_data), "customer_id": customer_id, "locale": locale}
-        )
+        checkout: dict[str, object] = {
+            "price_id": price_id,
+            "custom_data": dict(custom_data),
+            "customer_id": customer_id,
+            "locale": locale,
+            "customer_email": customer_email,
+        }
+        self.checkouts.append(checkout)
         self._failing()
+        if not customer_id and customer_email and customer_email.strip():
+            checkout["customer_id"] = await self.customer_for(email=customer_email)
         return self.checkout_answer
 
     async def portal_url(
@@ -270,11 +302,27 @@ class FakeBillingProvider:
         self.resumes.append({"subscription_id": subscription_id})
         self._failing()
 
+    async def preview_plan_change(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        self.previews.append({"subscription_id": subscription_id, "price_id": price_id})
+        self._failing()
+        return self.preview_answer
+
+    async def change_plan(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        self.switches.append({"subscription_id": subscription_id, "price_id": price_id})
+        self._failing()
+        return self.preview_answer
+
+    async def customer_for(self, *, email: str) -> str:
+        self.customers.append({"email": email})
+        self._failing()
+        return self._customer_ids.setdefault(email.strip(), f"ctm_fake_{len(self._customer_ids) + 1}")
+
 
 #: Paddle's documented answers (developer.paddle.com/api-reference: create-transaction,
-#: create-customer-portal-session, cancel-subscription, update-subscription, errors),
-#: trimmed to what the kit's client reads — kastlan's ``test_paddle_client.py``. Not
-#: recordings: swapped for recorded sandbox answers once the sandbox account exists.
+#: create-customer-portal-session, cancel-subscription, update-subscription, and since 0.12
+#: preview-subscription, list-customers, create-customer; errors), trimmed to what the
+#: kit's client reads — kastlan's ``test_paddle_client.py``. Not recordings: swapped for
+#: recorded sandbox answers after Marcel's sandbox run (§15.6, P5).
 PADDLE_API_EXAMPLES: Mapping[str, dict[str, Any]] = types.MappingProxyType(
     {
         "create_transaction": {
@@ -328,6 +376,40 @@ PADDLE_API_EXAMPLES: Mapping[str, dict[str, Any]] = types.MappingProxyType(
             "data": {"id": "sub_01h04vsc0qhwtsbsxh3422wjs4", "status": "active", "scheduled_change": None},
             "meta": {"request_id": "2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a"},
         },
+        "preview_subscription_update": {
+            "data": {
+                "id": "sub_01h04vsc0qhwtsbsxh3422wjs4",
+                "status": "active",
+                "customer_id": "ctm_01hv6y1jedq4p1n0yqn5ba3ky4",
+                "currency_code": "CHF",
+                "next_billed_at": "2027-10-08T09:00:00Z",
+                "items": [{"status": "active", "quantity": 1, "price": {"id": "pri_01gsz8x8sawmvhz1pv30nge1ke"}}],
+                "update_summary": {
+                    "credit": {"amount": "3900", "currency_code": "CHF"},
+                    "charge": {"amount": "8000", "currency_code": "CHF"},
+                    "result": {"action": "charge", "amount": "4100", "currency_code": "CHF"},
+                },
+                "immediate_transaction": {"details": {"totals": {"total": "4100", "grand_total": "4100"}}},
+                "next_transaction": {
+                    "billing_period": {"starts_at": "2027-10-08T09:00:00Z", "ends_at": "2028-10-08T09:00:00Z"},
+                    "details": {"totals": {"total": "12000", "credit": "0", "grand_total": "12000"}},
+                },
+            },
+            "meta": {"request_id": "3e4f5a6b-7c8d-4e9f-0a1b-2c3d4e5f6a7b"},
+        },
+        "list_customers": {
+            "data": [
+                {"id": "ctm_01hv6y1jedq4p1n0yqn5ba3ky4", "email": "payer@example.com", "status": "active"},
+            ],
+            "meta": {
+                "request_id": "5a6b7c8d-9e0f-4a1b-2c3d-4e5f6a7b8c9d",
+                "pagination": {"per_page": 50, "next": None, "has_more": False, "estimated_total": 1},
+            },
+        },
+        "create_customer": {
+            "data": {"id": "ctm_01hv6y1jedq4p1n0yqn5ba3ky4", "email": "payer@example.com", "status": "active"},
+            "meta": {"request_id": "6b7c8d9e-0f1a-4b2c-3d4e-5f6a7b8c9d0e"},
+        },
         "error": {
             "error": {
                 "type": "request_error",
@@ -355,14 +437,22 @@ class PaddleApiFake:
     ``checkout.url`` the request's ``checkout.url`` (else ``https://pay.example.com/``) with
     ``?_ptxn=<txn>``, its ``custom_data`` and ``customer_id`` the request's;
     ``POST /customers/{ctm}/portal-sessions`` 201; ``POST /subscriptions/{sub}/cancel``
-    200; ``PATCH /subscriptions/{sub}`` 200; anything else 404 ``not_found``. Every
-    request is kept in :attr:`requests`. :meth:`fail_with` and :meth:`unreachable` make
-    every later request fail.
+    200; ``PATCH /subscriptions/{sub}`` 200; ``PATCH /subscriptions/{sub}/preview`` 200 —
+    :attr:`preview`'s ``data`` when set, else the example (a charge); ``GET
+    /customers?email=`` 200 with the customer :attr:`customers` has for the address, or
+    none; ``POST /customers`` 201 creating ``ctm_fake_<n>`` into :attr:`customers`, or
+    409 ``customer_already_exists`` naming the one it has; anything else 404
+    ``not_found``. Every request is kept in :attr:`requests`. :meth:`fail_with` and
+    :meth:`unreachable` make every later request fail.
     """
 
     def __init__(self) -> None:
         #: Every request received, in order.
         self.requests: list[httpx.Request] = []
+        #: Paddle's customers, e-mail address → ``ctm_…``; seed it for an existing one.
+        self.customers: dict[str, str] = {}
+        #: A preview's ``data`` in place of the example's (a credit, a field missing).
+        self.preview: dict[str, Any] | None = None
         self._failure: tuple[int, str | None] | None = None
         self._unreachable = False
 
@@ -421,4 +511,30 @@ class PaddleApiFake:
             return 200, copy.deepcopy(PADDLE_API_EXAMPLES["cancel_subscription"])
         if request.method == "PATCH" and len(path) == 2 and path[0] == "subscriptions":
             return 200, copy.deepcopy(PADDLE_API_EXAMPLES["update_subscription"])
+        if request.method == "PATCH" and len(path) == 3 and path[0] == "subscriptions" and path[2] == "preview":
+            body = copy.deepcopy(PADDLE_API_EXAMPLES["preview_subscription_update"])
+            if self.preview is not None:
+                body["data"] = copy.deepcopy(self.preview)
+            return 200, body
+        if path == ["customers"]:
+            return self._customer(request)
         return 404, copy.deepcopy(PADDLE_API_EXAMPLES["error"])
+
+    def _customer(self, request: httpx.Request) -> tuple[int, dict[str, Any]]:
+        """``GET /customers?email=`` and ``POST /customers``."""
+        if request.method == "GET":
+            body = copy.deepcopy(PADDLE_API_EXAMPLES["list_customers"])
+            email = request.url.params.get("email", "")
+            known = self.customers.get(email)
+            body["data"] = [] if known is None else [{"id": known, "email": email, "status": "active"}]
+            return 200, body
+        email = str(self.sent.get("email", ""))
+        if email in self.customers:
+            error = copy.deepcopy(PADDLE_API_EXAMPLES["error"])
+            error["error"]["code"] = "customer_already_exists"
+            error["error"]["detail"] = f"customer email conflicts with customer of id {self.customers[email]}"
+            return 409, error
+        customer_id = self.customers[email] = f"ctm_fake_{len(self.customers) + 1}"
+        body = copy.deepcopy(PADDLE_API_EXAMPLES["create_customer"])
+        body["data"].update(id=customer_id, email=email)
+        return 201, body

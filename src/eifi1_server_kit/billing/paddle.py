@@ -1,4 +1,5 @@
-"""Paddle Billing's API: the checkout, the customer portal, a cancellation and undoing one.
+"""Paddle Billing's API: the checkout, the customer portal, a cancellation and undoing one,
+a plan switch and its preview, and the shared customer.
 
 ``docs/billing-harmonization.md`` §14.2 in ``Eifi1/ui-kit``, lifted from kastlan's
 ``adapters/billing/paddle_client.py`` (c0b1a24). :class:`PaddleClient` is the kit's one
@@ -11,7 +12,8 @@ never needs it; only building a client does.
 
 **The key's minimum permissions** (Paddle's 2025 keys, Paddle > Developer tools >
 Authentication): transaction write (the checkout), customer-portal-session write (the
-portal) and subscription write (a cancellation, and undoing one). The key's prefix says its
+portal), subscription write (a cancellation, undoing one, a plan switch and its preview)
+and, since 0.12, customer read and write (the shared customer, §15.2.11). The key's prefix says its
 environment, ``pdl_sdbx_apikey_`` or ``pdl_live_apikey_`` (:func:`paddle_environment_of`);
 a sandbox key works only against the sandbox's API and a live key only against live's.
 
@@ -29,19 +31,32 @@ api-reference/subscriptions/cancel-subscription, build/subscriptions/cancel-subs
 (a scheduled cancellation is removed with ``scheduled_change: null``; a cancelled
 subscription "can't be reinstated"), api-reference/about/authentication (the key
 prefixes), api-reference/about/errors.
+
+Read 2026-10-14 for the plan switch and the customer (§15): api-reference/subscriptions/
+preview-subscription (``PATCH /subscriptions/{id}/preview``: ``update_summary.result``
+``{action: credit | charge, amount}``, ``next_transaction.details.totals``, amounts integer
+strings in minor units), api-reference/subscriptions/update-subscription (its answer is
+the subscription, without the figures), api-reference/customers/list-customers
+(``?email=`` matches exactly, active customers only, ``data`` a list),
+errors/customers/customer_already_exists (409, "customer email conflicts with customer of
+id ctm_…").
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import types
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, get_args
 from urllib.parse import quote, urlencode
 
+from pydantic import ValidationError
+
 from eifi1_server_kit.billing.errors import BillingError, BillingErrorCode
 from eifi1_server_kit.billing.events import APP_KEY
 from eifi1_server_kit.billing.provider import PortalTarget
+from eifi1_server_kit.billing.schemas import ProviderSwitchPreview
 from eifi1_server_kit.billing.settings import PaddleEnvironment
 
 if TYPE_CHECKING:
@@ -81,6 +96,14 @@ _PORTAL_TARGETS: frozenset[str] = frozenset(get_args(PortalTarget))
 _PORTAL_LINKS: Mapping[str, str] = types.MappingProxyType(
     {"cancel": "cancel_subscription", "payment_method": "update_subscription_payment_method"}
 )
+#: A plan switch, both ways (§15.2.10): charged or credited now, prorated; a declined
+#: charge leaves the subscription as it was.
+_SWITCH_BILLING = types.MappingProxyType(
+    {"proration_billing_mode": "prorated_immediately", "on_payment_failure": "prevent_change"}
+)
+#: The existing customer Paddle names when a create conflicts (errors/customers/
+#: customer_already_exists).
+_EXISTING_CUSTOMER = re.compile(r"\bctm_[0-9a-z]+")
 
 
 #: The kit's seven languages (ui-kit's ``KitLanguageCode``), in ui-kit's order.
@@ -180,11 +203,13 @@ def _text(value: object) -> str | None:
 
 
 class _Answer(NamedTuple):
-    """A 2xx from Paddle: its status, ``data`` and ``meta``."""
+    """A 2xx from Paddle: its status, ``data`` and ``meta`` — and, for a list, ``data``'s
+    entries as ``rows`` (``data`` then empty)."""
 
     status: int
     data: Mapping[str, Any]
     meta: Mapping[str, Any]
+    rows: tuple[Any, ...] = ()
 
 
 class PaddleClient:
@@ -246,10 +271,13 @@ class PaddleClient:
         custom_data: Mapping[str, str],
         customer_id: str | None = None,
         locale: str | None = None,
+        customer_email: str | None = None,
     ) -> str:
         """Create the checkout's transaction — ``POST /transactions`` with one ``price_id``
-        (quantity 1), ``custom_data`` plus the app's tag, the payer's ``customer_id`` when
-        known, and the pay page as ``checkout.url`` — and answer the URL that opens it:
+        (quantity 1), ``custom_data`` plus the app's tag, the payer's customer, and the pay
+        page as ``checkout.url`` — and answer the URL that opens it. The customer is
+        ``customer_id`` when given, else :meth:`customer_for` ``customer_email`` when given
+        (§15.2.11), else none (Paddle's checkout asks for an e-mail). The URL is
         with a hosted checkout, ``<hosted>?transaction_id=<txn>`` (and, when ``locale`` is
         given, ``&locale=`` its :func:`paddle_locale`: the app's ``de-CH`` is Paddle's
         ``de``); otherwise the transaction's ``checkout.url``, the pay page plus
@@ -260,6 +288,8 @@ class PaddleClient:
         if self._app is not None:
             data[APP_KEY] = self._app
         body: dict[str, Any] = {"items": [{"price_id": price_id, "quantity": 1}], "custom_data": data}
+        if not customer_id and customer_email and customer_email.strip():
+            customer_id = await self.customer_for(email=customer_email)
         if customer_id:
             body["customer_id"] = customer_id
         if self._checkout_page_url and not self._hosted_checkout_url:
@@ -337,20 +367,89 @@ class PaddleClient:
         can't be reinstated: Paddle refuses, a :class:`PaddleError`."""
         await self._call("PATCH", f"/subscriptions/{quote(subscription_id, safe='')}", {"scheduled_change": None})
 
+    async def preview_plan_change(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        """What switching to ``price_id`` would do (§15.2.10) — ``PATCH
+        /subscriptions/{sub}/preview`` with the switch's body (:meth:`change_plan`), which
+        changes nothing: ``currency`` Paddle's ``currency_code``; ``now_minor``
+        ``update_summary.result.amount``, negative where its ``action`` is ``credit``
+        (``0`` with no summary); ``next_minor`` ``next_transaction.details.totals``'
+        ``grand_total`` (else ``total``); ``next_billed_at`` Paddle's. A 2xx without them
+        is a :class:`PaddleError` (502).
+        (developer.paddle.com/api-reference/subscriptions/preview-subscription)"""
+        path = f"/subscriptions/{quote(subscription_id, safe='')}/preview"
+        answer = await self._call("PATCH", path, _switch_body(price_id))
+        return _switch_preview("PATCH", path, answer)
+
+    async def change_plan(self, *, subscription_id: str, price_id: str) -> ProviderSwitchPreview:
+        """Switch the subscription to ``price_id`` (§15.2.10): ``PATCH /subscriptions/{sub}
+        {items: [{price_id, quantity: 1}], proration_billing_mode: "prorated_immediately",
+        on_payment_failure: "prevent_change"}`` — the items replace the subscription's;
+        an upgrade is charged now, a downgrade credited to the customer's balance; a
+        declined charge changes nothing and Paddle refuses (a :class:`PaddleError`).
+
+        Paddle's answer is the subscription, without the figures, so the switch is
+        previewed first (:meth:`preview_plan_change`, which changes nothing) and its
+        figures answered: what the payer just agreed to, as Paddle reckons it now. Two
+        requests; a failed preview changes nothing.
+        (developer.paddle.com/api-reference/subscriptions/update-subscription)"""
+        figures = await self.preview_plan_change(subscription_id=subscription_id, price_id=price_id)
+        await self._call("PATCH", f"/subscriptions/{quote(subscription_id, safe='')}", _switch_body(price_id))
+        return figures
+
+    async def customer_for(self, *, email: str) -> str:
+        """The shared customer for ``email`` (§15.2.11): ``GET /customers?email=`` (an
+        exact match, active customers only), else ``POST /customers {email}``; a create
+        that conflicts — another app's checkout created it in between — answers the
+        customer Paddle names in its 409 ``customer_already_exists``. An app never changes
+        the customer: name, address and e-mail are the buyer's, in Paddle's checkout or
+        portal. The address is never logged.
+        (developer.paddle.com/api-reference/customers/list-customers, …/create-customer)"""
+        address = email.strip()
+        if not address:
+            raise ValueError("a customer's e-mail address is a non-empty string")
+        found = await self._call("GET", "/customers", None, params={"email": address}, listing=True)
+        for entry in found.rows:
+            customer_id = _text(entry.get("id")) if isinstance(entry, Mapping) else None
+            if customer_id is not None:
+                return customer_id
+        try:
+            created = await self._call("POST", "/customers", {"email": address})
+        except PaddleError as exc:
+            existing = _EXISTING_CUSTOMER.search(exc.paddle_detail or "")
+            if exc.paddle_code == "customer_already_exists" and existing is not None:
+                return existing.group(0)
+            raise
+        customer_id = _text(created.data.get("id"))
+        if customer_id is None:
+            raise _malformed("POST", "/customers", created, "data.id")
+        return customer_id
+
     # --- the one request ---------------------------------------------------------------
 
-    async def _call(self, method: str, path: str, body: Mapping[str, Any]) -> _Answer:
-        """One request: Paddle's 2xx with its ``data``, or a :class:`PaddleError`."""
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, Any] | None,
+        *,
+        params: Mapping[str, str] | None = None,
+        listing: bool = False,
+    ) -> _Answer:
+        """One request: Paddle's 2xx with its ``data`` — a list's entries as ``rows`` when
+        ``listing`` — or a :class:`PaddleError`. ``body`` ``None`` sends none (a GET);
+        ``params`` go into the query, never into a log line."""
         import httpx
 
         url = f"{self._base}{path}"
         headers = {"Authorization": f"Bearer {self._key}", "Paddle-Version": PADDLE_API_VERSION}
         try:
             if self._client is not None:
-                response = await self._client.request(method, url, json=body, headers=headers, timeout=self._timeout)
+                response = await self._client.request(
+                    method, url, json=body, params=params, headers=headers, timeout=self._timeout
+                )
             else:
                 async with httpx.AsyncClient(timeout=self._timeout) as http:
-                    response = await http.request(method, url, json=body, headers=headers)
+                    response = await http.request(method, url, json=body, params=params, headers=headers)
         except httpx.HTTPError as exc:
             logger.warning("Paddle %s %s: no answer (%s)", method, path, type(exc).__name__)
             raise PaddleError(0) from None
@@ -377,10 +476,67 @@ class PaddleClient:
             )
             raise failure
         data = payload.get("data")
+        if listing:
+            answer = _Answer(response.status_code, {}, meta, tuple(data) if isinstance(data, list) else ())
+            if not isinstance(data, list):
+                raise _malformed(method, path, answer, "data")
+            return answer
         answer = _Answer(response.status_code, data if isinstance(data, Mapping) else {}, meta)
         if not isinstance(data, Mapping):
             raise _malformed(method, path, answer, "data")
         return answer
+
+
+def _switch_body(price_id: str) -> dict[str, Any]:
+    """A plan switch's body (§15.2.10): the one item, prorated immediately, nothing changed
+    on a declined charge."""
+    return {"items": [{"price_id": price_id, "quantity": 1}], **_SWITCH_BILLING}
+
+
+class _MissingFieldError(Exception):
+    """A field the kit reads, missing from Paddle's 2xx: its path."""
+
+
+def _minor(parent: object, key: str, where: str) -> int:
+    """An amount Paddle sends as an integer string in minor units (``"103431"``)."""
+    value = parent.get(key) if isinstance(parent, Mapping) else None
+    if not isinstance(value, str) or not value.isdecimal():
+        raise _MissingFieldError(where)
+    return int(value)
+
+
+def _switch_preview(method: str, path: str, answer: _Answer) -> ProviderSwitchPreview:
+    """A preview's figures (:meth:`PaddleClient.preview_plan_change`), or a 502."""
+    data = answer.data
+    try:
+        summary = data.get("update_summary")
+        result = summary.get("result") if isinstance(summary, Mapping) else None
+        now_minor = 0
+        if result is not None:
+            action = result.get("action") if isinstance(result, Mapping) else None
+            if action not in ("charge", "credit"):
+                raise _MissingFieldError("data.update_summary.result.action")
+            amount = _minor(result, "amount", "data.update_summary.result.amount")
+            now_minor = -amount if action == "credit" else amount
+        following = data.get("next_transaction")
+        next_minor: int | None = None
+        if following is not None:
+            details = following.get("details") if isinstance(following, Mapping) else None
+            totals = details.get("totals") if isinstance(details, Mapping) else None
+            key = "grand_total" if isinstance(totals, Mapping) and "grand_total" in totals else "total"
+            next_minor = _minor(totals, key, f"data.next_transaction.details.totals.{key}")
+        return ProviderSwitchPreview.model_validate(
+            {
+                "currency": data.get("currency_code"),
+                "now_minor": now_minor,
+                "next_minor": next_minor,
+                "next_billed_at": data.get("next_billed_at"),
+            }
+        )
+    except _MissingFieldError as missing:
+        raise _malformed(method, path, answer, str(missing)) from None
+    except ValidationError:
+        raise _malformed(method, path, answer, "data.currency_code or data.next_billed_at") from None
 
 
 def _malformed(method: str, path: str, answer: _Answer, field: str) -> PaddleError:

@@ -12,6 +12,7 @@ import pytest
 
 from eifi1_server_kit.billing import (
     APP_KEY,
+    BUYER_KEY,
     PADDLE_EVENT_KINDS,
     PADDLE_STATUSES,
     PAYER_REF_KEY,
@@ -84,6 +85,26 @@ def test_the_checkout_carries_the_apps_tag() -> None:
     assert APP_KEY == "app"
     with pytest.raises(ValueError, match="app tag"):
         checkout_custom_data("user:42", app=" ")
+
+
+def test_the_checkout_carries_kastlans_buying_admin() -> None:
+    """§15.2.11: the company pays, and its buying admin's user id rides along, so only
+    that admin opens the portal's overview."""
+    assert checkout_custom_data("company:7", app="kastlan", buyer="user:3") == {
+        "payer_ref": "company:7",
+        "app": "kastlan",
+        BUYER_KEY: "user:3",
+    }
+    assert BUYER_KEY == "buyer"
+    with pytest.raises(ValueError, match="buyer reference"):
+        checkout_custom_data("company:7", buyer=" ")
+    event = map_paddle_event(_bytes(_paddle(custom_data={"payer_ref": "company:7", "buyer": "user:3"})))
+    assert event is not None and event.buyer == "user:3"
+    for buyer in ("", 7):
+        other = map_paddle_event(_bytes(_paddle(custom_data={"payer_ref": "company:7", "buyer": buyer})))
+        assert other is not None and other.buyer is None
+    plain = map_paddle_event(_bytes(_paddle()))
+    assert plain is not None and plain.buyer is None
 
 
 # --- Paddle ------------------------------------------------------------------------------

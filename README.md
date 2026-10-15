@@ -616,13 +616,13 @@ in 0.7): `BillingProvider` is `paddle` alone, and a price id is text.
 | Plans | `PlanSpec(code, limits, prices, sort)` (`.limit(dimension)`, `.price(currency, interval)`), `plan_catalogue(plans)`, `normalize_plan(code)`, `check_limit(plan, dimension, used, *, adding=1)` → `PlanLimitError`, `dimensions_over_limit(plan, usage)`; `BillingCurrency` (`CHF`, `EUR`), `BillingInterval` (`month`, `year`), `CURRENCY_EXPONENTS`, `minor_to_decimal(amount, currency)`; the types `PlanCode`, `Currency`, `Interval`, `MinorUnits` |
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
-| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None)`, `PAYER_REF_KEY`, `APP_KEY`; the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes`, `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
-| The provider | the `BillingProviderClient` port (`checkout_url`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
+| Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`, `.buyer`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None, buyer=None)`, `PAYER_REF_KEY`, `APP_KEY`, `BUYER_KEY` (kastlan's buying admin); the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes` (`provider_price_id` from every snapshot, a grant's too), `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
+| The provider | the `BillingProviderClient` port (`checkout_url` with `customer_email`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`, `preview_plan_change` / `change_plan` → `ProviderSwitchPreview`, `customer_for(email)`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`), `require_plan_switch(row, now)` (409 `billing_not_subscribed`), `switch_price(catalogue, row, request, settings, *, sold=None)` (422 `billing_plan_not_sold`, 409 `billing_plan_unchanged`, 503 without a known price on the row); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
 | Paddle (the `billing` extra) | `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None, hosted_checkout_url=None, timeout=15, client=None)`, `PaddleError` (`.status`, `.paddle_code`, `.paddle_detail`, `.request_id`; 502, or 503 for a 401/403), `paddle_environment_of(api_key)`, `paddle_locale(kit_locale)` (ui-kit's `paddleLocale`: `de-CH` → `de`, `zh` → `zh-Hans`, `hu` → `en`; a hosted checkout's `locale`), `PADDLE_API_BASES`, `PADDLE_API_VERSION`, `PADDLE_TIMEOUT_SECONDS` |
 | Notices | `billing_notice_due(row, now, *, launch, sent, ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at, days_left)` (`.key`, the marker), `BillingNoticeKind` (`trial_ending`, `trial_ended`, `grant_ending`, `grant_ended`), `NOTICE_STATUSES`; over the app's candidates, `billing_notices_owed(candidates, now, *, settings)` → `OwedNotice(payer, kind, ends_at, days_left, row)` (the candidate's row, typed as the app's) from `NoticeCandidate(payer, row, sent, deactivated, deletion_requested)` |
-| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…)`, with `at_provider`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`; `comped_until` required, may be `null`), `AdminPlan` (`.from_spec(plan)`) and `admin_plans_out(catalogue)` for `GET /admin/plans`, `SyncRefusal` |
-| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
-| Test helpers | `eifi1_server_kit.billing.testing`, in the wheel, not re-exported: `paddle_event(step, *, payer_ref, price_id, app=None, …)`, `PADDLE_STEPS`, `PADDLE_STEP_PERIODS`, `sign_paddle`, `signed_paddle_event`, `post_signed` (localhost only), `FakeBillingProvider`, `PaddleApiFake`, `PADDLE_API_EXAMPLES` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…, price_ref=None)`, with `at_provider` and `paid: PaidPrice | None`), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`; `comped_until` required, may be `null`), `AdminPlan` (`.from_spec(plan)`) and `admin_plans_out(catalogue)` for `GET /admin/plans`, the payer's switch `PlanSwitchRequest` `{plan, interval}`, `ProviderSwitchPreview` `{currency, now_minor, next_minor, next_billed_at}`, `PlanSwitchPreview` (that plus `{plan, interval, over_limit, limits, usage}`, from `plan_switch_preview(answer, plan, usage, *, interval)`), `PaidPrice` `{plan, interval, currency}`, `SyncRefusal` |
+| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422, `billing_not_subscribed` 409, `billing_plan_unchanged` 409), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
+| Test helpers | `eifi1_server_kit.billing.testing`, in the wheel, not re-exported: `paddle_event(step, *, payer_ref, price_id, app=None, …)`, `PADDLE_STEPS` (with `plan_switched`), `PADDLE_STEP_PERIODS`, `sign_paddle`, `signed_paddle_event`, `post_signed` (localhost only), `FakeBillingProvider` (`.previews`, `.switches`, `.customers` beside the others), `PaddleApiFake` (the preview, the update, `GET` / `POST /customers`; `.customers`, `.preview`), `PADDLE_API_EXAMPLES` |
 
 **The switch is off by default**, and switching on without the provider, the API key or the
 webhook secret fails at start. While off, `GET /billing/status` answers `{billing_enabled:
@@ -758,7 +758,9 @@ The signature follows Paddle's docs: `Paddle-Signature: ts=…;h1=…` (hex HMAC
 unless `billing_signature_tolerance` widens it — a scale-to-zero host's cold start can eat
 five seconds; keksdose runs 60). The checkout carries
 `checkout_custom_data(payer_ref)`, which Paddle sends back with every subscription
-event, so `load` finds the row by `event.payer_ref`, else by the provider's ids. `dispatch`
+event, so `load` finds the row by `event.payer_ref`, else by the subscription id — never
+by the customer id (0.12): one Paddle customer per e-mail address serves every app and
+every company a person pays for. `dispatch`
 skips a duplicate — one `seen` finds, or one whose insert hits the unique key, which the
 store's `record` reports by raising `DuplicateEventError` (flush the insert there and undo
 it: a savepoint where the driver nests them, else a rollback, which also works on SQLite in
@@ -793,11 +795,12 @@ async def checkout(body: CheckoutRequest, payer: Payer = Depends(current_payer))
     settings.require_billing_enabled()  # 404
     sold_plan(PLANS, body, sold=SOLD)  # 422 billing_plan_not_sold
     row = await row_of(payer)
-    require_new_checkout(row, now())  # 409 billing_already_subscribed: change plans in the portal
+    require_new_checkout(row, now())  # 409 billing_already_subscribed: change plans by the switch
     url = await billing_client().checkout_url(
         price_id=settings.billing_price_id(body.plan, body.currency, body.interval),  # 503
         custom_data=checkout_custom_data(payer_ref(payer), app=settings.billing_app),
         customer_id=row.provider_customer_id,
+        customer_email=payer.sign_in_email,  # no customer yet: the shared one, found or created
     )  # 502 billing_provider_unavailable
     return CheckoutAnswer(url=url)
 
@@ -824,10 +827,28 @@ path)`), the pay page's `successUrl` or the hosted checkout's redirect. The over
 `at_provider` says whether a provider customer exists: without one the page shows a
 caption in place of "Payment and invoices" and "Cancel", and never asks for the portal.
 Paddle failing is 502 `billing_provider_unavailable` ("try again"); a 401/403 — a wrong
-key, or one without transaction, customer-portal-session and subscription write — 503
+key, or one without transaction, customer-portal-session and subscription write or (0.12)
+customer read and write — 503
 `billing_not_configured`. Each failure is logged once with the method, path, status,
 Paddle's code and request id, never the body or the key; nothing is retried, since a
 transaction is not idempotent.
+
+**The plan switch** (0.12, contract §15.2.10) replaces the portal for plan changes:
+`POST /billing/plan/preview` and `POST /billing/plan`, both `{plan, interval}` →
+`PlanSwitchPreview`, for whoever may check out, behind the app's demo guard and the
+billing switch. `require_plan_switch(row, now)` (409 `billing_not_subscribed`, the inverse
+of the checkout's rule), `switch_price(PLANS, row, body, settings, sold=SOLD)` — the price
+in the currency the row pays, from its `provider_price_id` — then
+`billing_client().preview_plan_change(…)` or `.change_plan(…)` (Paddle's `PATCH
+/subscriptions/{id}/preview` and `PATCH /subscriptions/{id}`, prorated immediately both ways,
+a declined upgrade changing nothing), and `plan_switch_preview(answer, PLANS[body.plan],
+usage, interval=body.interval)`. The row follows through `subscription.updated`. **The
+row keeps the price it pays** — `provider_price_id`, a new column every app adds
+(`VARCHAR(200) NULL`, breaking) — and `BillingOverview.from_row(…,
+price_ref=settings.billing_price_ref)` says it as `paid`. **The shared customer**: the
+checkout passes the payer's sign-in e-mail, and without a `provider_customer_id` the client
+finds (`GET /customers?email=`) or creates the one Paddle customer for that address; the
+row's id is still written only by the webhook.
 
 **A second checkout while subscribed** is refused, 409 `billing_already_subscribed` —
 including a payer who bought while a grant held, whose row keeps `comped` but carries the
@@ -1032,7 +1053,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.11.1/eifi1_server_kit-0.11.1-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.12.0/eifi1_server_kit-0.12.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).

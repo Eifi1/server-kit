@@ -20,6 +20,7 @@ from eifi1_server_kit.billing import (
     BillingSettings,
     EventKind,
     PaddleError,
+    ProviderSwitchPreview,
     SubscriptionStatus,
     checkout_custom_data,
     map_paddle_event,
@@ -59,6 +60,7 @@ def test_the_steps_are_a_subscriptions_life() -> None:
         "trial": ("subscription.trialing", "trialing"),
         "checkout": ("subscription.created", "active"),
         "renewal": ("subscription.updated", "active"),
+        "plan_switched": ("subscription.updated", "active"),
         "cancel_scheduled": ("subscription.updated", "active"),
         "payment_failed": ("subscription.past_due", "past_due"),
         "cancelled": ("subscription.canceled", "canceled"),
@@ -67,6 +69,7 @@ def test_the_steps_are_a_subscriptions_life() -> None:
         "trial": 14,
         "checkout": 365,
         "renewal": 730,
+        "plan_switched": 365,
         "cancel_scheduled": 365,
         "payment_failed": 365,
     }
@@ -78,6 +81,7 @@ def test_the_steps_are_a_subscriptions_life() -> None:
         ("trial", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.TRIALING, False),
         ("checkout", EventKind.SUBSCRIPTION_STARTED, SubscriptionStatus.ACTIVE, False),
         ("renewal", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.ACTIVE, False),
+        ("plan_switched", EventKind.SUBSCRIPTION_UPDATED, SubscriptionStatus.ACTIVE, False),
         ("cancel_scheduled", EventKind.SUBSCRIPTION_CANCELED, SubscriptionStatus.ACTIVE, True),
         ("payment_failed", EventKind.PAYMENT_FAILED, SubscriptionStatus.PAST_DUE, False),
         ("cancelled", EventKind.SUBSCRIPTION_EXPIRED, SubscriptionStatus.CANCELED, False),
@@ -236,7 +240,9 @@ async def test_the_fake_provider_records_every_call() -> None:
     )
     await provider.cancel(subscription_id="sub_1", immediately=True)
     await provider.remove_scheduled_cancel(subscription_id="sub_1")
-    assert provider.checkouts == [{"price_id": "pri_1", "custom_data": custom, "customer_id": None, "locale": "de"}]
+    assert provider.checkouts == [
+        {"price_id": "pri_1", "custom_data": custom, "customer_id": None, "locale": "de", "customer_email": None}
+    ]
     assert provider.portals == [{"customer_id": "ctm_1", "subscription_id": "sub_1", "target": "cancel"}]
     assert provider.cancels == [{"subscription_id": "sub_1", "immediately": True}]
     assert provider.resumes == [{"subscription_id": "sub_1"}]
@@ -249,17 +255,43 @@ async def test_the_fake_provider_fails_as_paddle_does() -> None:
         provider.portal_url(customer_id="ctm_1"),
         provider.cancel(subscription_id="sub_1"),
         provider.remove_scheduled_cancel(subscription_id="sub_1"),
+        provider.preview_plan_change(subscription_id="sub_1", price_id="pri_2"),
+        provider.change_plan(subscription_id="sub_1", price_id="pri_2"),
+        provider.customer_for(email="payer@example.com"),
+        provider.checkout_url(price_id="pri_1", custom_data={}, customer_email="payer@example.com"),
     )
     for call in calls:
         with pytest.raises(PaddleError) as failed:
             await call
         assert (failed.value.status_code, failed.value.code) == (502, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE)
     assert (len(provider.checkouts), len(provider.portals), len(provider.cancels), len(provider.resumes)) == (
-        1,
+        2,
         1,
         1,
         1,
     )
+    assert (len(provider.previews), len(provider.switches), len(provider.customers)) == (1, 1, 1)
+
+
+async def test_the_fake_provider_switches_and_finds_customers() -> None:
+    """§15: the switch's preview and the switch answer ``preview``; ``customer_for`` one id
+    per address, which a checkout without a customer asks for."""
+    provider = FakeBillingProvider()
+    default = await provider.preview_plan_change(subscription_id="sub_1", price_id="pri_max")
+    assert (default.currency, default.now_minor, default.next_minor) == ("CHF", 1000, 7900)
+    credit = ProviderSwitchPreview(currency="EUR", now_minor=-500)
+    provider = FakeBillingProvider(preview=credit)
+    assert await provider.preview_plan_change(subscription_id="sub_1", price_id="pri_free") is credit
+    assert await provider.change_plan(subscription_id="sub_1", price_id="pri_free") is credit
+    assert provider.previews == provider.switches == [{"subscription_id": "sub_1", "price_id": "pri_free"}]
+    assert await provider.customer_for(email="a@example.com") == "ctm_fake_1"
+    assert await provider.customer_for(email="b@example.com") == "ctm_fake_2"
+    assert await provider.customer_for(email=" a@example.com") == "ctm_fake_1"
+    await provider.checkout_url(price_id="pri_1", custom_data={}, customer_email="b@example.com")
+    await provider.checkout_url(price_id="pri_1", custom_data={}, customer_id="ctm_row", customer_email="c@example.com")
+    await provider.checkout_url(price_id="pri_1", custom_data={}, customer_email=" ")
+    assert [checkout["customer_id"] for checkout in provider.checkouts] == ["ctm_fake_2", "ctm_row", None]
+    assert len(provider.customers) == 4  # the three calls and the first checkout's
 
 
 async def test_the_fake_provider_has_no_portal_before_the_provider() -> None:
@@ -288,6 +320,31 @@ async def test_the_api_fake_answers_paddles_examples() -> None:
         assert (unknown.status_code, unknown.json()["error"]["code"]) == (404, "not_found")
         assert paddle.sent == {}  # the GET had no body
     assert [request.method for request in paddle.requests] == ["POST", "POST", "POST", "PATCH", "GET"]
+
+
+async def test_the_api_fake_answers_the_switch_and_the_customer() -> None:
+    paddle = PaddleApiFake()
+    async with httpx.AsyncClient(transport=paddle.transport, base_url="https://sandbox-api.paddle.com") as http:
+        preview = await http.patch("/subscriptions/sub_1/preview", json={})
+        assert preview.json() == PADDLE_API_EXAMPLES["preview_subscription_update"]
+        paddle.preview = {"currency_code": "EUR"}
+        assert (await http.patch("/subscriptions/sub_1/preview", json={})).json()["data"] == {"currency_code": "EUR"}
+        none = await http.get("/customers", params={"email": "a@example.com"})
+        assert (none.status_code, none.json()["data"]) == (200, [])
+        created = await http.post("/customers", json={"email": "a@example.com"})
+        assert (created.status_code, created.json()["data"]["id"], created.json()["data"]["email"]) == (
+            201,
+            "ctm_fake_1",
+            "a@example.com",
+        )
+        found = await http.get("/customers", params={"email": "a@example.com"})
+        assert found.json()["data"] == [{"id": "ctm_fake_1", "email": "a@example.com", "status": "active"}]
+        again = await http.post("/customers", json={"email": "a@example.com"})
+        assert (again.status_code, again.json()["error"]["code"]) == (409, "customer_already_exists")
+        assert again.json()["error"]["detail"].endswith("ctm_fake_1")
+    assert (
+        PADDLE_API_EXAMPLES["list_customers"]["data"][0]["id"] == PADDLE_API_EXAMPLES["create_customer"]["data"]["id"]
+    )
 
 
 async def test_the_api_fake_fails_on_demand() -> None:

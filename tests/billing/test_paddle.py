@@ -411,3 +411,187 @@ async def test_without_a_client_each_call_opens_its_own(monkeypatch: pytest.Monk
     await client.remove_scheduled_cancel(subscription_id="sub_1")
     assert opened == [{"timeout": 3.0}, {"timeout": 3.0}]
     assert str(paddle.requests[0].url) == "https://api.paddle.com/subscriptions/sub_1/cancel"
+
+
+# --- the plan switch (§15.2.10) --------------------------------------------------------------
+
+SWITCH_BODY = {
+    "items": [{"price_id": "pri_max", "quantity": 1}],
+    "proration_billing_mode": "prorated_immediately",
+    "on_payment_failure": "prevent_change",
+}
+
+
+async def test_a_preview_changes_nothing_and_answers_paddles_figures() -> None:
+    client, paddle = _client()
+    preview = await client.preview_plan_change(subscription_id="sub_1", price_id="pri_max")
+    (request,) = paddle.requests
+    assert (request.method, str(request.url)) == ("PATCH", f"{SANDBOX}/subscriptions/sub_1/preview")
+    assert paddle.sent == SWITCH_BODY
+    assert (preview.currency, preview.now_minor, preview.next_minor) == ("CHF", 4100, 12000)
+    assert preview.next_billed_at is not None and preview.next_billed_at.isoformat() == "2027-10-08T09:00:00+00:00"
+
+
+async def test_a_downgrade_is_a_credit_now() -> None:
+    client, paddle = _client()
+    data = PADDLE_API_EXAMPLES["preview_subscription_update"]["data"]
+    paddle.preview = {
+        **data,
+        "update_summary": {"result": {"action": "credit", "amount": "2500", "currency_code": "CHF"}},
+        "next_transaction": {"details": {"totals": {"total": "3000"}}},  # no grand_total: the total
+    }
+    preview = await client.preview_plan_change(subscription_id="sub_1", price_id="pri_max")
+    assert (preview.now_minor, preview.next_minor) == (-2500, 3000)
+    # No summary and no next transaction (a cancellation scheduled): nothing now, no next charge.
+    paddle.preview = {**data, "update_summary": None, "next_transaction": None, "next_billed_at": None}
+    quiet = await client.preview_plan_change(subscription_id="sub_1", price_id="pri_max")
+    assert (quiet.now_minor, quiet.next_minor, quiet.next_billed_at) == (0, None, None)
+
+
+@pytest.mark.parametrize(
+    ("change", "field"),
+    [
+        ({"update_summary": {"result": {"action": "refund", "amount": "1"}}}, "data.update_summary.result.action"),
+        ({"update_summary": {"result": "charge"}}, "data.update_summary.result.action"),
+        ({"update_summary": {"result": {"action": "charge", "amount": 41}}}, "data.update_summary.result.amount"),
+        ({"update_summary": {"result": {"action": "charge", "amount": "-1"}}}, "data.update_summary.result.amount"),
+        ({"next_transaction": {"details": {"totals": {"grand_total": None}}}}, "totals.grand_total"),
+        ({"next_transaction": {"details": None}}, "totals.total"),
+        ({"next_transaction": "soon"}, "totals.total"),
+        ({"currency_code": "USD"}, "data.currency_code or data.next_billed_at"),
+        ({"currency_code": None}, "data.currency_code or data.next_billed_at"),
+        ({"next_billed_at": "tomorrow"}, "data.currency_code or data.next_billed_at"),
+    ],
+)
+async def test_a_preview_without_its_figures_is_502(
+    change: dict[str, Any], field: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, paddle = _client()
+    paddle.preview = {**PADDLE_API_EXAMPLES["preview_subscription_update"]["data"], **change}
+    with caplog.at_level(logging.WARNING, logger="eifi1_server_kit.billing"), pytest.raises(PaddleError) as failed:
+        await client.preview_plan_change(subscription_id="sub_1", price_id="pri_max")
+    assert (failed.value.status, failed.value.code) == (200, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE)
+    assert field in caplog.text
+
+
+async def test_a_switch_is_previewed_then_made_prorated_at_once() -> None:
+    """Paddle's update answers the subscription without figures: the client answers the
+    preview's, made just before."""
+    client, paddle = _client()
+    switched = await client.change_plan(subscription_id="sub_1", price_id="pri_max")
+    preview, update = paddle.requests
+    assert (preview.method, str(preview.url)) == ("PATCH", f"{SANDBOX}/subscriptions/sub_1/preview")
+    assert (update.method, str(update.url)) == ("PATCH", f"{SANDBOX}/subscriptions/sub_1")
+    assert json.loads(preview.content) == json.loads(update.content) == SWITCH_BODY
+    assert (switched.now_minor, switched.next_minor) == (4100, 12000)
+
+
+async def test_a_declined_switch_is_a_paddle_error_and_a_failed_preview_changes_nothing() -> None:
+    client, paddle = _client()
+    paddle.fail_with(400, "subscription_payment_declined")
+    with pytest.raises(PaddleError) as failed:
+        await client.change_plan(subscription_id="sub_1", price_id="pri_max")
+    assert failed.value.paddle_code == "subscription_payment_declined"
+    assert [request.url.path for request in paddle.requests] == ["/subscriptions/sub_1/preview"]  # never updated
+
+
+# --- the shared customer (§15.2.11) ----------------------------------------------------------
+
+
+async def test_an_existing_customer_is_found_by_the_address() -> None:
+    client, paddle = _client()
+    paddle.customers["payer@example.com"] = "ctm_known"
+    assert await client.customer_for(email=" payer@example.com ") == "ctm_known"
+    (request,) = paddle.requests
+    assert (request.method, request.url.path, dict(request.url.params)) == (
+        "GET",
+        "/customers",
+        {"email": "payer@example.com"},
+    )
+    assert request.content == b""  # a GET without a body
+
+
+async def test_a_new_address_creates_the_customer() -> None:
+    client, paddle = _client()
+    assert await client.customer_for(email="new@example.com") == "ctm_fake_1"
+    assert [request.method for request in paddle.requests] == ["GET", "POST"]
+    assert paddle.sent == {"email": "new@example.com"}
+    assert paddle.customers == {"new@example.com": "ctm_fake_1"}
+
+
+async def test_a_customer_created_in_between_is_the_one_paddle_names() -> None:
+    """Another app's checkout created it after the lookup: Paddle's 409 names it."""
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [], "meta": {}})
+        return httpx.Response(
+            409,
+            json={
+                "error": {
+                    "code": "customer_already_exists",
+                    "detail": "customer email conflicts with customer of id ctm_01ghbk4xjn4qdsmstcwzgcgg35",
+                }
+            },
+        )
+
+    client = PaddleClient(KEY, environment="sandbox", client=httpx.AsyncClient(transport=httpx.MockTransport(answer)))
+    assert await client.customer_for(email="raced@example.com") == "ctm_01ghbk4xjn4qdsmstcwzgcgg35"
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        (409, {"code": "customer_already_exists", "detail": "conflicts"}),  # no id named
+        (409, {"code": "customer_already_exists"}),
+        (400, {"code": "bad_request", "detail": "ctm_01 but another refusal"}),
+    ],
+)
+async def test_any_other_create_refusal_is_a_paddle_error(status: int, error: dict[str, str]) -> None:
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": None}, "junk"], "meta": {}})
+        return httpx.Response(status, json={"error": error})
+
+    client = PaddleClient(KEY, environment="sandbox", client=httpx.AsyncClient(transport=httpx.MockTransport(answer)))
+    with pytest.raises(PaddleError) as failed:
+        await client.customer_for(email="payer@example.com")
+    assert failed.value.status == status
+
+
+async def test_a_customer_answer_without_its_fields_is_502() -> None:
+    with pytest.raises(PaddleError):  # the list isn't a list
+        await _answering(200, {"data": {"id": "ctm_1"}}).customer_for(email="payer@example.com")
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [], "meta": {}})
+        return httpx.Response(201, json={"data": {"email": "payer@example.com"}})
+
+    client = PaddleClient(KEY, environment="sandbox", client=httpx.AsyncClient(transport=httpx.MockTransport(answer)))
+    with pytest.raises(PaddleError):  # created without an id
+        await client.customer_for(email="payer@example.com")
+    with pytest.raises(ValueError, match="e-mail address"):
+        await client.customer_for(email="  ")
+
+
+async def test_a_first_checkout_with_the_payers_address_carries_the_shared_customer() -> None:
+    client, paddle = _client(app="keksdose")
+    paddle.customers["payer@example.com"] = "ctm_shared"
+    await client.checkout_url(price_id="pri_1", custom_data={"payer_ref": "user:1"}, customer_email="payer@example.com")
+    assert paddle.sent["customer_id"] == "ctm_shared"
+    # The row's customer wins, and asks nothing; a blank address is none.
+    await client.checkout_url(price_id="pri_1", custom_data={}, customer_id="ctm_row", customer_email="x@example.com")
+    assert paddle.sent["customer_id"] == "ctm_row"
+    await client.checkout_url(price_id="pri_1", custom_data={}, customer_email=" ")
+    assert "customer_id" not in paddle.sent
+    assert [request.method for request in paddle.requests] == ["GET", "POST", "POST", "POST"]
+
+
+async def test_the_address_never_reaches_the_log(caplog: pytest.LogCaptureFixture) -> None:
+    client, paddle = _client()
+    paddle.fail_with(403, "forbidden")  # a key without customer read
+    with caplog.at_level(logging.DEBUG, logger="eifi1_server_kit.billing"), pytest.raises(PaddleError) as failed:
+        await client.customer_for(email="private@example.com")
+    assert failed.value.code is BillingErrorCode.BILLING_NOT_CONFIGURED
+    assert "private" not in caplog.text and "GET /customers answered 403" in caplog.text

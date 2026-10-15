@@ -25,6 +25,7 @@ class Row:
     provider: str | None = None
     provider_customer_id: str | None = None
     provider_subscription_id: str | None = None
+    provider_price_id: str | None = None
     updated_from_event_at: datetime | None = None
 
 
