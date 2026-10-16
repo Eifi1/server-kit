@@ -238,6 +238,24 @@ async def test_the_public_fakes_pass_their_checks() -> None:
     admin = actor(id=9, is_admin=True)
     _, votes, comments = _public_fakes()
     await check_reply_store(InMemoryReplyStore(), feedback_id=1, admin=admin)
+    # 0.13.1 (Kurvenschmiede): the rework's file under the app's own policy, or one the app stored.
+    from eifi1_server_kit.feedback import NewFeedbackReply
+    from eifi1_server_kit.feedback.testing import MemoryReplyRow
+
+    urls: list[str | None] = []
+
+    class Recording(InMemoryReplyStore):
+        async def add(self, new: NewFeedbackReply, *, actor: FeedbackActor | None) -> MemoryReplyRow:
+            urls.append(new.attachment_url)
+            return await super().add(new, actor=actor)
+
+    await check_reply_store(
+        Recording(), feedback_id=2, admin=admin, policy=AttachmentUrlPolicy(prefix="/api/v1/app-files/")
+    )
+    assert any((url or "").startswith("/api/v1/app-files/check") for url in urls)
+    stored = "/api/v1/app-files/abc.png"
+    await check_reply_store(Recording(), feedback_id=3, admin=admin, attachment_url=stored)
+    assert stored in urls
     await check_comment_store(comments, feedback_id=1, author=AUTHOR, other=STRANGER, admin=admin)
     await check_vote_store(votes, feedback_id=1, voter=AUTHOR, other=STRANGER)
     repository, votes, _ = _public_fakes()

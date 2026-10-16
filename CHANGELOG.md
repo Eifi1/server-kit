@@ -10,6 +10,23 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.13.1] (2026-10-16)
+
+The apps' 0.40 adoption findings, released as one batch with ui-kit 0.40.1 once all three had
+reported.
+
+### Fixed
+
+* **feedback:** `check_reply_store` writes its rework entry's file under the app's own
+  attachment policy (`policy=`) or a file the app stored (`attachment_url=`), so a store that
+  resolves the file accepts it (Kurvenschmiede).
+
+### Changed
+
+* **ci:** Dependabot's uv version updates run locally before a push (`.githooks/pre-push`,
+  `scripts/check-dependencies.py`): an open alert blocks, newer minor/patch versions are
+  listed; Dependabot keeps the GitHub Actions and no longer rebases open PRs.
+
 ## [0.13.0] (2026-10-16)
 
 server-kit 0.13.0: the backend half of round 0.40 (ui-kit 0.40) — feedback §10 settled after

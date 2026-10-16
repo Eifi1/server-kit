@@ -1071,7 +1071,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.13.0/eifi1_server_kit-0.13.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.13.1/eifi1_server_kit-0.13.1-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
@@ -1237,6 +1237,13 @@ bash scripts/check.sh      # ruff, ruff format --check, mypy --strict, pytest + 
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14.
+
+**Dependencies before a push** (0.13.1, as keksdose's): enable the hook once per clone with
+`git config core.hooksPath .githooks`. `.githooks/pre-push` runs
+`scripts/check-dependencies.py`: an open Dependabot alert blocks the push, and newer
+minor/patch versions of the direct dependencies are listed without blocking. Dependabot no
+longer opens uv version-update PRs; GitHub Actions keep theirs. `SKIP_DEPENDENCY_CHECK=1`
+skips it.
 
 **The API export.** The kit's documentation lives in the ui-kit showcase, as its "Server
 kit" group (Marcel, 2026-10-07). `scripts/export_api.py` reads the installed package —
