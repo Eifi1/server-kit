@@ -1238,6 +1238,13 @@ bash scripts/check.sh      # ruff, ruff format --check, mypy --strict, pytest + 
 
 CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14.
 
+**Dependencies before a push** (0.13.1, as keksdose's): enable the hook once per clone with
+`git config core.hooksPath .githooks`. `.githooks/pre-push` runs
+`scripts/check-dependencies.py`: an open Dependabot alert blocks the push, and newer
+minor/patch versions of the direct dependencies are listed without blocking. Dependabot no
+longer opens uv version-update PRs; GitHub Actions keep theirs. `SKIP_DEPENDENCY_CHECK=1`
+skips it.
+
 **The API export.** The kit's documentation lives in the ui-kit showcase, as its "Server
 kit" group (Marcel, 2026-10-07). `scripts/export_api.py` reads the installed package —
 each module's `__all__`, the signatures and docstrings as written, the `#:` comments of
