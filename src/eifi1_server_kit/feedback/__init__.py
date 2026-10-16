@@ -15,6 +15,10 @@ and conformance checks ``eifi1_server_kit.feedback.testing``; neither is re-expo
 Public feedback (0.11, contract §9): the rules of :mod:`~eifi1_server_kit.feedback.public`
 (the public body, who is told, the field lists), the reply, comment and vote shapes, the
 four stores' ports and the service's public flows.
+
+Rework as an entry (0.13, contract §10): ``FeedbackStatus.REWORK``, :data:`QUEUE_STATUSES`,
+:class:`FeedbackEntryKind`, :func:`plan_rework`, :class:`FeedbackReworkCreate`,
+:meth:`FeedbackService.rework`, and :func:`split_rework_blocks` for the migrations.
 """
 
 from __future__ import annotations
@@ -30,8 +34,10 @@ from eifi1_server_kit.feedback.attachments import (
 from eifi1_server_kit.feedback.body import (
     ATTACHMENT_MARKER,
     BLOCK_RULE_RE,
+    REWORK_BLOCK_RE,
     REWORK_RULE_RE,
     REWORK_STAMP_FORMAT,
+    ReworkBlock,
     append_rework,
     appended_text,
     attachment_line,
@@ -41,6 +47,7 @@ from eifi1_server_kit.feedback.body import (
     rework_count,
     rework_stamp,
     split_body_attachments,
+    split_rework_blocks,
 )
 from eifi1_server_kit.feedback.context import CONTEXT_KEYS, MAX_CONTEXT_SIZE, context_size, stamp_identity
 from eifi1_server_kit.feedback.crash import (
@@ -62,9 +69,11 @@ from eifi1_server_kit.feedback.enums import (
     AWAITING_STATUSES,
     DECIDED_STATUSES,
     PICKABLE_CATEGORIES,
+    QUEUE_STATUSES,
     REWORKABLE_STATUSES,
     TERMINAL_STATUSES,
     FeedbackCategory,
+    FeedbackEntryKind,
     FeedbackStatus,
 )
 from eifi1_server_kit.feedback.erasure import (
@@ -73,6 +82,7 @@ from eifi1_server_kit.feedback.erasure import (
     MIN_NEEDLE_LENGTH,
     AnonymisedFeedback,
     anonymise_feedback,
+    anonymise_reply,
     attachment_keys_to_purge,
     feedback_attachment_urls,
     scrub_context,
@@ -131,11 +141,14 @@ from eifi1_server_kit.feedback.public import (
 )
 from eifi1_server_kit.feedback.rules import (
     AUTHOR_EDITABLE_FIELDS,
+    REWORK_AUTHOR_ONLY,
     ReplyPlan,
     UpdatePlan,
     check_author_edit,
     initial_status,
+    legacy_rework_block,
     plan_reply,
+    plan_rework,
     plan_update,
     reject_manual_crash,
     reopens,
@@ -162,6 +175,7 @@ from eifi1_server_kit.feedback.schemas import (
     FeedbackReplyCreate,
     FeedbackReplyResponse,
     FeedbackResponse,
+    FeedbackReworkCreate,
     FeedbackUpdate,
     FeedbackVoteResponse,
     PublicSort,
@@ -210,10 +224,13 @@ __all__ = [
     "PUBLIC_PAGE_SIZE",
     "PUBLIC_REPLY_FIELDS",
     "PUBLIC_REPORT_FIELDS",
+    "QUEUE_STATUSES",
     "REFERENCE_LENGTH",
     "REMOVED_URL",
     "REPLY_MAX",
     "REWORKABLE_STATUSES",
+    "REWORK_AUTHOR_ONLY",
+    "REWORK_BLOCK_RE",
     "REWORK_RULE_RE",
     "REWORK_STAMP_FORMAT",
     "SHA12_KEY_PATTERN",
@@ -242,6 +259,7 @@ __all__ = [
     "FeedbackCommentStore",
     "FeedbackConflictError",
     "FeedbackCreate",
+    "FeedbackEntryKind",
     "FeedbackError",
     "FeedbackForbiddenError",
     "FeedbackNotFoundError",
@@ -254,6 +272,7 @@ __all__ = [
     "FeedbackReplyStore",
     "FeedbackRepository",
     "FeedbackResponse",
+    "FeedbackReworkCreate",
     "FeedbackRow",
     "FeedbackService",
     "FeedbackStatus",
@@ -271,10 +290,12 @@ __all__ = [
     "PublicListEntry",
     "PublicSort",
     "ReplyPlan",
+    "ReworkBlock",
     "StoredAttachment",
     "UnknownAttachmentUrlError",
     "UpdatePlan",
     "anonymise_feedback",
+    "anonymise_reply",
     "append_rework",
     "appended_text",
     "attachment_keys_to_purge",
@@ -296,9 +317,11 @@ __all__ = [
     "initial_status",
     "is_public",
     "is_rework_append",
+    "legacy_rework_block",
     "normalise_crash_text",
     "opens_with_rework_rule",
     "plan_reply",
+    "plan_rework",
     "plan_update",
     "public_body",
     "public_text",
@@ -311,6 +334,7 @@ __all__ = [
     "scrub_context",
     "scrub_text",
     "split_body_attachments",
+    "split_rework_blocks",
     "stamp_identity",
     "throttle_upload",
     "truncate",

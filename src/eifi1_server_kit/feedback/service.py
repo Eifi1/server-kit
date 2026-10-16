@@ -30,6 +30,7 @@ adds the author's vote after the report, which it needs the id of).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
@@ -37,6 +38,7 @@ from typing import Any, Literal, cast
 from eifi1_server_kit.auth.accounts import first_name_of, full_name
 from eifi1_server_kit.demo import refuse_demo
 from eifi1_server_kit.feedback.attachments import AttachmentUrlPolicy
+from eifi1_server_kit.feedback.body import ReworkBlock
 from eifi1_server_kit.feedback.context import stamp_identity
 from eifi1_server_kit.feedback.crash import (
     CrashDecision,
@@ -49,8 +51,13 @@ from eifi1_server_kit.feedback.crash import (
     decide_crash,
     fold_crash_context,
 )
-from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackStatus
-from eifi1_server_kit.feedback.erasure import anonymise_feedback, attachment_keys_to_purge, scrub_text
+from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackEntryKind, FeedbackStatus
+from eifi1_server_kit.feedback.erasure import (
+    anonymise_feedback,
+    anonymise_reply,
+    attachment_keys_to_purge,
+    scrub_text,
+)
 from eifi1_server_kit.feedback.errors import (
     COMMENTS_THROTTLED_DETAIL,
     THROTTLED_DETAIL,
@@ -84,7 +91,13 @@ from eifi1_server_kit.feedback.ports import (
     utc_now,
 )
 from eifi1_server_kit.feedback.public import PUBLIC_PAGE_MAX, PUBLIC_PAGE_SIZE, is_public, public_body, public_text
-from eifi1_server_kit.feedback.rules import initial_status, plan_reply, plan_update, reject_manual_crash
+from eifi1_server_kit.feedback.rules import (
+    initial_status,
+    plan_reply,
+    plan_rework,
+    plan_update,
+    reject_manual_crash,
+)
 from eifi1_server_kit.feedback.schemas import (
     CrashReportCreate,
     CrashReportResponse,
@@ -98,6 +111,7 @@ from eifi1_server_kit.feedback.schemas import (
     FeedbackReplyCreate,
     FeedbackReplyResponse,
     FeedbackResponse,
+    FeedbackReworkCreate,
     FeedbackUpdate,
     FeedbackVoteResponse,
     PublicSort,
@@ -124,6 +138,8 @@ __all__ = [
     "throttle_upload",
     "upload_attachment",
 ]
+
+logger = logging.getLogger("eifi1_server_kit.feedback")
 
 #: What a file is served as when its bytes name nothing the policy accepts.
 _UNKNOWN_MEDIA_TYPE = "application/octet-stream"
@@ -152,6 +168,10 @@ def _status(value: FeedbackStatus | str | None) -> FeedbackStatus | None:
     return None if value is None else FeedbackStatus(value)
 
 
+def _kind(reply: FeedbackReplyRow) -> FeedbackEntryKind:
+    return FeedbackEntryKind(reply.kind)
+
+
 def _oldest_first[T: (FeedbackReplyRow, FeedbackCommentRow)](rows: Iterable[T]) -> list[T]:
     return sorted(rows, key=lambda row: (row.created_at, row.id))
 
@@ -176,7 +196,8 @@ class ErasedFeedback:
     comments: int = 0
     #: Votes deleted.
     votes: int = 0
-    #: Replies (an erased admin's) un-named and scrubbed; kept.
+    #: Entries un-named and scrubbed, kept: an erased admin's replies and an erased
+    #: author's rework entries (whose files join ``keys``).
     replies: int = 0
 
 
@@ -371,7 +392,13 @@ class FeedbackService[RowT: FeedbackRow]:
         the lookup (422); the row this actor may see, or 404; a foreign row's 404 where
         the app chose it; :func:`~eifi1_server_kit.feedback.plan_update` (403 or 422), with
         the row's ``filed_private``; then the one write. ``public`` is a 422 where the app
-        has no public parts (no ``public_viewer``)."""
+        has no public parts (no ``public_viewer``).
+
+        **The legacy append** (0.13 only, §10.3): an old client's rework append is written
+        as an entry (one write per store, the report last; ``body`` untouched) — the
+        actor's ``rework`` entry when the actor is the author, else (an admin on another's
+        report) a reply with status REWORK — and logged ``feedback.legacy_rework_append``.
+        Without a reply store the body is appended as before 0.13."""
         refuse_demo(actor.is_demo, "feedback")
         reject_manual_crash(payload.category)
         changes = payload.model_dump(exclude_unset=True)
@@ -391,8 +418,41 @@ class FeedbackService[RowT: FeedbackRow]:
             is_author=is_author,
             now=self.now(),
             filed_private=bool(getattr(row, "filed_private", False)),
+            prefix=self.policy.prefix,
         )
+        if plan.rework is not None:
+            return await self._legacy_rework(
+                actor, row, plan.changes, plan.rework, body=changes["body"], is_author=is_author
+            )
         return await self.repository.apply(row, plan.changes, actor=actor)
+
+    async def _legacy_rework(
+        self,
+        actor: FeedbackActor,
+        row: RowT,
+        changes: dict[str, Any],
+        block: ReworkBlock,
+        *,
+        body: str,
+        is_author: bool,
+    ) -> RowT:
+        if self.reply_store is None:
+            return await self.repository.apply(row, {**changes, "body": body}, actor=actor)
+        kind = FeedbackEntryKind.REWORK if is_author else FeedbackEntryKind.REPLY
+        logger.info("feedback.legacy_rework_append feedback_id=%s actor_id=%s kind=%s", row.id, actor.id, kind.value)
+        await self.reply_store.add(
+            NewFeedbackReply(
+                feedback_id=row.id,
+                author_id=actor.id,
+                body=block.note,
+                status_from=FeedbackStatus(row.status),
+                status_to=changes["status"],
+                kind=kind,
+                attachment_url=block.url,
+            ),
+            actor=actor,
+        )
+        return await self.repository.apply(row, changes, actor=actor)
 
     async def erase_author(self, user_id: int, identifiers: Iterable[str | None]) -> ErasedFeedback:
         """Take an erased account out of its reports, and answer the files to delete (§2.15).
@@ -408,12 +468,22 @@ class FeedbackService[RowT: FeedbackRow]:
 
         With the public-feedback stores (§9.12): the person's **comments** are scrubbed and
         un-named (kept, shown as "A user"), their **votes** deleted, their **replies** (an
-        admin's) un-named and scrubbed (kept), and ``hidden_by`` cleared where it was them.
+        admin's) and **rework entries** (an author's, §10.3) un-named and scrubbed (kept),
+        each rework file taken off its entry and joining ``keys``
+        (:func:`~eifi1_server_kit.feedback.anonymise_reply`), and ``hidden_by`` cleared
+        where it was them.
         """
         needles = list(identifiers)
         rows = await self.repository.by_author(user_id)
         erased_ids: list[int] = []
         erased_urls: set[str] = set()
+        replies = 0
+        if self.reply_store is not None:
+            for reply in await self.reply_store.by_author(user_id):
+                scrubbed = anonymise_reply(body=reply.body, attachment_url=reply.attachment_url, identifiers=needles)
+                erased_urls |= scrubbed.urls
+                await self.reply_store.apply(reply, scrubbed.changes)
+                replies += 1
         for row in rows:
             result = anonymise_feedback(
                 title=row.title,
@@ -431,7 +501,7 @@ class FeedbackService[RowT: FeedbackRow]:
         if erased_urls:
             others = await self.repository.urls_named_except(erased_ids)
             keys = tuple(attachment_keys_to_purge(erased_urls, others, policy=self.policy))
-        comments = votes = replies = 0
+        comments = votes = 0
         if self.comment_store is not None:
             for comment in await self.comment_store.by_author(user_id):
                 await self.comment_store.apply(
@@ -441,10 +511,6 @@ class FeedbackService[RowT: FeedbackRow]:
             await self.comment_store.clear_hidden_by(user_id)
         if self.vote_store is not None:
             votes = await self.vote_store.delete_by_author(user_id)
-        if self.reply_store is not None:
-            for reply in await self.reply_store.by_author(user_id):
-                await self.reply_store.apply(reply, {"body": scrub_text(reply.body, needles), "author_id": None})
-                replies += 1
         return ErasedFeedback(reports=len(erased_ids), keys=keys, comments=comments, votes=votes, replies=replies)
 
     # --- public feedback: who sees what (§9.2 decisions 7 and 8, §9.9) ----------------
@@ -485,9 +551,14 @@ class FeedbackService[RowT: FeedbackRow]:
             "body": reply.body if admin else public_text(reply.body, policy=self.policy),
             "status_to": _status(reply.status_to),
             "created_at": reply.created_at,
+            "kind": _kind(reply),
         }
         if admin:
             fields["status_from"] = _status(reply.status_from)
+        if issubclass(model, FeedbackReplyResponse):
+            # The admin's and the author's views (§10.3); the public detail's model has no
+            # such field, so a rework's file never leaves for others.
+            fields["attachment_url"] = reply.attachment_url
         return model(**fields)
 
     async def _views(
@@ -529,9 +600,10 @@ class FeedbackService[RowT: FeedbackRow]:
                 update["replies"] = views
                 # §9.7: `outcome` answers as the newest reply's body, so a client from
                 # before 0.38 still shows the latest answer; the frozen column only while
-                # a report has no reply.
-                if views:
-                    update["outcome"] = views[-1].body
+                # a report has no reply. A rework entry is no answer (§10.3).
+                answered = [view for view in views if view.kind is FeedbackEntryKind.REPLY]
+                if answered:
+                    update["outcome"] = answered[-1].body
             out.append(answer.model_copy(update=update) if update else answer)
         return out
 
@@ -659,7 +731,9 @@ class FeedbackService[RowT: FeedbackRow]:
         else, 404 for a report the admin cannot see. The reply is added (the store fires
         ``feedback_answered``); with a ``status`` the report moves by
         :func:`~eifi1_server_kit.feedback.plan_reply` — the reply first, the report last.
-        Answers the report; :meth:`admin_view` makes it the answer with its replies."""
+        With ``status`` REWORK it is how an admin sends any report back (§10.3): still a
+        reply, and it notifies. Answers the report; :meth:`admin_view` makes it the answer
+        with its replies."""
         refuse_demo(actor.is_demo, "feedback")
         if not actor.is_admin:
             raise FeedbackForbiddenError("Insufficient role")
@@ -681,6 +755,39 @@ class FeedbackService[RowT: FeedbackRow]:
         if plan.changes:
             row = await self.repository.apply(row, plan.changes, actor=actor)
         return row
+
+    async def rework(self, actor: FeedbackActor, feedback_id: int, payload: FeedbackReworkCreate) -> RowT:
+        """The author sends a report back (§10.3): refused for a demo; the file one of this
+        app's URLs (422); the report this actor may see, or 404 — a foreign row 404 where
+        the app chose it; then :func:`~eifi1_server_kit.feedback.plan_rework` (403 for
+        anyone but the author, an admin included, and outside the reworkable statuses).
+        The ``rework`` entry is added — the store fires nothing for it — then the report
+        moves (REWORK for an admin author, OPEN otherwise): one write per store, the
+        report last. Answers the report; the router answers it with its replies."""
+        refuse_demo(actor.is_demo, "feedback")
+        store = self._reply_store()
+        if payload.attachment_url is not None:
+            self.policy.validate_url(payload.attachment_url)
+        row = await self.repository.get(feedback_id, viewer=actor)
+        if row is None:
+            raise FeedbackNotFoundError()
+        is_author = row.user_id == actor.id
+        if self.foreign_row == "not_found" and not actor.is_admin and not is_author:
+            raise FeedbackNotFoundError()
+        plan = plan_rework(status=row.status, is_author=is_author, actor_is_admin=actor.is_admin, now=self.now())
+        await store.add(
+            NewFeedbackReply(
+                feedback_id=row.id,
+                author_id=actor.id,
+                body=payload.body,
+                status_from=plan.status_from,
+                status_to=plan.status_to,
+                kind=FeedbackEntryKind.REWORK,
+                attachment_url=payload.attachment_url,
+            ),
+            actor=actor,
+        )
+        return await self.repository.apply(row, plan.changes, actor=actor)
 
     async def list_public(
         self,

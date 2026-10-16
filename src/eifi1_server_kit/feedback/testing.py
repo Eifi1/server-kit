@@ -35,12 +35,12 @@ import struct
 import zlib
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from eifi1_server_kit.feedback.attachments import DEFAULT_ATTACHMENT_URL_POLICY, AttachmentUrlPolicy
 from eifi1_server_kit.feedback.body import attachment_line
-from eifi1_server_kit.feedback.enums import TERMINAL_STATUSES, FeedbackCategory, FeedbackStatus
+from eifi1_server_kit.feedback.enums import TERMINAL_STATUSES, FeedbackCategory, FeedbackEntryKind, FeedbackStatus
 from eifi1_server_kit.feedback.erasure import feedback_attachment_urls
 from eifi1_server_kit.feedback.ports import (
     AttachmentStorage,
@@ -123,7 +123,8 @@ class MemoryFeedbackRow:
 
 @dataclass(slots=True)
 class MemoryReplyRow:
-    """One reply in memory (§9.7); satisfies :class:`~eifi1_server_kit.feedback.FeedbackReplyRow`."""
+    """One reply or rework entry in memory (§9.7, §10.3); satisfies
+    :class:`~eifi1_server_kit.feedback.FeedbackReplyRow`."""
 
     id: int
     feedback_id: int
@@ -132,6 +133,8 @@ class MemoryReplyRow:
     status_from: FeedbackStatus | None
     status_to: FeedbackStatus | None
     created_at: datetime
+    kind: FeedbackEntryKind = FeedbackEntryKind.REPLY
+    attachment_url: str | None = None
 
 
 @dataclass(slots=True)
@@ -158,7 +161,8 @@ class InMemoryFeedbackRepository:
     ``emails`` are the authors' current addresses (the inbox's join); ``hidden(row,
     viewer)`` hides a row from :meth:`get` as Kurvenschmiede's ``visible_to`` or kastlan's
     RLS would; ``now`` stamps ``created_at`` and ``updated_at``. ``policy`` is the app's,
-    whose prefix finds a body's rework lines in :meth:`urls_named_except`.
+    whose prefix finds a body's rework lines in :meth:`urls_named_except`; with ``replies``
+    (0.13) it reads the rework entries' files there too, as an app's query joins them.
 
     A :class:`~eifi1_server_kit.feedback.PublicFeedbackRepository` too: :meth:`public_page`
     counts in ``votes`` and ``comments`` (the fake stores), as an app's SQL joins its tables.
@@ -173,6 +177,7 @@ class InMemoryFeedbackRepository:
         policy: AttachmentUrlPolicy = DEFAULT_ATTACHMENT_URL_POLICY,
         votes: InMemoryVoteStore | None = None,
         comments: InMemoryCommentStore | None = None,
+        replies: InMemoryReplyStore | None = None,
     ) -> None:
         #: Every row, by id.
         self.rows: dict[int, MemoryFeedbackRow] = {}
@@ -184,6 +189,7 @@ class InMemoryFeedbackRepository:
         self.policy = policy
         self.votes = votes
         self.comments = comments
+        self.replies = replies
 
     async def get(self, feedback_id: int, *, viewer: FeedbackActor) -> MemoryFeedbackRow | None:
         row = self.rows.get(feedback_id)
@@ -252,6 +258,12 @@ class InMemoryFeedbackRepository:
                     body=row.body,
                     policy=self.policy,
                 )
+        if self.replies is not None:
+            urls |= {
+                entry.attachment_url
+                for entry in self.replies.rows.values()
+                if entry.feedback_id not in row_ids and entry.attachment_url
+            }
         return urls
 
     async def public_page(
@@ -293,12 +305,14 @@ class InMemoryFeedbackRepository:
 
 class InMemoryReplyStore:
     """A :class:`~eifi1_server_kit.feedback.FeedbackReplyStore` of :class:`MemoryReplyRow`.
-    ``added`` records each ``add`` with its actor — where an app fires ``feedback_answered``."""
+    ``added`` records each ``add`` with its actor, both kinds; ``notified`` the ones that
+    fire ``feedback_answered`` — ``kind = 'reply'`` only (§10.2 decision 10)."""
 
     def __init__(self, *, now: Clock = utc_now) -> None:
         self.rows: dict[int, MemoryReplyRow] = {}
         self.calls: list[str] = []
         self.added: list[tuple[MemoryReplyRow, FeedbackActor | None]] = []
+        self.notified: list[tuple[MemoryReplyRow, FeedbackActor | None]] = []
         self.now = now
 
     async def for_reports(self, ids: Collection[int]) -> Mapping[int, Sequence[MemoryReplyRow]]:
@@ -318,10 +332,14 @@ class InMemoryReplyStore:
             body=new.body,
             status_from=new.status_from,
             status_to=new.status_to,
-            created_at=self.now(),
+            created_at=new.created_at or self.now(),
+            kind=FeedbackEntryKind(new.kind),
+            attachment_url=new.attachment_url,
         )
         self.rows[row.id] = row
         self.added.append((row, actor))
+        if row.kind is FeedbackEntryKind.REPLY:
+            self.notified.append((row, actor))
         return row
 
     async def by_author(self, user_id: int) -> Sequence[MemoryReplyRow]:
@@ -554,6 +572,11 @@ def _status(row: FeedbackRow) -> FeedbackStatus:
     return FeedbackStatus(row.status)
 
 
+def _same_instant(read: datetime, wanted: datetime) -> bool:
+    """A naive read-back is UTC (a ``timestamp without time zone`` column)."""
+    return (read if read.tzinfo is not None else read.replace(tzinfo=UTC)) == wanted
+
+
 def _newest_first_order(rows: Sequence[FeedbackRow]) -> bool:
     keys = [(row.created_at, row.id) for row in rows]
     return keys == sorted(keys, reverse=True)
@@ -761,9 +784,12 @@ async def check_round_trip(client: Any, *, policy: AttachmentUrlPolicy, headers:
 
 
 async def check_reply_store(store: FeedbackReplyStore[Any], *, feedback_id: int, admin: FeedbackActor) -> None:
-    """Does the app's reply store keep the port's promises (§9.7)? Raises
+    """Does the app's reply store keep the port's promises (§9.7, §10.3)? Raises
     :class:`AssertionError` naming the first that fails. ``feedback_id`` is an existing
-    report; it asserts only on the two replies it adds."""
+    report; it asserts only on the entries it adds: two replies, then a rework entry with
+    a file and one with an explicit ``created_at`` (a migrated block, oldest of all). It
+    cannot see a notification: that ``add`` fires ``feedback_answered`` for a reply only
+    is the app's own test."""
     token = secrets.token_hex(8)
     first = await store.add(
         NewFeedbackReply(
@@ -792,12 +818,56 @@ async def check_reply_store(store: FeedbackReplyStore[Any], *, feedback_id: int,
     _check(not (await store.for_reports([_MISSING_ID])).get(_MISSING_ID), "for_reports: a report with none has none")
     by_admin = {reply.id for reply in await store.by_author(admin.id)}
     _check(first.id in by_admin and second.id not in by_admin, "by_author: the replies that person wrote")
+    for reply in (first, second):
+        _check(FeedbackEntryKind(reply.kind) is FeedbackEntryKind.REPLY, "add: kind defaults to reply")
+        _check(reply.attachment_url is None, "add: a reply has no file")
+    url = f"{DEFAULT_ATTACHMENT_URL_POLICY.prefix}check{token}.png"
+    rework = await store.add(
+        NewFeedbackReply(
+            feedback_id=feedback_id,
+            author_id=admin.id,
+            body=f"Still broken ({token})",
+            status_from=FeedbackStatus.DONE,
+            status_to=FeedbackStatus.REWORK,
+            kind=FeedbackEntryKind.REWORK,
+            attachment_url=url,
+        ),
+        actor=admin,
+    )
+    stamped_at = datetime(2001, 2, 3, 4, 5, tzinfo=UTC)
+    migrated = await store.add(
+        NewFeedbackReply(
+            feedback_id=feedback_id,
+            author_id=None,
+            body=f"A migrated rework ({token})",
+            kind=FeedbackEntryKind.REWORK,
+            created_at=stamped_at,
+        ),
+        actor=None,
+    )
+    _check(
+        FeedbackEntryKind(rework.kind) is FeedbackEntryKind.REWORK and rework.attachment_url == url,
+        "add: kind and attachment_url read back",
+    )
+    _check(FeedbackStatus(rework.status_to or "") is FeedbackStatus.REWORK, "add: status_to REWORK reads back")
+    _check(_same_instant(migrated.created_at, stamped_at), "add: an explicit created_at is written as given")
+    entries = [
+        entry.id
+        for entry in (await store.for_reports([feedback_id])).get(feedback_id, ())
+        if entry.id in {first.id, second.id, rework.id, migrated.id}
+    ]
+    _check(entries == [migrated.id, first.id, second.id, rework.id], "for_reports: both kinds, oldest first")
+    by_admin = {reply.id for reply in await store.by_author(admin.id)}
+    _check(rework.id in by_admin, "by_author: both kinds")
     await store.apply(first, {"author_id": None, "body": "[erased]"})
     again = [reply for reply in (await store.for_reports([feedback_id]))[feedback_id] if reply.id == first.id]
     _check(
         len(again) == 1 and again[0].author_id is None and again[0].body == "[erased]",
         "apply: author_id and body read back",
     )
+    await store.apply(rework, {"author_id": None, "attachment_url": None})
+    cleared = [entry for entry in (await store.for_reports([feedback_id]))[feedback_id] if entry.id == rework.id]
+    _check(len(cleared) == 1 and cleared[0].attachment_url is None, "apply: attachment_url reads back")
 
 
 async def check_comment_store(

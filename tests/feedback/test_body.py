@@ -123,3 +123,82 @@ def test_the_stricter_reading_of_an_append() -> None:
     assert not opens_with_rework_rule(old, old + " and a sentence")
     assert appended_text(old, "unrelated") == ""
     assert not opens_with_rework_rule(old, "unrelated")
+
+
+# ── split_rework_blocks (round 0.40, §10.4) ─────────────────────────────────
+
+
+def test_a_body_without_a_block_comes_back_unchanged() -> None:
+    from eifi1_server_kit.feedback import split_rework_blocks
+
+    assert split_rework_blocks("Sync is slow\n\n") == ("Sync is slow\n\n", [])
+    assert split_rework_blocks(None) == ("", [])
+    # A sentence that says REWORK is no rule: nothing is split.
+    sentence = "I did a REWORK --- honestly\nand --- REWORK in the middle --- of a line, too"
+    assert split_rework_blocks(sentence) == (sentence, [])
+
+
+def test_one_and_two_blocks_with_a_file() -> None:
+    from eifi1_server_kit.feedback import REWORK_BLOCK_RE, ReworkBlock, split_rework_blocks
+
+    one = append_rework("Sync is slow", "  still slow  ", now=NOW)
+    assert one is not None
+    assert split_rework_blocks(one) == (
+        "Sync is slow",
+        [ReworkBlock(datetime(2026, 10, 4, 9, 12, tzinfo=UTC), "still slow")],
+    )
+    later = NOW + timedelta(days=1, minutes=3)
+    two = append_rework(one, "Still cut off\non the iPad", URL, now=later)
+    assert two is not None
+    description, blocks = split_rework_blocks(two)
+    assert description == "Sync is slow"
+    assert [block.note for block in blocks] == ["still slow", "Still cut off\non the iPad"]
+    assert (blocks[0].url, blocks[1].url) == (None, URL)
+    assert blocks[1].stamp == datetime(2026, 10, 5, 9, 15, tzinfo=UTC)
+    assert REWORK_BLOCK_RE.match("--- REWORK 2026-10-04 09:12 ---") is not None
+
+
+def test_only_the_first_file_line_is_the_url_and_a_foreign_one_is_prose() -> None:
+    from eifi1_server_kit.feedback import split_rework_blocks
+
+    other = "/api/v1/feedback/attachments/aaaaaaaaaaaa.png"
+    body = (
+        f"--- REWORK 2026-10-04 09:12 ---\n[screenshot] {URL}\nlook\n[screenshot] {other}\n[screenshot] https://evil/x"
+    )
+    description, [block] = split_rework_blocks(body)
+    assert description == "" and block.url == URL
+    assert block.note == f"look\n[screenshot] {other}\n[screenshot] https://evil/x"
+    # Under another prefix the line is not this app's file.
+    _, [mine] = split_rework_blocks(body, prefix="/files/")
+    assert mine.url is None and mine.note.startswith(f"[screenshot] {URL}")
+
+
+def test_kastlans_comment_blocks_stay_in_the_description() -> None:
+    from eifi1_server_kit.feedback import split_rework_blocks
+
+    body = (
+        "Original\n\n--- REWORK 2026-10-04 09:12 ---\nagain\n\n"
+        "--- COMMENT 2026-10-05 10:00 · Ann ---\nA comment\n\n--- REWORK 2026-10-06 11:00 ---\nthird"
+    )
+    description, blocks = split_rework_blocks(body)
+    assert description == "Original\n\n--- COMMENT 2026-10-05 10:00 · Ann ---\nA comment"
+    assert [block.note for block in blocks] == ["again", "third"]
+
+
+@pytest.mark.parametrize(
+    "rule",
+    ["--- REWORK ANSWERED 2026-09-16 ---", "--- REWORK 2026-09-04 ---", "--- REWORK (2) ---", "---REWORK---"],
+)
+def test_a_rework_rule_that_is_no_block_stops_the_split(rule: str) -> None:
+    """keksdose's ``outcome`` holds such lines from old loop answers: split ``body`` only."""
+    from eifi1_server_kit.feedback import split_rework_blocks
+
+    with pytest.raises(ValueError, match="a REWORK rule that is no block"):
+        split_rework_blocks(f"Original\n\n  {rule}  \nanswered")
+
+
+def test_a_stamp_that_is_no_date_stops_the_split() -> None:
+    from eifi1_server_kit.feedback import split_rework_blocks
+
+    with pytest.raises(ValueError):
+        split_rework_blocks("x\n--- REWORK 2026-13-45 09:12 ---\nnote")

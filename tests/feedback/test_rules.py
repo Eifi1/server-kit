@@ -30,6 +30,7 @@ from eifi1_server_kit.feedback import (
     resolved_at_change,
     rework_status,
 )
+from eifi1_server_kit.feedback.body import ReworkBlock
 
 NOW = datetime(2026, 10, 4, 9, 12, tzinfo=UTC)
 S = FeedbackStatus
@@ -140,25 +141,30 @@ def test_check_author_edit_alone() -> None:
 
 
 def test_the_author_reworks_a_settled_entry_by_appending_to_it() -> None:
-    """keksdose ``test_feedback.py:165``: back in the queue, and the terminal stamp cleared."""
+    """keksdose ``test_feedback.py:165``: back in the queue, and the terminal stamp cleared.
+    Since 0.13 (§10.3) the append is no body edit: the block comes back split."""
     appended = "original\n\n--- REWORK 2026-08-19 12:00 ---\nactually, still broken"
     plan = _author(S.DONE, {"body": appended}, body="original")
     assert plan.reworking and plan.reopened
-    assert plan.changes == {"body": appended, "status": S.OPEN, "resolved_at": None}
+    assert plan.changes == {"status": S.OPEN, "resolved_at": None}
+    assert plan.rework == ReworkBlock(datetime(2026, 8, 19, 12, 0, tzinfo=UTC), "actually, still broken")
 
 
 def test_every_answered_status_reopens_on_a_rework() -> None:
-    assert {S.IN_EVALUATION, S.NEEDS_LIVE_TEST, S.POSTPONED, S.DONE, S.WONT_DO} == REWORKABLE_STATUSES, (
-        "the same five as before READY (§8.2)"
+    assert {S.IN_EVALUATION, S.NEEDS_LIVE_TEST, S.POSTPONED, S.DONE, S.WONT_DO, S.REWORK} == REWORKABLE_STATUSES, (
+        "the five answered ones and REWORK itself (§10.2 decision 4)"
     )
     for status in REWORKABLE_STATUSES:
         plan = _author(status, {"body": "b + more"})
         assert plan.changes["status"] is S.OPEN, status
         assert ("resolved_at" in plan.changes) == (status in TERMINAL_STATUSES)
+        # Not the legacy client's shape: the whole appended text is one round sent now.
+        assert plan.rework == ReworkBlock(NOW, "+ more") and "body" not in plan.changes
     # In the author's lane an append is an ordinary edit: nothing to reopen.
     for status in AUTHOR_EDITABLE_STATUSES:
         plan = _author(status, {"body": "b + more"})
         assert plan.reworking and not plan.reopened and "status" not in plan.changes
+        assert plan.rework is None and plan.changes["body"] == "b + more"
 
 
 def test_a_settled_entry_still_cannot_be_rewritten_by_its_author() -> None:
@@ -169,13 +175,14 @@ def test_a_settled_entry_still_cannot_be_rewritten_by_its_author() -> None:
             _author(S.DONE, changes, body="original")
 
 
-def test_an_admins_rework_goes_back_to_ready_without_being_told_to() -> None:
+def test_an_admins_rework_goes_back_to_rework_without_being_told_to() -> None:
     """keksdose ``test_feedback.py:310`` (live #331): body alone, from an admin, on a parked
-    entry. An admin's rework is already triaged, so it is READY, not OPEN (§8.2)."""
+    entry. An admin's rework is already triaged, so it is REWORK, not OPEN (§10.2 decision 5;
+    READY before 0.13)."""
     plan = _admin(S.NEEDS_LIVE_TEST, {"body": "original\n\n--- REWORK 2026-09-16 03:57 ---\nstill"}, body="original")
-    assert plan.changes["status"] is S.READY and plan.reopened
+    assert plan.changes == {"status": S.REWORK} and plan.reopened
     done = _admin(S.DONE, {"body": "original + more"}, body="original")
-    assert done.changes == {"body": "original + more", "status": S.READY, "resolved_at": None}
+    assert done.changes == {"status": S.REWORK, "resolved_at": None}
 
 
 def test_an_admin_can_still_annotate_without_re_queueing() -> None:
@@ -198,7 +205,7 @@ def test_reopens_alone() -> None:
 
 def test_ready_sits_between_open_and_in_progress() -> None:
     order = list(S)
-    assert order[:3] == [S.OPEN, S.READY, S.IN_PROGRESS] and len(order) == 8
+    assert order[:4] == [S.OPEN, S.READY, S.REWORK, S.IN_PROGRESS] and len(order) == 9
     assert S("READY") is S.READY and S.READY.value == "READY"
     # OPEN waits on the triager now, READY on the implementer (kit FEEDBACK_AWAITING_STATUSES).
     assert {S.OPEN, S.IN_EVALUATION, S.NEEDS_LIVE_TEST} == AWAITING_STATUSES
@@ -212,8 +219,8 @@ def test_an_admins_own_report_is_filed_ready_and_everyone_elses_open() -> None:
     assert initial_status(author_is_admin=False, crash=True) is S.OPEN
 
 
-def test_a_rework_goes_back_to_ready_from_an_admin_and_to_open_otherwise() -> None:
-    assert rework_status(actor_is_admin=True) is S.READY
+def test_a_rework_goes_back_to_rework_from_an_admin_and_to_open_otherwise() -> None:
+    assert rework_status(actor_is_admin=True) is S.REWORK
     assert rework_status(actor_is_admin=False) is S.OPEN
 
 
@@ -281,7 +288,7 @@ def test_an_apps_own_enum_classes_work_unchanged() -> None:
         BUG = "BUG"
 
     plan = plan_update(status=AppStatus.DONE, body="a", changes={"body": "a b"}, is_admin=False, is_author=True)
-    assert plan.changes == {"body": "a b", "status": S.OPEN, "resolved_at": None}
+    assert plan.changes == {"status": S.OPEN, "resolved_at": None}
     with pytest.raises(CrashCategoryNotAssignableError):
         reject_manual_crash(AppCategory.CRASH)
     reject_manual_crash(AppCategory.BUG)
@@ -338,3 +345,63 @@ def test_a_reply_with_a_status_moves_the_report_by_the_resolved_at_rule() -> Non
     assert same.changes == {"status": S.DONE} and same.status_to is S.DONE
     stamped = plan_reply(status=S.OPEN, new_status=S.WONT_DO)
     assert isinstance(stamped.changes["resolved_at"], datetime)
+
+
+# ── rework as an entry (round 0.40, §10.2, §10.3) ───────────────────────────
+
+
+def test_rework_is_in_the_queue_and_reworkable_never_awaiting_nor_the_authors() -> None:
+    from eifi1_server_kit.feedback import QUEUE_STATUSES
+
+    assert {S.READY, S.REWORK, S.IN_PROGRESS} == QUEUE_STATUSES
+    assert S.REWORK in REWORKABLE_STATUSES
+    assert S.REWORK not in AWAITING_STATUSES and S.REWORK not in AUTHOR_EDITABLE_STATUSES
+    assert S("REWORK") is S.REWORK
+
+
+def test_the_entry_kinds() -> None:
+    from eifi1_server_kit.feedback import FeedbackEntryKind
+
+    assert [kind.value for kind in FeedbackEntryKind] == ["reply", "rework"]
+
+
+def test_plan_rework_is_the_authors_on_an_answered_report() -> None:
+    from eifi1_server_kit.feedback import REWORK_AUTHOR_ONLY, ReplyPlan, plan_rework
+
+    member = plan_rework(status=S.DONE, is_author=True, actor_is_admin=False, now=NOW)
+    assert member == ReplyPlan(changes={"status": S.OPEN, "resolved_at": None}, status_from=S.DONE, status_to=S.OPEN)
+    admin = plan_rework(status="NEEDS_LIVE_TEST", is_author=True, actor_is_admin=True)
+    assert admin == ReplyPlan(changes={"status": S.REWORK}, status_from=S.NEEDS_LIVE_TEST, status_to=S.REWORK)
+    again = plan_rework(status=S.REWORK, is_author=True, actor_is_admin=True)
+    assert again.status_to is S.REWORK, "a second rework adds an entry"
+    for is_admin in (True, False):
+        with pytest.raises(FeedbackForbiddenError, match=REWORK_AUTHOR_ONLY):
+            plan_rework(status=S.DONE, is_author=False, actor_is_admin=is_admin)
+    for status in AUTHOR_EDITABLE_STATUSES:
+        with pytest.raises(FeedbackForbiddenError, match=f"Entry is in {status.value}; only answered entries"):
+            plan_rework(status=status, is_author=True, actor_is_admin=False)
+
+
+def test_the_legacy_append_is_split_or_taken_whole() -> None:
+    from eifi1_server_kit.feedback import ReworkBlock, legacy_rework_block
+
+    url = "/files/aaaaaaaaaaaa.png"
+    shaped = f"orig\n\n--- REWORK 2026-10-04 09:12 ---\nagain\n[screenshot] {url}"
+    assert legacy_rework_block("orig", shaped, now=NOW, prefix="/files/") == ReworkBlock(
+        datetime(2026, 10, 4, 9, 12, tzinfo=UTC), "again", url
+    )
+    two = "orig\n\n--- REWORK 2026-10-04 09:12 ---\na\n\n--- REWORK 2026-10-04 09:13 ---\nb"
+    assert legacy_rework_block("orig", two, now=NOW).note.startswith("--- REWORK 2026-10-04 09:12 ---")
+    odd = "orig\n\n--- REWORK ANSWERED 2026-10-04 ---\nx"
+    assert legacy_rework_block("orig", odd, now=NOW) == ReworkBlock(NOW, "--- REWORK ANSWERED 2026-10-04 ---\nx")
+    prefixed = "orig\n\nbefore\n--- REWORK 2026-10-04 09:12 ---\nx"
+    assert legacy_rework_block("orig", prefixed, now=NOW).stamp == NOW, "text before the block: taken whole"
+
+
+def test_plan_update_finds_the_file_under_the_apps_prefix() -> None:
+    appended = "o\n\n--- REWORK 2026-10-04 09:12 ---\nn\n[screenshot] /files/aaaaaaaaaaaa.png"
+    plan = plan_update(
+        status=S.WONT_DO, body="o", changes={"body": appended}, is_admin=False, is_author=True, prefix="/files/"
+    )
+    assert plan.rework is not None and plan.rework.url == "/files/aaaaaaaaaaaa.png"
+    assert plan.changes["status"] is S.OPEN and "body" not in plan.changes

@@ -9,8 +9,9 @@ What an erased report keeps is the REPORT: title, body, category, status, outcom
 dates, with the person's own email / display name in the text replaced by
 ``[erased]``. What it loses: ``user_id``, ``crash_fingerprint`` (derived from the user id,
 so a token for the person, not the defect), every context key outside the allow-list,
-and every picture — ``screenshot_url``, ``attachment_urls`` AND the rework files named in
-the body's ``[screenshot] <url>`` lines.
+and every picture — ``screenshot_url``, ``attachment_urls``, the rework files named in
+the body's ``[screenshot] <url>`` lines AND, since 0.13, each rework entry's
+``attachment_url`` (:func:`anonymise_reply`).
 
 **The body-line fix.** keksdose cleared the two picture columns but left the rework
 lines in the body, and their objects were never purged — a rework screenshot is as much a
@@ -145,6 +146,20 @@ def anonymise_feedback(
         "user_id": None,
     }
     return AnonymisedFeedback(changes=changes, urls=frozenset(urls))
+
+
+def anonymise_reply(
+    *, body: str | None, attachment_url: str | None, identifiers: Iterable[str | None]
+) -> AnonymisedFeedback:
+    """One entry of ``feedback_replies`` with its writer taken out (§9.12, §10.3): kept,
+    ``author_id`` ``None``, the body scrubbed (:func:`scrub_text`). A rework entry's file
+    goes as the report's do: ``attachment_url`` set to ``None`` and the URL answered in
+    ``urls`` for :func:`attachment_keys_to_purge` (an entry without one is not written
+    there)."""
+    changes: dict[str, Any] = {"body": scrub_text(body, identifiers), "author_id": None}
+    if attachment_url:
+        changes["attachment_url"] = None
+    return AnonymisedFeedback(changes=changes, urls=frozenset({attachment_url} if attachment_url else ()))
 
 
 def attachment_keys_to_purge(

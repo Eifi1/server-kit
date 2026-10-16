@@ -29,7 +29,7 @@ from typing import Any, Protocol
 # The clock is layer 2's, shared with the translation review since 0.10 (§6.2.1); the
 # same objects, re-exported here under the names 0.9 gave them.
 from eifi1_server_kit.clock import Clock, utc_now
-from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackStatus
+from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackEntryKind, FeedbackStatus
 from eifi1_server_kit.feedback.schemas import PublicSort
 from eifi1_server_kit.uploads import CheckedUpload
 
@@ -155,7 +155,8 @@ class FeedbackRepository[RowT: FeedbackRow](Protocol):
 
     async def urls_named_except(self, row_ids: Collection[int]) -> set[str]:
         """Every attachment URL the rows outside row_ids name, in a column or the body
-        (feedback_attachment_urls): the erasure's shared-key check."""
+        (feedback_attachment_urls), and the ``attachment_url`` of their rework entries
+        (0.13): the erasure's shared-key check."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,8 +209,9 @@ class PublicFeedbackRow(FeedbackRow, Protocol):  # pragma: no cover - a protocol
 
 
 class FeedbackReplyRow(Protocol):
-    """One answer (§9.7): ``feedback_replies``, read-only. ``author_id`` is ``None`` for a
-    loop's reply, a migrated outcome or an erased admin."""
+    """One entry of ``feedback_replies``, read-only: an answer (§9.7) or, since 0.13, the
+    author's rework (§10.3), told apart by ``kind``. ``author_id`` is ``None`` for a loop's
+    reply, a migrated outcome, an erased admin — or an erased author's rework."""
 
     @property
     def id(self) -> int: ...
@@ -225,6 +227,10 @@ class FeedbackReplyRow(Protocol):
     def status_to(self) -> FeedbackStatus | str | None: ...
     @property
     def created_at(self) -> datetime: ...
+    @property
+    def kind(self) -> FeedbackEntryKind | str: ...
+    @property
+    def attachment_url(self) -> str | None: ...
 
 
 class FeedbackCommentRow(Protocol):
@@ -251,14 +257,19 @@ class FeedbackCommentRow(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class NewFeedbackReply:
-    """A reply to insert (§9.7); the store adds ``created_at`` (``server_default now()``)
-    and the app its own columns (kastlan's ``company_id``, keksdose's ``notified_at``)."""
+    """An entry to insert (§9.7, §10.3): a reply, or a ``rework`` with its one file. The
+    store adds ``created_at`` (``server_default now()``) unless one is given — the
+    migration's explicit stamp — and the app its own columns (kastlan's ``company_id``,
+    keksdose's ``notified_at``)."""
 
     feedback_id: int
     author_id: int | None
     body: str
     status_from: FeedbackStatus | None = None
     status_to: FeedbackStatus | None = None
+    kind: FeedbackEntryKind = FeedbackEntryKind.REPLY
+    attachment_url: str | None = None
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,21 +319,24 @@ class PublicFeedbackRepository[RowT: PublicFeedbackRow](Protocol):
 
 
 class FeedbackReplyStore[ReplyRowT: FeedbackReplyRow](Protocol):
-    """The replies (§9.7). Async; every write flushes and none commits."""
+    """The replies and rework entries (§9.7, §10.3), one table. Async; every write flushes
+    and none commits."""
 
     async def for_reports(self, ids: Collection[int]) -> Mapping[int, Sequence[ReplyRowT]]:
-        """Each report's replies, oldest first (``created_at``, then id); a report with
-        none may be missing from the answer. One query for a page."""
+        """Each report's entries, both kinds, oldest first (``created_at``, then id); a
+        report with none may be missing from the answer. One query for a page."""
 
     async def add(self, new: NewFeedbackReply, *, actor: FeedbackActor | None) -> ReplyRowT:
-        """Insert and flush. Fires ``feedback_answered`` (to
-        :func:`~eifi1_server_kit.feedback.feedback_recipients`), sent after the commit."""
+        """Insert and flush, ``kind`` and ``attachment_url`` included, and ``created_at``
+        when given. For ``kind = 'reply'`` only, fires ``feedback_answered`` (to
+        :func:`~eifi1_server_kit.feedback.feedback_recipients`), sent after the commit; a
+        ``rework`` entry fires nothing (§10.2 decision 10)."""
 
     async def by_author(self, user_id: int) -> Sequence[ReplyRowT]:
-        """The erasure's replies: those ``user_id`` wrote."""
+        """The erasure's entries: those ``user_id`` wrote, both kinds."""
 
     async def apply(self, reply: ReplyRowT, changes: Mapping[str, Any]) -> ReplyRowT:
-        """Assign and flush (the erasure's ``author_id`` and ``body``)."""
+        """Assign and flush (the erasure's ``author_id``, ``body`` and ``attachment_url``)."""
 
 
 class FeedbackCommentStore[CommentRowT: FeedbackCommentRow](Protocol):

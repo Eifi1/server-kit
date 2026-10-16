@@ -36,7 +36,9 @@ request's repository; each flow makes at most one repository write, as its last 
 the kit never commits (§2.7).
 
 **Public feedback** (0.11, ``docs/feedback-harmonization.md`` §9.9): with ``deps.replies``
-the router adds ``POST /{feedback_id}/replies`` (``create_reply``); with
+the router adds ``POST /{feedback_id}/replies`` (``create_reply``) and, since 0.13 (§10.3),
+``POST /{feedback_id}/rework`` (``create_rework``, the author's, behind the demo guard
+only); with
 ``deps.public_viewer`` (which needs ``comments``, ``votes`` and ``people``) eight more —
 ``list_public``, ``get_public``, ``list_comments``, ``create_comment``, ``hide_comment``,
 ``delete_comment``, ``vote``, ``unvote``. They go after the inbox and before the PATCH, so
@@ -76,6 +78,7 @@ from eifi1_server_kit.feedback.schemas import (
     FeedbackReplyCreate,
     FeedbackReplyResponse,
     FeedbackResponse,
+    FeedbackReworkCreate,
     FeedbackUpdate,
     FeedbackVoteResponse,
     PublicSort,
@@ -147,6 +150,9 @@ class FeedbackDeps[RowT: FeedbackRow]:
     #: ``q`` searches the title; False where titles are sealed (Kurvenschmiede): a 422.
     public_search: bool = True
     reply_response_model: type[FeedbackReplyResponse] = FeedbackReplyResponse
+    #: ``POST /{feedback_id}/rework``'s body (§10.3): subclass it to narrow its
+    #: ``attachment_url_policy``; the service checks ``policy`` either way.
+    rework_model: type[FeedbackReworkCreate] = FeedbackReworkCreate
     comment_response_model: type[FeedbackCommentResponse] = FeedbackCommentResponse
     public_item_model: type[FeedbackPublicListItem] = FeedbackPublicListItem
     public_response_model: type[FeedbackPublicResponse] = FeedbackPublicResponse
@@ -170,8 +176,8 @@ def feedback_router[RowT: FeedbackRow](
     """The contract's seven routes (§3.3), on ``APIRouter(prefix=prefix, tags=tags)``, in
     this order: ``POST /attachments``, ``GET /attachments/{key}``, ``POST ""``,
     ``POST /crash``, ``GET /my``, ``GET ""``, then public feedback's routes (§9.9: the
-    eight with ``public_viewer``, ``POST /{feedback_id}/replies`` with ``replies``), and
-    ``PATCH /{feedback_id}`` last.
+    eight with ``public_viewer``, ``POST /{feedback_id}/replies`` and
+    ``POST /{feedback_id}/rework`` with ``replies``), and ``PATCH /{feedback_id}`` last.
 
     Raises :class:`ValueError` when ``deps.create_model.attachment_url_policy`` is not
     ``deps.policy``: two policies would let a report name a key the download refuses; and
@@ -333,6 +339,25 @@ def feedback_router[RowT: FeedbackRow](
             """An admin's answer, with the status it moves the report to, if any: the
             report comes back with its replies."""
             row = await service.reply(actor, feedback_id, payload)
+            return (await answer(actor, service, [(row, None)]))[0]
+
+        rework_model = deps.rework_model
+
+        @router.post(
+            "/{feedback_id}/rework",
+            response_model=response_model,
+            status_code=status.HTTP_201_CREATED,
+            dependencies=[Depends(deps.demo_guard("feedback"))],
+        )
+        async def create_rework(
+            feedback_id: int,
+            payload: rework_model,  # type: ignore[valid-type]
+            actor: Annotated[FeedbackActor, Depends(deps.actor)],
+            service: Service,
+        ) -> FeedbackResponse:
+            """The author sends their report back, with what is still wanted and at most one
+            file: the report comes back with its replies."""
+            row = await service.rework(actor, feedback_id, payload)
             return (await answer(actor, service, [(row, None)]))[0]
 
     @router.patch(

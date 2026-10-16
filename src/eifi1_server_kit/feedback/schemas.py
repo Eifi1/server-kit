@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from eifi1_server_kit.feedback.attachments import DEFAULT_ATTACHMENT_URL_POLICY, AttachmentUrlPolicy
 from eifi1_server_kit.feedback.context import MAX_CONTEXT_SIZE, context_size
-from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackStatus
+from eifi1_server_kit.feedback.enums import FeedbackCategory, FeedbackEntryKind, FeedbackStatus
 from eifi1_server_kit.feedback.errors import FeedbackValidationError
 from eifi1_server_kit.feedback.public import COMMENT_MAX, REPLY_MAX
 
@@ -175,25 +175,33 @@ class FeedbackUpdate(BaseModel):
 
 
 class FeedbackPublicReplyResponse(BaseModel):
-    """One reply as the public detail shows it (§9.10): never ``status_from``."""
+    """One reply or rework entry as the public detail shows it (§9.10, §10.3): never
+    ``status_from``, never ``attachment_url``."""
 
     model_config = ConfigDict(json_schema_serialization_defaults_required=True)
 
     id: int
     #: Others: the first name; an admin: the full name; ``None``: the app's word for its
-    #: admin ("Admin") — a loop's reply, a migrated outcome, an erased admin.
+    #: admin ("Admin") — a loop's reply, a migrated outcome, an erased admin — or, on a
+    #: ``rework`` entry, "A user" (an erased author), never the admin word.
     author_name: str | None = None
     body: str
-    #: The status the reply moved the report to; ``None``: no status change.
+    #: The status the entry moved the report to; ``None``: no status change (a migrated
+    #: rework entry too).
     status_to: FeedbackStatus | None = None
     created_at: datetime
+    #: ``reply`` (an admin's or a loop's answer) or ``rework`` (the author's, §10.3).
+    kind: FeedbackEntryKind = FeedbackEntryKind.REPLY
 
 
 class FeedbackReplyResponse(FeedbackPublicReplyResponse):
-    """One reply on the admin's and the author's report (§9.7)."""
+    """One reply or rework entry on the admin's and the author's report (§9.7, §10.3)."""
 
     #: The status before the move: the admin view only (``None`` elsewhere).
     status_from: FeedbackStatus | None = None
+    #: A rework entry's one file (§10.3); ``None`` for a reply. The admin's and the
+    #: author's views only — never the public detail.
+    attachment_url: str | None = None
 
 
 class FeedbackResponse(BaseModel):
@@ -210,7 +218,8 @@ class FeedbackResponse(BaseModel):
     #: Joined for the admin list only; ``None`` on ``/my``, create and update.
     user_email: str | None = None
     title: str
-    #: ``""`` when none; rework rounds are appended here.
+    #: ``""`` when none. Before round 0.40 rework rounds were appended here; an unmigrated
+    #: row may still carry them.
     body: str
     category: FeedbackCategory
     status: FeedbackStatus
@@ -238,7 +247,8 @@ class FeedbackResponse(BaseModel):
     voted: bool | None = None
     #: The comments: an admin counts the hidden ones too.
     comment_count: int | None = None
-    #: The answers, oldest first; ``status_from`` for an admin only.
+    #: The answers and rework entries (``kind``), oldest first; ``status_from`` for an
+    #: admin only.
     replies: list[FeedbackReplyResponse] | None = None
 
 
@@ -259,6 +269,31 @@ class FeedbackReplyCreate(BaseModel):
     @classmethod
     def _trim(cls, value: object) -> object:
         return _trimmed(value)
+
+
+class FeedbackReworkCreate(BaseModel):
+    """``POST /feedback/{id}/rework`` (§10.3), the report's author: what is still wanted,
+    1–:data:`REPLY_MAX` characters after trimming, and at most one file — one of this
+    app's attachment URLs (:attr:`attachment_url_policy`, else 422)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Which URL may be named. Narrow it in the app's subclass; the service checks its own
+    #: policy too.
+    attachment_url_policy: ClassVar[AttachmentUrlPolicy] = DEFAULT_ATTACHMENT_URL_POLICY
+
+    body: str = Field(min_length=1, max_length=REPLY_MAX)
+    attachment_url: str | None = Field(default=None, max_length=MAX_SCREENSHOT_URL_LENGTH)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _trim(cls, value: object) -> object:
+        return _trimmed(value)
+
+    @field_validator("attachment_url")
+    @classmethod
+    def _attachment_url_is_ours(cls, value: str | None) -> str | None:
+        return None if value is None else cls.attachment_url_policy.validate_url(value)
 
 
 class FeedbackCommentCreate(BaseModel):

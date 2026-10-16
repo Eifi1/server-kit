@@ -155,13 +155,15 @@ def test_the_public_routes_go_before_the_patch_in_the_contracts_order() -> None:
         ("PUT", f"{BASE}/{{feedback_id}}/vote"),
         ("DELETE", f"{BASE}/{{feedback_id}}/vote"),
         ("POST", f"{BASE}/{{feedback_id}}/replies"),
+        ("POST", f"{BASE}/{{feedback_id}}/rework"),
         ("PATCH", f"{BASE}/{{feedback_id}}"),
     ]
 
 
 def test_kastlan_mounts_the_replies_only_and_an_app_without_stores_none() -> None:
     kastlan = _routes(World(public_viewer=None, comments=None, votes=None, people=None).router)
-    assert ("POST", f"{BASE}/{{feedback_id}}/replies") in kastlan and len(kastlan) == 8
+    assert ("POST", f"{BASE}/{{feedback_id}}/replies") in kastlan and len(kastlan) == 9
+    assert ("POST", f"{BASE}/{{feedback_id}}/rework") in kastlan
     assert len(_routes(World(public_viewer=None, replies=None).router)) == 7
 
 

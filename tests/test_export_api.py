@@ -149,7 +149,7 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
 
     status = members["eifi1_server_kit.feedback", "FeedbackStatus"]
     assert status["kind"] == "enum" and status["signature"] == "class FeedbackStatus(str, enum.Enum)"
-    assert [value["name"] for value in status["values"]][:3] == ["OPEN", "READY", "IN_PROGRESS"]
+    assert [value["name"] for value in status["values"]][:3] == ["OPEN", "READY", "REWORK"]
 
     token = members["eifi1_server_kit.auth", "TokenResponse"]
     assert token["kind"] == "model" and token["signature"] == "class TokenResponse[UserT = Any](BaseModel)"
