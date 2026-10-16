@@ -412,8 +412,8 @@ class PaddleClient:
         /subscriptions/{sub}/preview`` with the switch's body (:meth:`change_plan`), which
         changes nothing: ``currency`` Paddle's ``currency_code``; ``now_minor``
         ``update_summary.result.amount``, negative where its ``action`` is ``credit``
-        (``0`` with no summary); ``next_minor`` ``next_transaction.details.totals``'
-        ``grand_total`` (else ``total``); ``next_billed_at`` Paddle's. A 2xx without them
+        (``0`` with no summary); ``next_minor`` ``next_transaction.details.totals.total`` (the
+        plan's price; ``grand_total`` ignores the switch's own credit); ``next_billed_at`` Paddle's. A 2xx without them
         is a :class:`PaddleError` (502).
         (developer.paddle.com/api-reference/subscriptions/preview-subscription)"""
         path = f"/subscriptions/{quote(subscription_id, safe='')}/preview"
@@ -563,8 +563,11 @@ def _switch_preview(method: str, path: str, answer: _Answer) -> ProviderSwitchPr
         if following is not None:
             details = following.get("details") if isinstance(following, Mapping) else None
             totals = details.get("totals") if isinstance(details, Mapping) else None
-            key = "grand_total" if isinstance(totals, Mapping) and "grand_total" in totals else "total"
-            next_minor = _minor(totals, key, f"data.next_transaction.details.totals.{key}")
+            # The plan's price, not `grand_total`: Paddle's preview takes the customer's
+            # EXISTING balance off `grand_total` but not the credit this very switch creates
+            # (sandbox 2026-10-16: a downgrade crediting 84.00 showed grand_total 4.41 against
+            # total 5.00), so `grand_total` would understate what the next period costs.
+            next_minor = _minor(totals, "total", "data.next_transaction.details.totals.total")
         return ProviderSwitchPreview.model_validate(
             {
                 "currency": data.get("currency_code"),

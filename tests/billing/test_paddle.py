@@ -9,6 +9,7 @@ import json
 import logging
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,6 +27,7 @@ from eifi1_server_kit.billing import (
     PaddleError,
     paddle_environment_of,
     paddle_locale,
+    parse_webhook_event,
 )
 from eifi1_server_kit.billing.testing import PADDLE_API_EXAMPLES, PaddleApiFake
 
@@ -498,7 +500,7 @@ async def test_a_downgrade_is_a_credit_now() -> None:
     paddle.preview = {
         **data,
         "update_summary": {"result": {"action": "credit", "amount": "2500", "currency_code": "CHF"}},
-        "next_transaction": {"details": {"totals": {"total": "3000"}}},  # no grand_total: the total
+        "next_transaction": {"details": {"totals": {"total": "3000", "grand_total": "2900"}}},  # the total
     }
     preview = await client.preview_plan_change(subscription_id="sub_1", price_id="pri_max")
     assert (preview.now_minor, preview.next_minor) == (-2500, 3000)
@@ -515,7 +517,7 @@ async def test_a_downgrade_is_a_credit_now() -> None:
         ({"update_summary": {"result": "charge"}}, "data.update_summary.result.action"),
         ({"update_summary": {"result": {"action": "charge", "amount": 41}}}, "data.update_summary.result.amount"),
         ({"update_summary": {"result": {"action": "charge", "amount": "-1"}}}, "data.update_summary.result.amount"),
-        ({"next_transaction": {"details": {"totals": {"grand_total": None}}}}, "totals.grand_total"),
+        ({"next_transaction": {"details": {"totals": {"total": None}}}}, "totals.total"),
         ({"next_transaction": {"details": None}}, "totals.total"),
         ({"next_transaction": "soon"}, "totals.total"),
         ({"currency_code": "USD"}, "data.currency_code or data.next_billed_at"),
@@ -655,3 +657,37 @@ async def test_the_address_never_reaches_the_log(caplog: pytest.LogCaptureFixtur
         await client.customer_for(email="private@example.com")
     assert failed.value.code is BillingErrorCode.BILLING_NOT_CONFIGURED
     assert "private" not in caplog.text and "GET /customers answered 403" in caplog.text
+
+
+async def test_the_recorded_sandbox_downgrade_reads_as_paddle_answered_it() -> None:
+    # P5 (billing §15.6): Paddle's real preview of a downgrade, Plus CHF yearly -> Standard CHF
+    # monthly, recorded in the sandbox on 2026-10-16 (tests/billing/fixtures/).
+    recorded = json.loads((Path(__file__).parent / "fixtures" / "paddle_sandbox_2026-10-16.json").read_text())
+    client, paddle = _client()
+    paddle.preview = recorded["preview_downgrade"]
+    preview = await client.preview_plan_change(subscription_id="sub_1", price_id="pri_std")
+    # A credit of 84.00 now; the next charge is Standard's 5.00, not grand_total's 4.41.
+    assert (preview.currency, preview.now_minor, preview.next_minor) == ("CHF", -8400, 500)
+    assert preview.next_billed_at is not None and preview.next_billed_at.isoformat().startswith("2026-11-16")
+
+
+def test_the_recorded_sandbox_subscription_reads_as_a_webhook() -> None:
+    # P5: the real subscription entity, as `subscription.updated` carries it (the envelope is
+    # Paddle's documented one; `data` is the recorded entity).
+    recorded = json.loads((Path(__file__).parent / "fixtures" / "paddle_sandbox_2026-10-16.json").read_text())
+    body = {
+        "event_id": "evt_01m52fixture00000000000000",
+        "event_type": "subscription.updated",
+        "occurred_at": "2026-10-16T16:04:08.782Z",
+        "data": recorded["subscription"],
+    }
+    event = parse_webhook_event("paddle", json.dumps(body).encode())
+    assert event is not None
+    assert (event.subscription_ref, event.customer_ref) == (
+        "sub_01m52fyq04xhhbb4b3gqkqywf3",
+        "ctm_01m52fpxv99t9nabvrzjjm993c",
+    )
+    assert event.plan_price_id == "pri_01m52d4214ve7ww9w1jjen2khb"
+    assert event.cancel_at_period_end is False
+    assert event.current_period_end is not None and event.current_period_end.year == 2027
+    assert event.custom_data == {"app": "keksdose", "payer_ref": "user:1"}

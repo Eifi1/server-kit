@@ -1,0 +1,35 @@
+{
+  "_source": "Recorded from Marcel's Paddle sandbox on 2026-10-16 (billing §15.6, keksdose's run): GET /subscriptions/{id} and PATCH /subscriptions/{id}/preview (a downgrade Plus CHF yearly -> Standard CHF monthly, never applied). Trimmed to the fields the kit reads; management URLs (they carry portal tokens) left out.",
+  "subscription": {
+    "id": "sub_01m52fyq04xhhbb4b3gqkqywf3",
+    "status": "active",
+    "customer_id": "ctm_01m52fpxv99t9nabvrzjjm993c",
+    "currency_code": "CHF",
+    "next_billed_at": "2027-10-16T16:01:26.094Z",
+    "current_billing_period": {"starts_at": "2026-10-16T16:01:26.094Z", "ends_at": "2027-10-16T16:01:26.094Z"},
+    "billing_cycle": {"frequency": 1, "interval": "year"},
+    "scheduled_change": null,
+    "items": [{"status": "active", "quantity": 1, "price": {"id": "pri_01m52d4214ve7ww9w1jjen2khb", "billing_cycle": {"frequency": 1, "interval": "year"}, "unit_price": {"amount": "8900", "currency_code": "CHF"}}}],
+    "custom_data": {"app": "keksdose", "payer_ref": "user:1"}
+  },
+  "preview_downgrade": {
+    "status": "active",
+    "currency_code": "CHF",
+    "next_billed_at": "2026-11-16T16:16:52.254Z",
+    "billing_cycle": {"frequency": 1, "interval": "month"},
+    "update_summary": {
+      "credit": {"amount": "-8900", "currency_code": "CHF"},
+      "charge": {"amount": "500", "currency_code": "CHF"},
+      "result": {"action": "credit", "amount": "8400", "currency_code": "CHF"}
+    },
+    "next_transaction": {
+      "billing_period": {"starts_at": "2026-11-16T16:16:52.254Z", "ends_at": "2026-12-16T16:16:52.254Z"},
+      "details": {"totals": {"subtotal": "463", "tax": "37", "discount": "0", "total": "500", "grand_total": "441", "grand_total_tax": "33", "credit": "59", "credit_to_balance": "0", "balance": "441", "currency_code": "CHF"}}
+    },
+    "immediate_transaction": {
+      "details": {"totals": {"subtotal": "-7770", "tax": "-630", "discount": "0", "total": "-8400", "grand_total": "0", "credit": "0", "credit_to_balance": "8400", "balance": "0", "currency_code": "CHF"}}
+    },
+    "items": [{"status": "active", "quantity": 1, "price": {"id": "pri_01m52cgp3x8sd8n005a2pjb1qy", "billing_cycle": {"frequency": 1, "interval": "month"}, "unit_price": {"amount": "500", "currency_code": "CHF"}}}],
+    "custom_data": {"app": "keksdose", "payer_ref": "user:1"}
+  }
+}
