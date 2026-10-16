@@ -10,6 +10,35 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.13.0] (2026-10-16)
+
+server-kit 0.13.0: the backend half of round 0.40 (ui-kit 0.40) — feedback §10 settled after
+the three apps' reviews (a rework is the author's entry in the conversation, with its own
+REWORK status), and the Paddle sandbox run's results for billing.
+
+### ⚠ BREAKING CHANGES
+
+* **feedback:** `FeedbackReplyRow` requires `kind` and `attachment_url`; `rework_status(actor_is_admin=True)`
+  answers REWORK (was READY); a legacy PATCH append on an answered report becomes an entry
+  instead of writing `body` (for one release); `urls_named_except` must include rework-entry
+  files; `REWORKABLE_STATUSES` gains REWORK and the status order puts it third.
+
+### Added
+
+* **feedback:** `FeedbackStatus.REWORK`, `QUEUE_STATUSES`, `FeedbackEntryKind`, `plan_rework`,
+  `FeedbackReworkCreate`, `FeedbackService.rework`, `POST /{feedback_id}/rework`,
+  `split_rework_blocks` / `ReworkBlock` / `REWORK_BLOCK_RE` (body only); a rework fires no
+  `feedback_answered`; erasure purges entry files.
+* **billing:** `BillingOverview.switching`, computed by the now-public
+  `provider_subscription_runs`; `PADDLE_CONFIGURATION_CODES`.
+
+### Fixed
+
+* **billing:** Paddle's setup refusals (e.g. `transaction_checkout_url_domain_is_not_approved`)
+  answer 503 `billing_not_configured`, not 502 `billing_provider_unavailable`.
+* **billing:** a switch preview's `next_minor` is the plan's price (`total`): Paddle's
+  `grand_total` ignored the switch's own credit. Recorded sandbox answers are test fixtures (P5).
+
 ## [0.12.0] (2026-10-15)
 
 server-kit 0.12.0: the backend half of round 0.39 (ui-kit 0.39) — the Paddle billing
