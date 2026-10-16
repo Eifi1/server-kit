@@ -34,11 +34,12 @@ a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy, depre
   (:class:`BillingProviderClient`), the deployment's client
   (:func:`billing_provider_client`), and what a route checks first (:func:`sold_plan`,
   :func:`require_new_checkout`; for a plan switch :func:`require_plan_switch` and
-  :func:`switch_price`); a deletion's cancellation and its undoing
+  :func:`switch_price`; the rule both refuse by, :func:`provider_subscription_runs`); a deletion's cancellation and its undoing
   (:func:`cancel_for_deletion`, :func:`resume_after_withdrawal`); the checkout's way back
   (:func:`checkout_return_url`);
 * :mod:`~eifi1_server_kit.billing.paddle` — :class:`PaddleClient`, Paddle Billing's API
-  (the ``billing`` extra), :class:`PaddleError`, and the buyer's language as Paddle's
+  (the ``billing`` extra), :class:`PaddleError` (the 4xx codes that are the
+  deployment's fault, :data:`PADDLE_CONFIGURATION_CODES`), and the buyer's language as Paddle's
   checkout names it (:func:`paddle_locale`);
 * :mod:`~eifi1_server_kit.billing.notices` — which payer is owed a trial or grant end
   notice (:func:`billing_notice_due`);
@@ -98,6 +99,7 @@ from eifi1_server_kit.billing.notices import (
 from eifi1_server_kit.billing.paddle import (
     PADDLE_API_BASES,
     PADDLE_API_VERSION,
+    PADDLE_CONFIGURATION_CODES,
     PADDLE_TIMEOUT_SECONDS,
     PaddleClient,
     PaddleError,
@@ -130,6 +132,7 @@ from eifi1_server_kit.billing.provider import (
     billing_provider_client,
     cancel_for_deletion,
     checkout_return_url,
+    provider_subscription_runs,
     require_new_checkout,
     require_plan_switch,
     resume_after_withdrawal,
@@ -202,6 +205,7 @@ __all__ = [
     "NOTICE_STATUSES",
     "PADDLE_API_BASES",
     "PADDLE_API_VERSION",
+    "PADDLE_CONFIGURATION_CODES",
     "PADDLE_EVENT_KINDS",
     "PADDLE_SIGNATURE_HEADER",
     "PADDLE_SIGNATURE_TOLERANCE",
@@ -288,6 +292,7 @@ __all__ = [
     "plan_catalogue",
     "plan_switch_preview",
     "plans_out",
+    "provider_subscription_runs",
     "refuse_billing_read_only",
     "require_new_checkout",
     "require_plan_switch",

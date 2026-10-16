@@ -59,7 +59,9 @@ class BillingErrorCode(enum.StrEnum):
     #: The provider failed a checkout, portal or cancellation request (§14.2): it didn't
     #: answer, answered 429 or 5xx, refused the request (a 4xx other than 401/403), or
     #: answered 2xx without the fields the kit reads: 502, "try again". A 401/403 — a wrong
-    #: key, or one without the permission — is ``billing_not_configured`` instead: the
+    #: key, or one without the permission — or a 4xx with one of
+    #: :data:`~eifi1_server_kit.billing.PADDLE_CONFIGURATION_CODES` (an unapproved checkout
+    #: domain, an account not set up) is ``billing_not_configured`` instead: the
     #: deployment's fault, which trying again won't fix.
     BILLING_PROVIDER_UNAVAILABLE = "billing_provider_unavailable"
     #: A portal request for a payer the provider has no customer for (§14.5): 409. Nothing

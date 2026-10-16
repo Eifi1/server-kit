@@ -17,6 +17,7 @@ import pytest
 from eifi1_server_kit.billing import (
     PADDLE_API_BASES,
     PADDLE_API_VERSION,
+    PADDLE_CONFIGURATION_CODES,
     PADDLE_TIMEOUT_SECONDS,
     BillingError,
     BillingErrorCode,
@@ -358,6 +359,65 @@ async def test_a_refused_key_is_the_deployments_fault(status: int, caplog: pytes
         await client.cancel(subscription_id="sub_1")
     assert (failed.value.status_code, failed.value.code) == (503, BillingErrorCode.BILLING_NOT_CONFIGURED)
     assert caplog.records[-1].levelno == logging.ERROR
+
+
+async def test_an_unapproved_checkout_domain_is_the_deployments_fault(caplog: pytest.LogCaptureFixture) -> None:
+    """keksdose's sandbox run (2026-10-16): a ``checkout.url`` on a domain Paddle hasn't
+    approved is refused 400 — 503 ``billing_not_configured`` with Paddle's code in the log,
+    not 502 "the provider can't be reached"."""
+    client, paddle = _client(checkout_page_url="https://pay.example.app/")
+    paddle.fail_with(400, "transaction_checkout_url_domain_is_not_approved")
+    with caplog.at_level(logging.WARNING, logger="eifi1_server_kit.billing"), pytest.raises(PaddleError) as failed:
+        await client.checkout_url(price_id="pri_1", custom_data={})
+    error = failed.value
+    assert (error.status_code, error.code, error.status) == (503, BillingErrorCode.BILLING_NOT_CONFIGURED, 400)
+    assert error.paddle_code == "transaction_checkout_url_domain_is_not_approved"
+    (record,) = caplog.records
+    assert record.levelno == logging.ERROR
+    assert record.getMessage() == (
+        "Paddle POST /transactions answered 400 transaction_checkout_url_domain_is_not_approved"
+        f" (request {error.request_id})"
+    )
+
+
+def test_the_configuration_codes_are_the_accounts_setup() -> None:
+    """Picked from developer.paddle.com/errors (2026-10-16): the account or its setup
+    refuses, never a buyer's input or a subscription's state."""
+    assert (
+        frozenset(
+            {
+                "transaction_checkout_url_domain_is_not_approved",
+                "transaction_default_checkout_url_not_set",
+                "transaction_checkout_not_enabled",
+                "transaction_payout_account_required",
+                "transaction_creation_blocked",
+                "paddle_billing_not_enabled",
+                "transaction_price_not_found",
+                "subscription_price_not_found",
+            }
+        )
+        == PADDLE_CONFIGURATION_CODES
+    )
+
+
+@pytest.mark.parametrize("code", sorted(PADDLE_CONFIGURATION_CODES))
+@pytest.mark.parametrize("status", [400, 403, 404, 422])
+async def test_every_configuration_code_is_503(code: str, status: int) -> None:
+    client, paddle = _client()
+    paddle.fail_with(status, code)
+    with pytest.raises(PaddleError) as failed:
+        await client.change_plan(subscription_id="sub_1", price_id="pri_1")
+    assert (failed.value.status_code, failed.value.paddle_code) == (503, code)
+
+
+@pytest.mark.parametrize("status", [500, 502, 503])
+async def test_a_configuration_code_on_an_outage_is_still_try_again(status: int) -> None:
+    """Only a 4xx says the setup refuses: a 5xx is Paddle down, whatever its code."""
+    client, paddle = _client()
+    paddle.fail_with(status, "transaction_checkout_url_domain_is_not_approved")
+    with pytest.raises(PaddleError) as failed:
+        await client.checkout_url(price_id="pri_1", custom_data={})
+    assert (failed.value.status_code, failed.value.code) == (502, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE)
 
 
 @pytest.mark.parametrize("status", [400, 409, 422, 429, 500, 503])

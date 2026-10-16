@@ -21,8 +21,9 @@ a sandbox key works only against the sandbox's API and a live key only against l
 the app's one ``httpx.AsyncClient`` when it passes one (else a client per call), and is
 tried ONCE: creating a transaction is not idempotent, so a retry could open two. A failure
 is a :class:`PaddleError` — 502 ``billing_provider_unavailable``, or 503
-``billing_not_configured`` for a 401/403 — logged once with the method, the path, the
-status, Paddle's error code and its request id; never the body, never the key.
+``billing_not_configured`` for a 401/403 and for a 4xx whose code says the account or its
+setup refuses (:data:`PADDLE_CONFIGURATION_CODES`) — logged once with the method, the
+path, the status, Paddle's error code and its request id; never the body, never the key.
 
 Paddle's docs (developer.paddle.com, read 2026-10-09): api-reference/transactions/
 create-transaction, build/transactions/default-payment-link, paddle-js/about/
@@ -65,6 +66,7 @@ if TYPE_CHECKING:
 __all__ = [
     "PADDLE_API_BASES",
     "PADDLE_API_VERSION",
+    "PADDLE_CONFIGURATION_CODES",
     "PADDLE_TIMEOUT_SECONDS",
     "PaddleClient",
     "PaddleError",
@@ -86,6 +88,43 @@ PADDLE_API_BASES: Mapping[PaddleEnvironment, str] = types.MappingProxyType(
 PADDLE_API_VERSION = "1"
 #: How long one call may take, in seconds (kastlan's).
 PADDLE_TIMEOUT_SECONDS = 15.0
+#: Paddle's 4xx error codes that say the ACCOUNT or the deployment's setup refuses the
+#: request, not Paddle being down: a :class:`PaddleError` with one of them is 503
+#: ``billing_not_configured`` ("the deployment's fault"), logged at ERROR with the code,
+#: like a 401/403 — not 502 ``billing_provider_unavailable`` ("try again"), which no retry
+#: would fix. Picked from https://developer.paddle.com/errors (read 2026-10-16), each
+#: page's status in brackets, for the calls this client makes:
+#:
+#: * ``transaction_checkout_url_domain_is_not_approved`` [400] — ``checkout.url``'s domain
+#:   isn't approved (``checkout_page_url``; the sandbox's answer for an unapproved pay
+#:   host, keksdose 2026-10-16);
+#: * ``transaction_default_checkout_url_not_set`` [400] — no default payment link set;
+#: * ``transaction_checkout_not_enabled`` [400] — checkouts not enabled, onboarding
+#:   incomplete;
+#: * ``transaction_payout_account_required`` [400] — no payout account;
+#: * ``transaction_creation_blocked`` [400] — legal or compliance restrictions on the
+#:   account;
+#: * ``paddle_billing_not_enabled`` [403] — Paddle Billing not activated for the account;
+#: * ``transaction_price_not_found`` [400] and ``subscription_price_not_found`` [400] — a
+#:   price id the settings name doesn't exist (a typo, or the other environment's id).
+#:
+#: Not listed, deliberately: what a buyer or a subscription's state causes
+#: (``customer_email_domain_not_allowed``, ``subscription_locked_*``,
+#: ``subscription_payment_declined``…) and codes of calls the kit never makes (products,
+#: checkout domains, notifications, ``not_available_in_sandbox``). A 5xx or no answer is
+#: 502 whatever the code.
+PADDLE_CONFIGURATION_CODES: frozenset[str] = frozenset(
+    {
+        "transaction_checkout_url_domain_is_not_approved",
+        "transaction_default_checkout_url_not_set",
+        "transaction_checkout_not_enabled",
+        "transaction_payout_account_required",
+        "transaction_creation_blocked",
+        "paddle_billing_not_enabled",
+        "transaction_price_not_found",
+        "subscription_price_not_found",
+    }
+)
 
 #: A 2025 key's prefix and its environment (api-reference/about/authentication).
 _KEY_PREFIXES: Mapping[str, PaddleEnvironment] = types.MappingProxyType(
@@ -154,7 +193,9 @@ class PaddleError(BillingError):
     """A Paddle call that failed: ``billing_provider_unavailable`` (502) — no answer, a 429
     or 5xx, a request Paddle refused, a 2xx without the fields the kit reads — or
     ``billing_not_configured`` (503) for a 401/403, a wrong key or one without the
-    permission: the deployment's fault, not "try again".
+    permission, and for a 4xx with one of :data:`PADDLE_CONFIGURATION_CODES` (an
+    unapproved checkout domain, an account not set up): the deployment's fault, not "try
+    again".
 
     The client-facing ``detail`` is the kit's (``str(error)``, what the contract's error
     handlers answer). Paddle's own words stay on the exception, for the log and for Paddle
@@ -178,10 +219,9 @@ class PaddleError(BillingError):
         paddle_detail: str | None = None,
         request_id: str | None = None,
     ) -> None:
+        configuration = status in (401, 403) or (400 <= status < 500 and paddle_code in PADDLE_CONFIGURATION_CODES)
         super().__init__(
-            BillingErrorCode.BILLING_NOT_CONFIGURED
-            if status in (401, 403)
-            else BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE
+            BillingErrorCode.BILLING_NOT_CONFIGURED if configuration else BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE
         )
         self.status = status
         self.paddle_code = paddle_code
