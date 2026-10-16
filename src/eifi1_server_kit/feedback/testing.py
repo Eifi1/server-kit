@@ -783,13 +783,24 @@ async def check_round_trip(client: Any, *, policy: AttachmentUrlPolicy, headers:
 # --- public feedback's conformance checks (0.11, feedback §9.14) ------------------------
 
 
-async def check_reply_store(store: FeedbackReplyStore[Any], *, feedback_id: int, admin: FeedbackActor) -> None:
+async def check_reply_store(
+    store: FeedbackReplyStore[Any],
+    *,
+    feedback_id: int,
+    admin: FeedbackActor,
+    policy: AttachmentUrlPolicy = DEFAULT_ATTACHMENT_URL_POLICY,
+    attachment_url: str | None = None,
+) -> None:
     """Does the app's reply store keep the port's promises (§9.7, §10.3)? Raises
     :class:`AssertionError` naming the first that fails. ``feedback_id`` is an existing
     report; it asserts only on the entries it adds: two replies, then a rework entry with
     a file and one with an explicit ``created_at`` (a migrated block, oldest of all). It
     cannot see a notification: that ``add`` fires ``feedback_answered`` for a reply only
-    is the app's own test."""
+    is the app's own test.
+
+    The rework's file is ``attachment_url`` where given — a file the app's test stored, for
+    a store that resolves it (Kurvenschmiede claims it as an upload) — else one under
+    ``policy``'s prefix (0.13.1: the app's own policy, not the kit's default)."""
     token = secrets.token_hex(8)
     first = await store.add(
         NewFeedbackReply(
@@ -821,7 +832,7 @@ async def check_reply_store(store: FeedbackReplyStore[Any], *, feedback_id: int,
     for reply in (first, second):
         _check(FeedbackEntryKind(reply.kind) is FeedbackEntryKind.REPLY, "add: kind defaults to reply")
         _check(reply.attachment_url is None, "add: a reply has no file")
-    url = f"{DEFAULT_ATTACHMENT_URL_POLICY.prefix}check{token}.png"
+    url = attachment_url or f"{policy.prefix}check{token}.png"
     rework = await store.add(
         NewFeedbackReply(
             feedback_id=feedback_id,

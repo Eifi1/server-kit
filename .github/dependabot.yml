@@ -13,6 +13,9 @@ version: 2
 updates:
   - package-ecosystem: uv
     directory: "/"
+    # A push to main no longer rebases open Dependabot PRs (each rebase was a full CI run;
+    # keksdose's measurement, 2026-10-16). Rebase one by hand with `@dependabot rebase`.
+    rebase-strategy: disabled
     schedule:
       interval: monthly
       time: "06:00"
@@ -30,6 +33,9 @@ updates:
 
   - package-ecosystem: github-actions
     directory: "/"
+    # A push to main no longer rebases open Dependabot PRs (each rebase was a full CI run;
+    # keksdose's measurement, 2026-10-16). Rebase one by hand with `@dependabot rebase`.
+    rebase-strategy: disabled
     schedule:
       interval: monthly
       time: "06:00"
