@@ -90,4 +90,5 @@ def test_the_constants_are_the_contracts() -> None:
     never |= {"public", "filed_private", "hidden_by", "status_from", "outcome"}
     for fields in (PUBLIC_REPORT_FIELDS, PUBLIC_COMMENT_FIELDS, PUBLIC_REPLY_FIELDS):
         assert not fields & never
-    assert {"id", "author_name", "body", "status_to", "created_at"} == PUBLIC_REPLY_FIELDS
+    assert {"id", "author_name", "body", "status_to", "created_at", "kind"} == PUBLIC_REPLY_FIELDS
+    assert "attachment_url" not in PUBLIC_REPLY_FIELDS, "a rework's file never leaves for others (§10.3)"

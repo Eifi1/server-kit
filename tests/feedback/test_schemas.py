@@ -376,3 +376,39 @@ def test_the_update_takes_public_and_refuses_outcome() -> None:
         FeedbackUpdate.model_validate({"status": "DONE", "outcome": "shipped"})
     with pytest.raises(ValidationError, match="public cannot be null"):
         FeedbackUpdate.model_validate({"public": None})
+
+
+# ── the rework entry (round 0.40, §10.3) ────────────────────────────────────
+
+
+def test_a_rework_is_a_trimmed_note_and_at_most_one_file_of_ours() -> None:
+    from eifi1_server_kit.feedback import REPLY_MAX, FeedbackReworkCreate
+
+    rework = FeedbackReworkCreate.model_validate({"body": "  Still cut off on the iPad.  ", "attachment_url": URL_A})
+    assert (rework.body, rework.attachment_url) == ("Still cut off on the iPad.", URL_A)
+    assert FeedbackReworkCreate(body="x").attachment_url is None
+    assert len(FeedbackReworkCreate(body=" " + "x" * REPLY_MAX + " ").body) == REPLY_MAX
+    for bad in ({"body": "   "}, {"body": "x" * (REPLY_MAX + 1)}, {}, {"body": "x", "status": "DONE"}):
+        with pytest.raises(ValidationError):
+            FeedbackReworkCreate.model_validate(bad)
+    for foreign in ("https://evil.example/x.png", "/api/v1/feedback/attachments/../x.png"):
+        with pytest.raises(ValidationError, match="not a feedback attachment URL"):
+            FeedbackReworkCreate.model_validate({"body": "x", "attachment_url": foreign})
+
+    class Kastlan(FeedbackReworkCreate):
+        attachment_url_policy: ClassVar[AttachmentUrlPolicy] = AttachmentUrlPolicy(UUID32_SHA12_KEY_PATTERN)
+
+    with pytest.raises(ValidationError, match="not a feedback attachment URL"):
+        Kastlan.model_validate({"body": "x", "attachment_url": URL_A})
+
+
+def test_an_entry_carries_its_kind_and_the_file_only_beside_the_public() -> None:
+    from eifi1_server_kit.feedback import FeedbackEntryKind, FeedbackPublicReplyResponse, FeedbackReplyResponse
+
+    at = datetime(2026, 10, 16, 6, 12, tzinfo=UTC)
+    reply = FeedbackReplyResponse(id=1, body="ok", created_at=at)
+    assert (reply.kind, reply.attachment_url) == (FeedbackEntryKind.REPLY, None)
+    rework = FeedbackReplyResponse(id=2, body="again", created_at=at, kind="rework", attachment_url=URL_A)
+    assert rework.model_dump(mode="json")["kind"] == "rework"
+    assert "attachment_url" not in FeedbackPublicReplyResponse.model_fields
+    assert "kind" in FeedbackPublicReplyResponse.model_json_schema(mode="serialization")["required"]

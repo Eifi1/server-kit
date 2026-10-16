@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -12,6 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 from eifi1_server_kit.billing import (
     AdminPlan,
     BillingCurrency,
+    BillingError,
     BillingInterval,
     BillingOverview,
     BillingSettings,
@@ -36,6 +38,9 @@ from eifi1_server_kit.billing import (
     plan_catalogue,
     plan_switch_preview,
     plans_out,
+    provider_subscription_runs,
+    require_new_checkout,
+    require_plan_switch,
 )
 from tests.billing._rows import NOW, Row
 
@@ -66,6 +71,7 @@ def test_the_overview_is_built_from_the_row() -> None:
         "currency": "CHF",
         "at_provider": False,
         "paid": None,
+        "switching": False,
     }
     assert not BillingOverview.from_row(
         row, plan=FREE, usage={}, currency=BillingCurrency.EUR, now=NOW + 10 * DAY
@@ -357,6 +363,60 @@ def test_the_overview_says_what_the_payer_pays() -> None:
         (Row(provider_price_id="pri_pro_y"), None),
     ):
         assert BillingOverview.from_row(row, plan=FREE, usage={}, currency="CHF", now=NOW, price_ref=ref).paid is None
+
+
+def _paying(**fields: Any) -> Row:
+    base: dict[str, Any] = {
+        "plan_code": "pro",
+        "status": "active",
+        "source": "provider",
+        "provider_customer_id": "ctm_1",
+        "provider_subscription_id": "sub_1",
+        "current_period_end": NOW + 300 * DAY,
+    }
+    return Row(**(base | fields))
+
+
+@pytest.mark.parametrize(
+    ("row", "switching"),
+    [
+        (_paying(), True),
+        (_paying(status="trialing"), True),
+        (_paying(status="past_due"), True),
+        (_paying(status="comped", source="manual", comped_until=NOW + DAY), True),  # bought under a grant
+        (_paying(status="comped", source="beta", current_period_end=NOW - DAY), False),  # its period over
+        (_paying(cancel_at_period_end=True), False),  # set to end: subscribes again, by a checkout
+        (_paying(status="canceled"), False),
+        (_paying(provider_subscription_id=None), False),  # a customer, no subscription
+        (Row(), False),  # the cardless trial
+    ],
+)
+def test_the_overview_says_whether_a_pick_is_a_switch(row: Row, switching: bool) -> None:
+    """§15.2.10: ``switching`` is the rule both routes refuse by — a pick the page sends
+    to the switch is never refused 409 ``billing_not_subscribed``, nor one sent to the
+    checkout 409 ``billing_already_subscribed``."""
+    plan = PRO if row.plan_code == "pro" else FREE
+    overview = BillingOverview.from_row(row, plan=plan, usage={}, currency="CHF", now=NOW)
+    assert overview.switching is switching is provider_subscription_runs(row, NOW)
+    assert overview.model_dump(mode="json")["switching"] is switching
+    route = require_plan_switch if switching else require_new_checkout
+    route(row, NOW)  # the route the page picks lets it through
+    with pytest.raises(BillingError):
+        (require_new_checkout if switching else require_plan_switch)(row, NOW)
+
+
+def test_an_overview_built_without_the_row_is_not_switching() -> None:
+    """Additive: an app's fixture built field by field keeps building."""
+    overview = BillingOverview(
+        plan="free",
+        status=SubscriptionStatus.TRIALING,
+        source=SubscriptionSource.TRIAL,
+        in_good_standing=True,
+        limits={},
+        usage={},
+        currency=BillingCurrency.CHF,
+    )
+    assert overview.switching is False
 
 
 def test_a_switch_request_is_normalised_and_closed() -> None:

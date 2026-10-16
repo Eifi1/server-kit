@@ -269,6 +269,57 @@ async def test_a_broken_reply_store_fails_its_check() -> None:
         await check_reply_store(NewestFirst(), feedback_id=1, admin=AUTHOR)
 
 
+async def test_a_reply_store_that_loses_the_kind_the_file_or_the_stamp_fails_its_check() -> None:
+    """0.13 (§10.3): both kinds, the rework's file and the migration's explicit stamp."""
+    import dataclasses
+
+    from eifi1_server_kit.feedback import FeedbackEntryKind, NewFeedbackReply
+    from eifi1_server_kit.feedback.testing import InMemoryReplyStore, MemoryReplyRow, check_reply_store
+
+    class Dropping(InMemoryReplyStore):
+        def __init__(self, **lost: Any) -> None:
+            super().__init__()
+            self.lost = lost
+
+        async def add(self, new: NewFeedbackReply, *, actor: FeedbackActor | None) -> MemoryReplyRow:
+            return await super().add(dataclasses.replace(new, **self.lost), actor=actor)
+
+    with pytest.raises(AssertionError, match="kind and attachment_url read back"):
+        await check_reply_store(Dropping(kind=FeedbackEntryKind.REPLY), feedback_id=1, admin=AUTHOR)
+    with pytest.raises(AssertionError, match="explicit created_at"):
+        await check_reply_store(Dropping(created_at=None), feedback_id=1, admin=AUTHOR)
+
+    class Stuck(InMemoryReplyStore):
+        async def apply(self, reply: MemoryReplyRow, changes: Mapping[str, Any]) -> MemoryReplyRow:
+            return await super().apply(reply, {k: v for k, v in changes.items() if k != "attachment_url"})
+
+    with pytest.raises(AssertionError, match="apply: attachment_url reads back"):
+        await check_reply_store(Stuck(), feedback_id=1, admin=AUTHOR)
+
+    class Naive(InMemoryReplyStore):
+        async def add(self, new: NewFeedbackReply, *, actor: FeedbackActor | None) -> MemoryReplyRow:
+            row = await super().add(new, actor=actor)
+            if new.created_at is not None:
+                row.created_at = new.created_at.replace(tzinfo=None)
+            return row
+
+    # A `timestamp without time zone` column reads back naive: UTC, the same instant.
+    await check_reply_store(Naive(now=lambda: NOW.replace(tzinfo=None)), feedback_id=1, admin=AUTHOR)
+
+
+async def test_the_reply_fake_notifies_for_a_reply_only() -> None:
+    from eifi1_server_kit.feedback import FeedbackEntryKind, NewFeedbackReply
+    from eifi1_server_kit.feedback.testing import InMemoryReplyStore
+
+    store = InMemoryReplyStore(now=fixed_clock(NOW))
+    reply = await store.add(NewFeedbackReply(feedback_id=1, author_id=2, body="ok"), actor=None)
+    await store.add(
+        NewFeedbackReply(feedback_id=1, author_id=1, body="again", kind=FeedbackEntryKind.REWORK), actor=AUTHOR
+    )
+    assert [row.id for row, _ in store.added] == [1, 2]
+    assert store.notified == [(reply, None)]
+
+
 async def test_a_broken_comment_or_vote_store_fails_its_check() -> None:
     from eifi1_server_kit.feedback.testing import (
         InMemoryCommentStore,

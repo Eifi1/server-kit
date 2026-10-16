@@ -98,6 +98,7 @@ __all__ = [
     "billing_provider_client",
     "cancel_for_deletion",
     "checkout_return_url",
+    "provider_subscription_runs",
     "require_new_checkout",
     "require_plan_switch",
     "resume_after_withdrawal",
@@ -301,7 +302,11 @@ def sold_plan(
 _RUNNING = frozenset({SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING, SubscriptionStatus.PAST_DUE})
 
 
-def _provider_subscription_runs(row: SubscriptionRow, now: datetime) -> bool:
+def provider_subscription_runs(row: SubscriptionRow, now: datetime) -> bool:
+    """Whether a provider subscription runs for ``row`` as of ``now`` (§14.6, §15.2.10):
+    the one rule :func:`require_new_checkout` and :func:`require_plan_switch` refuse by,
+    and :class:`~eifi1_server_kit.billing.BillingOverview`'s ``switching`` — true, a plan
+    pick is a plan switch; false, a checkout. :func:`require_new_checkout` names the rule."""
     if row.provider_subscription_id is None or row.cancel_at_period_end:
         return False
     if SubscriptionSource(row.source) is SubscriptionSource.PROVIDER:
@@ -332,7 +337,7 @@ def require_new_checkout(row: SubscriptionRow, now: datetime) -> None:
     subscribe again, to another plan. A plan change while one runs is the plan switch
     (:func:`require_plan_switch`).
     """
-    if _provider_subscription_runs(row, now):
+    if provider_subscription_runs(row, now):
         raise BillingError(BillingErrorCode.BILLING_ALREADY_SUBSCRIBED)
 
 
@@ -342,7 +347,7 @@ def require_plan_switch(row: SubscriptionRow, now: datetime) -> None:
     rule, so exactly one of the two passes for any row. The page offers the checkout
     instead. A subscription set to cancel at its period's end doesn't run here either: the
     payer subscribes again, to the plan they want, through a checkout."""
-    if not _provider_subscription_runs(row, now):
+    if not provider_subscription_runs(row, now):
         raise BillingError(BillingErrorCode.BILLING_NOT_SUBSCRIBED)
 
 

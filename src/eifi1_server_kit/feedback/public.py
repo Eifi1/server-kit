@@ -40,6 +40,10 @@ __all__ = [
 ]
 
 #: The notification type a reply fires, to the author and the earlier commenters (9.11).
+#: A reply only (``kind = 'reply'``): a rework entry sends nothing — no
+#: ``feedback_answered``, commenters not told, no admin mail (§10.2 decision 10); the REWORK
+#: status, or the Rework chip on an OPEN row, is the inbox's signal. An admin's reply with
+#: status REWORK is a reply and fires it.
 FEEDBACK_ANSWERED = "feedback_answered"
 #: The notification type a visible comment fires, to the same people (9.11).
 FEEDBACK_COMMENT = "feedback_comment"
@@ -81,8 +85,9 @@ PUBLIC_REPORT_FIELDS: frozenset[str] = frozenset(
 PUBLIC_COMMENT_FIELDS: frozenset[str] = frozenset(
     {"id", "author_name", "mine", "staff", "body", "hidden", "created_at"}
 )
-#: What a reply says in the public detail (9.10): never ``status_from``.
-PUBLIC_REPLY_FIELDS: frozenset[str] = frozenset({"id", "author_name", "body", "status_to", "created_at"})
+#: What a reply or rework entry says in the public detail (9.10, §10.3): ``kind`` carried,
+#: never ``status_from``, never ``attachment_url``.
+PUBLIC_REPLY_FIELDS: frozenset[str] = frozenset({"id", "author_name", "body", "status_to", "created_at", "kind"})
 
 #: kastlan's folded comment header (§7.7): ``--- COMMENT <stamp> · <name> ---``, the name
 #: perhaps an address. Matched against a whole trimmed line.
@@ -137,7 +142,8 @@ def feedback_recipients(
 ) -> list[int]:
     """Who hears of a new reply or comment (9.11): the report's author first, then each
     earlier commenter in the order of their first comment; never the writer, nobody twice,
-    no ``None`` (an erased account).
+    no ``None`` (an erased account). Never asked for a rework entry, which tells nobody
+    (§10.2 decision 10).
 
     The app still drops anyone who may no longer see the report (a commenter outside
     ``public_viewer``, a report switched off) and any deactivated, erased or demo account.

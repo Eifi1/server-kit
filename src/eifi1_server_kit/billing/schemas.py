@@ -31,7 +31,7 @@ from eifi1_server_kit.billing.plans import (
     dimensions_over_limit,
     normalize_plan,
 )
-from eifi1_server_kit.billing.provider import PortalTarget
+from eifi1_server_kit.billing.provider import PortalTarget, provider_subscription_runs
 from eifi1_server_kit.billing.settings import PriceRef
 from eifi1_server_kit.billing.standing import (
     SubscriptionRow,
@@ -124,6 +124,13 @@ class BillingOverview(BaseModel):
     #: ``None`` with no price yet (no provider snapshot), one the settings don't name, or
     #: without ``price_ref``. It stays after the subscription ended: ``status`` says that.
     paid: PaidPrice | None = None
+    #: A provider subscription runs (§15.2.10): a plan pick goes to the plan switch, not to
+    #: the checkout. :func:`~eifi1_server_kit.billing.provider_subscription_runs` as of
+    #: ``now`` — the rule :func:`~eifi1_server_kit.billing.require_new_checkout` and
+    #: :func:`~eifi1_server_kit.billing.require_plan_switch` refuse by, so the page and the
+    #: two routes never disagree. False by default: an app's own overview built without
+    #: :meth:`from_row` keeps building.
+    switching: bool = False
 
     @classmethod
     def from_row(
@@ -147,7 +154,10 @@ class BillingOverview(BaseModel):
         ``comped_until`` shown read it as the launch plus 12 months (§3.2).
 
         Pass ``price_ref=settings.billing_price_ref`` for ``paid`` (§15.2.10): the row's
-        ``provider_price_id`` as a plan, interval and currency."""
+        ``provider_price_id`` as a plan, interval and currency.
+
+        ``switching`` is :func:`~eifi1_server_kit.billing.provider_subscription_runs`
+        ``(row, now)``."""
         if normalize_plan(row.plan_code) != plan.code:
             raise ValueError(f"the row's plan is {row.plan_code!r}, not {plan.code!r}")
         ref = price_ref(row.provider_price_id) if price_ref is not None and row.provider_price_id else None
@@ -165,6 +175,7 @@ class BillingOverview(BaseModel):
             currency=BillingCurrency(str(currency).strip().upper()),
             at_provider=row.provider_customer_id is not None,
             paid=None if ref is None else PaidPrice(plan=ref.plan, interval=ref.interval, currency=ref.currency),
+            switching=provider_subscription_runs(row, now),
         )
 
 
