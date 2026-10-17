@@ -17,7 +17,9 @@ each app. keksdose and Kurvenschmiede are the reference, cited per rule.
 * :mod:`~eifi1_server_kit.user_admin.deletion` — the two-stage deletion's dates;
 * :mod:`~eifi1_server_kit.user_admin.export` — the export envelope and the secret check;
 * :mod:`~eifi1_server_kit.user_admin.sensitive` — what looks like a secret;
-* :mod:`~eifi1_server_kit.user_admin.errors` — :class:`AccountError` and its codes.
+* :mod:`~eifi1_server_kit.user_admin.errors` — :class:`AccountError` and its codes;
+* :mod:`~eifi1_server_kit.user_admin.attention` — :class:`AdminAttention`, what waits on
+  the admin (``docs/admin-harmonization.md`` §2.4, §6.4).
 
 The email change's token lifetime and kind are the one-time token recipe's, in
 :mod:`eifi1_server_kit.auth`: ``EMAIL_CHANGE_TTL``, ``EMAIL_CHANGE_TOKEN_KIND``.
@@ -32,6 +34,7 @@ from eifi1_server_kit.user_admin.actions import (
     ConfirmationLevel,
     confirmation_level,
 )
+from eifi1_server_kit.user_admin.attention import AdminAttention, AttentionCount
 from eifi1_server_kit.user_admin.audit import (
     DETAIL_MAX_BYTES,
     DETAIL_MAX_DEPTH,
@@ -160,7 +163,9 @@ __all__ = [
     "ActiveChange",
     "AdminAction",
     "AdminActionRow",
+    "AdminAttention",
     "AdminUserRow",
+    "AttentionCount",
     "AuditDetailError",
     "ConfirmationLevel",
     "DeletionMode",
