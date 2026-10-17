@@ -55,4 +55,4 @@ lifted with a citation on each.
 
 from __future__ import annotations
 
-__version__ = "0.13.1"
+__version__ = "0.14.0"
