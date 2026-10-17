@@ -14,8 +14,9 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 §6, [`docs/landing-demo-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/landing-demo-harmonization.md)
 §6, [`docs/billing-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/billing-harmonization.md)
 §10 with §14, [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
-§6 and [`docs/notifications-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/notifications-harmonization.md)
-§4.1 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
+§6, [`docs/notifications-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/notifications-harmonization.md)
+§4.1 and [`docs/top-bar-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/top-bar-harmonization.md)
+§2.7 with §6.1–§6.3 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
 from the `server-kit-api.json` each release carries ([Developing](#developing)).
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
@@ -230,7 +231,7 @@ each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translati
 (403), `auth.AuthError` (`{"detail": "Invalid credentials", "code":
 "invalid_credentials"}` at 401, …), user administration's `AccountError` (409) and
 `RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`),
-`demo.DemoError` (403 / 404 / 429 / 503), and billing's `BillingError` (400 / 402 / 404 /
+`demo.DemoError` (403 / 404 / 429 / 503), the dev switch's `dev_switch.DevSwitchError` (404 / 409 / 422), and billing's `BillingError` (400 / 402 / 404 /
 409 / 422 / 502 / 503) and `PlanLimitError` (402), and `jobs.JobsTokenError` (401). An `AccountError`'s or a `PlanLimitError`'s `extra`
 fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin",
 "companies": [...]}` or `{"detail": …, "code": "plan_limit", "dimension": "budgets", "plan":
@@ -614,6 +615,70 @@ session keeps it.
 included**: layer 1 catches only writes, and the account export is a GET. Mail to a demo
 address is skipped silently (`is_demo_address`). Every app passes `is_demo` to
 `name_incomplete`, or each demo is asked for a last name it doesn't have.
+
+### `eifi1_server_kit.dev_switch`
+
+The dev switch (top-bar contract §2.7, §6.1–§6.3; §6 wins), 0.14: in local development
+only, a signed-in user sets their OWN role and plan with `POST /dev/switch {role?, plan?}`
+(the kit's `DevSwitchers`), and the server enforces them. **The route lets a user make
+themselves ADMIN**, so it must be impossible to switch on in a deployment by accident.
+Layer 1: the gate, the startup check, the body and its validator; the route is a recipe,
+like billing's, and the writes are the app's.
+
+| Area | Names |
+|---|---|
+| Settings | `DevSwitchSettings`: `dev_switch_enabled` (**False**; `<APP>_DEV_SWITCH_ENABLED`, set only in the local `.env`) |
+| The gate | `dev_switch_enabled(*, flag, local_run, production)` (true only for the flag AND the app's proof of a local run — a bool or a callable, asked only when it matters — AND not production; anything but real booleans shuts it), `assert_dev_switch_safe(*, flag, production)` → `DevSwitchUnsafeError` (a `RuntimeError`, at start), `require_dev_switch(gate)` (the route dependency: 404 unless `gate()` is `True`, the second lock behind the mount) |
+| The wire | `DevSwitchRequest` (`role`, `plan`, at least one; extra fields refused), `DevSwitchAnswer(role, plan)`, `validate_dev_switch(request, *, roles, plans=())` (the app's spelling back, compared without case; 422 otherwise), `DEV_SWITCH_PATH` (`/dev/switch`), `DEV_SWITCH_LOG_TAG` (`dev_switch`) |
+| Refusals | `DevSwitchError`, `DevSwitchErrorCode`: `dev_switch_disabled` 404, `dev_switch_unknown_role` / `dev_switch_unknown_plan` 422, `dev_switch_refused` 409 (the app's own invariant); `DEV_SWITCH_ERROR_STATUS`, `DEV_SWITCH_ERROR_DETAIL` |
+
+**An environment name is never the gate** (§6.1). keksdose runs a hosted dev deployment
+(`keksdose-dev`) and its `metrics_environment` defaults to `"dev"`; kastlan's
+`environment` and Kurvenschmiede's `DEPLOYMENT` both DEFAULT to `"development"`, so a
+deployment that forgot its variable would mount the route. The gate needs all three: the
+explicit flag, the app's proof of a local run, and production off.
+
+```python
+class Settings(BaseSettings, DevSwitchSettings):  # KASTLAN_DEV_SWITCH_ENABLED=true in .env only
+    model_config = SettingsConfigDict(env_prefix="KASTLAN_")
+
+def dev_switch_on(settings: Settings) -> bool:
+    return dev_switch_enabled(
+        flag=settings.dev_switch_enabled,
+        local_run=settings.environment != "production",  # KS: lambda: settings.is_development and is_local_database(settings)
+        production=settings.environment == "production",
+    )
+
+def create_app(settings: Settings) -> FastAPI:
+    assert_dev_switch_safe(flag=settings.dev_switch_enabled, production=settings.environment == "production")
+    ...
+    if dev_switch_on(settings):  # otherwise absent: 404
+        app.include_router(dev_router)
+
+dev_router = APIRouter(include_in_schema=False, dependencies=[Depends(require_dev_switch(lambda: dev_switch_on(get_settings())))])
+
+@dev_router.post(DEV_SWITCH_PATH)
+async def dev_switch(body: DevSwitchRequest, user=Depends(get_current_user), session=Depends(db)) -> DevSwitchAnswer:
+    body = validate_dev_switch(body, roles=[r.value for r in Role], plans=PLANS)  # signed in, NOT require_admin
+    ...  # the app's writes, below; then commit
+```
+
+- **A signed-in user only, never ADMIN**: a lesser role must be able to switch back
+  (`DevSwitchers` keeps the original role in session storage, "Back to {role}").
+- **The role is written in the local database**, as every app reads it from the row:
+  keksdose `users.role`; kastlan the acting company's `user_role_assignments` (replace
+  the caller's roles there), then `issue_session`; Kurvenschmiede `users.role` on the
+  caller's row directly, skipping `set_role`'s self and last-admin refusals, but refusing
+  CUSTOMER for an account that owns work (`DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED,
+  "Sign in as the seed's customer")`, 409).
+- **The plan goes through the operator's grant, permanent** (`comped_until=None`):
+  keksdose `set_plan`, kastlan `BillingService.set_plan`, Kurvenschmiede `change_plan` on
+  the caller's own row. Billing §16's permanent-grant warning then shows, which is right;
+  with billing off nothing is enforced.
+- **No admin action log entry**, or one tagged `dev_switch` (`DEV_SWITCH_LOG_TAG`).
+- Keep the route out of the OpenAPI schema (`include_in_schema=False`); KS's demo walk
+  classifies it `not_in_the_demo` and tests that a production settings object doesn't
+  mount it.
 
 ### `eifi1_server_kit.billing`
 

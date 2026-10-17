@@ -7,7 +7,8 @@ review's 422 / 403, :class:`~eifi1_server_kit.auth.AuthError` 400 / 401 / 403 / 
 user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
 :class:`~eifi1_server_kit.user_admin.RosterQueryError` 422, the settings rule's
 :class:`~eifi1_server_kit.settings.PatchNullError` 422, the demo's
-:class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503, and billing's
+:class:`~eifi1_server_kit.demo.DemoError` 403 / 404 / 429 / 503, the dev switch's
+:class:`~eifi1_server_kit.dev_switch.DevSwitchError` 404 / 409 / 422, and billing's
 :class:`~eifi1_server_kit.billing.BillingError` 400 / 402 / 404 / 409 / 422 / 502 / 503 and
 :class:`~eifi1_server_kit.billing.PlanLimitError` 402, a token route's
 :class:`~eifi1_server_kit.jobs.JobsTokenError` 401, and the notifications'
@@ -49,6 +50,7 @@ from starlette.responses import JSONResponse, Response
 from eifi1_server_kit.auth.errors import AuthError
 from eifi1_server_kit.billing.errors import BillingError, PlanLimitError
 from eifi1_server_kit.demo import DemoError
+from eifi1_server_kit.dev_switch import DevSwitchError
 from eifi1_server_kit.feedback.errors import FeedbackError
 from eifi1_server_kit.jobs import JobsTokenError
 from eifi1_server_kit.notifications.errors import NotificationError
@@ -80,6 +82,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     RosterQueryError,
     PatchNullError,
     DemoError,
+    DevSwitchError,
     BillingError,
     PlanLimitError,
     JobsTokenError,
