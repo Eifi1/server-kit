@@ -645,7 +645,9 @@ class Settings(BaseSettings, DevSwitchSettings):  # KASTLAN_DEV_SWITCH_ENABLED=t
 def dev_switch_on(settings: Settings) -> bool:
     return dev_switch_enabled(
         flag=settings.dev_switch_enabled,
-        local_run=settings.environment != "production",  # KS: lambda: settings.is_development and is_local_database(settings)
+        # A loopback database host and not on Cloud Run — never `environment != "production"`,
+        # whose default is "development". KS: lambda: settings.is_development and is_local_database(settings)
+        local_run=lambda: is_loopback(settings.database_url) and "K_SERVICE" not in os.environ,
         production=settings.environment == "production",
     )
 
@@ -661,7 +663,17 @@ dev_router = APIRouter(include_in_schema=False, dependencies=[Depends(require_de
 async def dev_switch(body: DevSwitchRequest, user=Depends(get_current_user), session=Depends(db)) -> DevSwitchAnswer:
     body = validate_dev_switch(body, roles=[r.value for r in Role], plans=PLANS)  # signed in, NOT require_admin
     ...  # the app's writes, below; then commit
+
+@dev_router.get(DEV_SWITCH_PATH)
+async def dev_switch_state(user=Depends(get_current_user)) -> DevSwitchAnswer:
+    return DevSwitchAnswer(role=user.role, plan=...)  # the plan in effect, billing on or off
 ```
+
+- **`GET /dev/switch` is the client's probe**, behind the same gate: a 404 means the gate
+  is shut, so the client hides `DevSwitchers` (`enabled={import.meta.env.DEV && answered}`)
+  rather than drawing flasks with nothing behind them; an answer gives `currentRole` and
+  `currentPlan`, which the overview can't while billing is off (kastlan's `/billing/*` is
+  404 then).
 
 - **A signed-in user only, never ADMIN**: a lesser role must be able to switch back
   (`DevSwitchers` keeps the original role in session storage, "Back to {role}").
@@ -673,8 +685,10 @@ async def dev_switch(body: DevSwitchRequest, user=Depends(get_current_user), ses
   "Sign in as the seed's customer")`, 409).
 - **The plan goes through the operator's grant, permanent** (`comped_until=None`):
   keksdose `set_plan`, kastlan `BillingService.set_plan`, Kurvenschmiede `change_plan` on
-  the caller's own row. Billing §16's permanent-grant warning then shows, which is right;
-  with billing off nothing is enforced.
+  the caller's own row. Billing §16's permanent-grant warning then shows, which is right —
+  except on a row under a running beta grant (keksdose before launch): `comped_until=None`
+  keeps beta and moves only the plan, so no permanent grant is made. Accepted: the switch
+  is for previewing limits. With billing off nothing is enforced.
 - **No admin action log entry**, or one tagged `dev_switch` (`DEV_SWITCH_LOG_TAG`).
 - Keep the route out of the OpenAPI schema (`include_in_schema=False`); KS's demo walk
   classifies it `not_in_the_demo` and tests that a production settings object doesn't

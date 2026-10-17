@@ -37,24 +37,29 @@ recipe below and in the README).
   ``production``, so a hand-run backend against a Cloud SQL proxy would mount it (KS 6a).
 
 So the gate takes three things, and all three must agree: the explicit, off-by-default flag;
-the app's own proof that this is a local run (kastlan ``environment != "production"``, KS
-``is_development and is_local_database(settings)``, ``feedback_loop.py:266``); and the
-app's production signal, which closes it whatever the other two say.
+the app's own proof that this is a local run (kastlan: a loopback database host and no
+``K_SERVICE``, which Cloud Run sets; keksdose: a localhost or local-socket ``database_url``
+and no ``db_socket_dir``; KS ``is_development and is_local_database(settings)``,
+``feedback_loop.py:266``); and the app's production signal, which closes it whatever the
+other two say (kastlan ``environment == "production"``; keksdose
+``bool(db_socket_dir) or metrics_environment == "prod"``, since both its Cloud Run
+services set ``KEKSDOSE_DB_SOCKET_DIR``; KS ``deployment is Deployment.PRODUCTION``).
 
-**The recipe** (the kit ships no router for it, as for billing's routes)::
+**The recipe** (the kit ships no router for it, as for billing's routes; ``<APP>``,
+``is_local_run`` and ``is_production`` are the app's own, as above)::
 
-    class Settings(BaseSettings, DevSwitchSettings):  # KEKSDOSE_DEV_SWITCH_ENABLED=true in .env only
-        model_config = SettingsConfigDict(env_prefix="KEKSDOSE_")
+    class Settings(BaseSettings, DevSwitchSettings):  # <APP>_DEV_SWITCH_ENABLED=true in .env only
+        model_config = SettingsConfigDict(env_prefix="<APP>_")
 
     def dev_switch_on(settings: Settings) -> bool:
         return dev_switch_enabled(
             flag=settings.dev_switch_enabled,
-            local_run=lambda: is_local_database(settings),  # the app's proof
-            production=settings.is_production,
+            local_run=lambda: is_local_run(settings),  # the app's proof
+            production=is_production(settings),
         )
 
     def create_app(settings: Settings) -> FastAPI:
-        assert_dev_switch_safe(flag=settings.dev_switch_enabled, production=settings.is_production)
+        assert_dev_switch_safe(flag=settings.dev_switch_enabled, production=is_production(settings))
         ...
         if dev_switch_on(settings):  # otherwise the route is absent: 404
             app.include_router(dev_router)
@@ -74,6 +79,16 @@ app's production signal, which closes it whatever the other two say.
         await session.commit()
         return DevSwitchAnswer(role=user.role, plan=...)
 
+    @dev_router.get(DEV_SWITCH_PATH)
+    async def dev_switch_state(user=Depends(get_current_user)) -> DevSwitchAnswer:
+        return DevSwitchAnswer(role=user.role, plan=...)  # the plan in effect, billing on or off
+
+* **``GET /dev/switch`` is the client's probe** (kastlan B4): behind the same gate, it
+  answers :class:`DevSwitchAnswer` — the role and the plan in effect. A 404 means the gate
+  is shut, so the client hides ``DevSwitchers`` (``enabled={import.meta.env.DEV &&
+  answered}``) rather than drawing switchers with nothing behind them; an answer gives
+  ``currentRole`` and ``currentPlan``, which the overview can't while billing is off.
+
 * **A signed-in user only, never ADMIN** (§6.2): a switch to a lesser role must be able to
   switch back. The kit's ``DevSwitchers`` keeps the original role in session storage and
   offers "Back to {role}".
@@ -88,8 +103,12 @@ app's production signal, which closes it whatever the other two say.
   ``admin_user_actions_service.set_plan(session, user, plan, comped_until=None)``, kastlan
   ``BillingService.set_plan(company_id, plan, comped_until=None)``, Kurvenschmiede
   ``billing_service.change_plan(…, comped_until=None, acknowledged=True)`` on the caller's
-  own row. Billing §16's permanent-grant warning then shows on that account's checkout,
-  which is right. With billing off, nothing is enforced; the plan menu says so.
+  own row. That makes a permanent grant, and Billing §16's permanent-grant warning shows
+  on that account's checkout — EXCEPT on a row under a running beta grant (keksdose
+  before launch, kastlan likewise): ``comped_until=None`` keeps the beta status and source
+  and moves only the plan, so no permanent grant is made and no warning shows. That is
+  accepted: the switch is for previewing limits. With billing off, nothing is enforced;
+  the plan menu says so.
 * **No admin action log entry** — or one tagged :data:`DEV_SWITCH_LOG_TAG` — so a local
   switch doesn't fill the activity log (review K-3).
 * The client then re-reads ``/auth/me`` and the overview. kastlan's real
@@ -291,8 +310,10 @@ class DevSwitchRequest(BaseModel):
 
 
 class DevSwitchAnswer(BaseModel):
-    """The switch's answer: the role and the plan now in effect. The client re-reads
-    ``/auth/me`` and the overview all the same; this is for logs and tests."""
+    """The role and the plan now in effect: the answer of ``POST /dev/switch``, and of the
+    ``GET /dev/switch`` probe the client reads to learn that the gate is open and what to
+    check in ``DevSwitchers`` (see the module's recipe). After a switch the client re-reads
+    ``/auth/me`` and the overview all the same."""
 
     role: str
     #: ``None`` for an app or account without a plan.
