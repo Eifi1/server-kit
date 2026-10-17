@@ -10,6 +10,34 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.14.0] (2026-10-17)
+
+Three contracts settled on 2026-10-17 after the three app reviews, released with ui-kit 0.42:
+billing §16 (the portal for the buyer only, an in-app cancel), the admin area
+(docs/admin-harmonization.md in ui-kit) and the top bar's dev switchers
+(docs/top-bar-harmonization.md). Nothing is removed; every new field has a default.
+
+### Added
+
+* **billing:** `require_portal_access(row, *, viewer_ref)` answers 403 `billing_portal_buyer_only`
+  where a buyer is stored and the viewer isn't them (`portal_access`, `PortalAccess`).
+  `BillingOverview` gains `portal` (`"open"` | `"buyer_only"`) and `buyer_name`, from
+  `from_row(…, viewer_is_buyer=, buyer_name=)`; a person-payer app passes neither and stays
+  `"open"`.
+* **billing:** `BillingStanding` (`GET /billing/status`'s standing, as kastlan had its own) with
+  the same `portal` and `buyer_name`, so the payment-failed banner can name the buyer.
+* **billing:** `cancel_at_period_end(row, client)` and `resume_scheduled_cancel(row, client)`, the
+  in-app cancel and its undo for every admin who reads the overview (`POST /billing/cancel`,
+  `POST /billing/resume`, 204; no write lock; optional for a person-payer app).
+* **user_admin:** `AdminAttention` (`GET /admin/attention`): what waits on the admin, every count
+  passed in by the app, `None` where the app has no such thing; demo accounts never count, a demo
+  session answers all `None` (`AdminAttention.for_demo`).
+* **dev_switch:** the dev-only role and plan switch (`POST /dev/switch`). `dev_switch_enabled`
+  needs an explicit off-by-default flag AND the app's proof of a local run AND not production —
+  never an environment name; `assert_dev_switch_safe` refuses to start with the flag set in
+  production; `require_dev_switch` answers 404 when shut; `validate_dev_switch` 422s an unknown
+  role or plan.
+
 ## [0.13.1] (2026-10-16)
 
 The apps' 0.40 adoption findings, released as one batch with ui-kit 0.40.1 once all three had

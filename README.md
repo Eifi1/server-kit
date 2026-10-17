@@ -14,8 +14,9 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 §6, [`docs/landing-demo-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/landing-demo-harmonization.md)
 §6, [`docs/billing-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/billing-harmonization.md)
 §10 with §14, [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
-§6 and [`docs/notifications-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/notifications-harmonization.md)
-§4.1 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
+§6, [`docs/notifications-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/notifications-harmonization.md)
+§4.1 and [`docs/top-bar-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/top-bar-harmonization.md)
+§2.7 with §6.1–§6.3 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
 from the `server-kit-api.json` each release carries ([Developing](#developing)).
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
@@ -230,7 +231,7 @@ each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translati
 (403), `auth.AuthError` (`{"detail": "Invalid credentials", "code":
 "invalid_credentials"}` at 401, …), user administration's `AccountError` (409) and
 `RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`),
-`demo.DemoError` (403 / 404 / 429 / 503), and billing's `BillingError` (400 / 402 / 404 /
+`demo.DemoError` (403 / 404 / 429 / 503), the dev switch's `dev_switch.DevSwitchError` (404 / 409 / 422), and billing's `BillingError` (400 / 402 / 404 /
 409 / 422 / 502 / 503) and `PlanLimitError` (402), and `jobs.JobsTokenError` (401). An `AccountError`'s or a `PlanLimitError`'s `extra`
 fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin",
 "companies": [...]}` or `{"detail": …, "code": "plan_limit", "dimension": "budgets", "plan":
@@ -405,6 +406,7 @@ holds stay in the app.
 | Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
 | Export | `export_envelope(app, account, data, now)` (`"format": "eifi1-account-export"`, `"version": 1`), `export_filename`, `EXPORT_PER_USER` (once a minute), `NEVER_EXPORT`; `assert_no_secrets(obj, allow=)` / `secret_paths` → `ExportSecretError`; `looks_secret`, `looks_secret_key`, `looks_secret_value` |
+| Attention | `AdminAttention` (`GET /admin/attention`: `feedback_waiting` = OPEN, crashes included, in the admin's scope; `deletion_requests`, `invitations_pending`, `users_total`, `users_new_7d`, `extra`; each `AttentionCount` = `int ≥ 0` or `None` for "no such thing here"; demo accounts never count), `AdminAttention.of(…, demo=)` (every count passed in), `AdminAttention.for_demo(*extra_keys)` (all `None`) |
 | Refusals | `AccountErrorCode` (`last_admin`, `self_action`, `other_companies`, `household_has_members`, `confirmation_required`, `confirmation_mismatch`, all 409; `password_incorrect` 400, so a wrong current password never reads as an ended session), `AccountError(code, detail=None, extra=None)` |
 
 **An admin action, in order**: the guards, the confirmation the server decided, the change,
@@ -614,6 +616,91 @@ included**: layer 1 catches only writes, and the account export is a GET. Mail t
 address is skipped silently (`is_demo_address`). Every app passes `is_demo` to
 `name_incomplete`, or each demo is asked for a last name it doesn't have.
 
+### `eifi1_server_kit.dev_switch`
+
+The dev switch (top-bar contract §2.7, §6.1–§6.3; §6 wins), 0.14: in local development
+only, a signed-in user sets their OWN role and plan with `POST /dev/switch {role?, plan?}`
+(the kit's `DevSwitchers`), and the server enforces them. **The route lets a user make
+themselves ADMIN**, so it must be impossible to switch on in a deployment by accident.
+Layer 1: the gate, the startup check, the body and its validator; the route is a recipe,
+like billing's, and the writes are the app's.
+
+| Area | Names |
+|---|---|
+| Settings | `DevSwitchSettings`: `dev_switch_enabled` (**False**; `<APP>_DEV_SWITCH_ENABLED`, set only in the local `.env`) |
+| The gate | `dev_switch_enabled(*, flag, local_run, production)` (true only for the flag AND the app's proof of a local run — a bool or a callable, asked only when it matters — AND not production; anything but real booleans shuts it), `assert_dev_switch_safe(*, flag, production)` → `DevSwitchUnsafeError` (a `RuntimeError`, at start), `require_dev_switch(gate)` (the route dependency: 404 unless `gate()` is `True`, the second lock behind the mount) |
+| The wire | `DevSwitchRequest` (`role`, `plan`, at least one; extra fields refused), `DevSwitchAnswer(role, plan)`, `validate_dev_switch(request, *, roles, plans=())` (the app's spelling back, compared without case; 422 otherwise), `DEV_SWITCH_PATH` (`/dev/switch`), `DEV_SWITCH_LOG_TAG` (`dev_switch`) |
+| Refusals | `DevSwitchError`, `DevSwitchErrorCode`: `dev_switch_disabled` 404, `dev_switch_unknown_role` / `dev_switch_unknown_plan` 422, `dev_switch_refused` 409 (the app's own invariant); `DEV_SWITCH_ERROR_STATUS`, `DEV_SWITCH_ERROR_DETAIL` |
+
+**An environment name is never the gate** (§6.1). keksdose runs a hosted dev deployment
+(`keksdose-dev`) and its `metrics_environment` defaults to `"dev"`; kastlan's
+`environment` and Kurvenschmiede's `DEPLOYMENT` both DEFAULT to `"development"`, so a
+deployment that forgot its variable would mount the route. The gate needs all three: the
+explicit flag, the app's proof of a local run, and production off.
+
+```python
+class Settings(BaseSettings, DevSwitchSettings):  # KASTLAN_DEV_SWITCH_ENABLED=true in .env only
+    model_config = SettingsConfigDict(env_prefix="KASTLAN_")
+
+
+def dev_switch_on(settings: Settings) -> bool:
+    return dev_switch_enabled(
+        flag=settings.dev_switch_enabled,
+        # A loopback database host and not on Cloud Run — never `environment != "production"`,
+        # whose default is "development". KS: lambda: settings.is_development and is_local_database(settings)
+        local_run=lambda: is_loopback(settings.database_url) and "K_SERVICE" not in os.environ,
+        production=settings.environment == "production",
+    )
+
+
+def create_app(settings: Settings) -> FastAPI:
+    assert_dev_switch_safe(flag=settings.dev_switch_enabled, production=settings.environment == "production")
+    ...
+    if dev_switch_on(settings):  # otherwise absent: 404
+        app.include_router(dev_router)
+
+
+dev_router = APIRouter(
+    include_in_schema=False, dependencies=[Depends(require_dev_switch(lambda: dev_switch_on(get_settings())))]
+)
+
+
+@dev_router.post(DEV_SWITCH_PATH)
+async def dev_switch(body: DevSwitchRequest, user=Depends(get_current_user), session=Depends(db)) -> DevSwitchAnswer:
+    body = validate_dev_switch(body, roles=[r.value for r in Role], plans=PLANS)  # signed in, NOT require_admin
+    ...  # the app's writes, below; then commit
+
+
+@dev_router.get(DEV_SWITCH_PATH)
+async def dev_switch_state(user=Depends(get_current_user)) -> DevSwitchAnswer:
+    return DevSwitchAnswer(role=user.role, plan=...)  # the plan in effect, billing on or off
+```
+
+- **`GET /dev/switch` is the client's probe**, behind the same gate: a 404 means the gate
+  is shut, so the client hides `DevSwitchers` (`enabled={import.meta.env.DEV && answered}`)
+  rather than drawing flasks with nothing behind them; an answer gives `currentRole` and
+  `currentPlan`, which the overview can't while billing is off (kastlan's `/billing/*` is
+  404 then).
+
+- **A signed-in user only, never ADMIN**: a lesser role must be able to switch back
+  (`DevSwitchers` keeps the original role in session storage, "Back to {role}").
+- **The role is written in the local database**, as every app reads it from the row:
+  keksdose `users.role`; kastlan the acting company's `user_role_assignments` (replace
+  the caller's roles there), then `issue_session`; Kurvenschmiede `users.role` on the
+  caller's row directly, skipping `set_role`'s self and last-admin refusals, but refusing
+  CUSTOMER for an account that owns work (`DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED,
+  "Sign in as the seed's customer")`, 409).
+- **The plan goes through the operator's grant, permanent** (`comped_until=None`):
+  keksdose `set_plan`, kastlan `BillingService.set_plan`, Kurvenschmiede `change_plan` on
+  the caller's own row. Billing §16's permanent-grant warning then shows, which is right —
+  except on a row under a running beta grant (keksdose before launch): `comped_until=None`
+  keeps beta and moves only the plan, so no permanent grant is made. Accepted: the switch
+  is for previewing limits. With billing off nothing is enforced.
+- **No admin action log entry**, or one tagged `dev_switch` (`DEV_SWITCH_LOG_TAG`).
+- Keep the route out of the OpenAPI schema (`include_in_schema=False`); KS's demo walk
+  classifies it `not_in_the_demo` and tests that a production settings object doesn't
+  mount it.
+
 ### `eifi1_server_kit.billing`
 
 Billing, plans and payment (billing contract §10 and §14; its §12 wins over the sections
@@ -634,11 +721,11 @@ in 0.7): `BillingProvider` is `paddle` alone, and a price id is text.
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
 | Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`, `.buyer`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None, buyer=None)`, `PAYER_REF_KEY`, `APP_KEY`, `BUYER_KEY` (kastlan's buying admin); the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes` (`provider_price_id` from every snapshot, a grant's too), `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
-| The provider | the `BillingProviderClient` port (`checkout_url` with `customer_email`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`, `preview_plan_change` / `change_plan` → `ProviderSwitchPreview`, `customer_for(email)`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`), `require_plan_switch(row, now)` (409 `billing_not_subscribed`), `switch_price(catalogue, row, request, settings, *, sold=None)` (422 `billing_plan_not_sold`, 409 `billing_plan_unchanged`, 503 without a known price on the row); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
+| The provider | the `BillingProviderClient` port (`checkout_url` with `customer_email`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`, `preview_plan_change` / `change_plan` → `ProviderSwitchPreview`, `customer_for(email)`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`), `require_plan_switch(row, now)` (409 `billing_not_subscribed`), `switch_price(catalogue, row, request, settings, *, sold=None)` (422 `billing_plan_not_sold`, 409 `billing_plan_unchanged`, 503 without a known price on the row); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; (0.14) the portal for the buyer only, `PortalAccess` (`open` / `buyer_only`), `portal_access(row, *, viewer_is_buyer=None)`, `require_portal_access(row, *, viewer_ref)` (403 `billing_portal_buyer_only` when the row's `provider_payer_user_id` is set and isn't the viewer; a no-op without one), and the in-app cancel and its undoing, `async cancel_at_period_end(row, client)` and `async resume_scheduled_cancel(row, client)` (409 `billing_not_at_provider` without a subscription, a no-op when already cancelled / not cancelled, 502 / 503 as mapped; for `POST /billing/cancel` and `POST /billing/resume`, 204); `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
 | Paddle (the `billing` extra) | `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None, hosted_checkout_url=None, timeout=15, client=None)`, `PaddleError` (`.status`, `.paddle_code`, `.paddle_detail`, `.request_id`; 502, or 503 for a 401/403 and for a 4xx in `PADDLE_CONFIGURATION_CODES` (0.13)), `paddle_environment_of(api_key)`, `paddle_locale(kit_locale)` (ui-kit's `paddleLocale`: `de-CH` → `de`, `zh` → `zh-Hans`, `hu` → `en`; a hosted checkout's `locale`), `PADDLE_API_BASES`, `PADDLE_API_VERSION`, `PADDLE_TIMEOUT_SECONDS` |
 | Notices | `billing_notice_due(row, now, *, launch, sent, ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at, days_left)` (`.key`, the marker), `BillingNoticeKind` (`trial_ending`, `trial_ended`, `grant_ending`, `grant_ended`), `NOTICE_STATUSES`; over the app's candidates, `billing_notices_owed(candidates, now, *, settings)` → `OwedNotice(payer, kind, ends_at, days_left, row)` (the candidate's row, typed as the app's) from `NoticeCandidate(payer, row, sent, deactivated, deletion_requested)` |
-| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…, price_ref=None)`, with `at_provider`, `paid: PaidPrice | None` and (0.13) `switching`, which `provider_subscription_runs(row, now)` computes: a plan pick goes to the switch while it is true), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`; `comped_until` required, may be `null`), `AdminPlan` (`.from_spec(plan)`) and `admin_plans_out(catalogue)` for `GET /admin/plans`, the payer's switch `PlanSwitchRequest` `{plan, interval}`, `ProviderSwitchPreview` `{currency, now_minor, next_minor, next_billed_at}`, `PlanSwitchPreview` (that plus `{plan, interval, over_limit, limits, usage}`, from `plan_switch_preview(answer, plan, usage, *, interval)`), `PaidPrice` `{plan, interval, currency}`, `SyncRefusal` |
-| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422, `billing_not_subscribed` 409, `billing_plan_unchanged` 409), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…, price_ref=None)`, with `at_provider`, `paid: PaidPrice | None` and (0.13) `switching`, which `provider_subscription_runs(row, now)` computes: a plan pick goes to the switch while it is true; (0.14) `portal` and `buyer_name` from `.from_row(…, viewer_is_buyer=None, buyer_name=None)`), (0.14) `BillingStanding` (`.from_row(row, *, now, retry_grace=None, launch=None, viewer_is_buyer=None, buyer_name=None)`: `{status, in_good_standing, trial_ends_at, comped_until, portal, buyer_name}`, for a `GET /billing/status` that carries the standing), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`; `comped_until` required, may be `null`), `AdminPlan` (`.from_spec(plan)`) and `admin_plans_out(catalogue)` for `GET /admin/plans`, the payer's switch `PlanSwitchRequest` `{plan, interval}`, `ProviderSwitchPreview` `{currency, now_minor, next_minor, next_billed_at}`, `PlanSwitchPreview` (that plus `{plan, interval, over_limit, limits, usage}`, from `plan_switch_preview(answer, plan, usage, *, interval)`), `PaidPrice` `{plan, interval, currency}`, `SyncRefusal` |
+| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422, `billing_not_subscribed` 409, `billing_plan_unchanged` 409, `billing_portal_buyer_only` 403), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
 | Test helpers | `eifi1_server_kit.billing.testing`, in the wheel, not re-exported: `paddle_event(step, *, payer_ref, price_id, app=None, …)`, `PADDLE_STEPS` (with `plan_switched`), `PADDLE_STEP_PERIODS`, `sign_paddle`, `signed_paddle_event`, `post_signed` (localhost only), `FakeBillingProvider` (`.previews`, `.switches`, `.customers` beside the others), `PaddleApiFake` (the preview, the update, `GET` / `POST /customers`; `.customers`, `.preview`), `PADDLE_API_EXAMPLES` |
 
 **The switch is off by default**, and switching on without the provider, the API key or the
@@ -823,9 +910,10 @@ async def checkout(body: CheckoutRequest, payer: Payer = Depends(current_payer))
 
 
 @router.post("/billing/portal", response_model=CheckoutAnswer)
-async def portal(body: PortalRequest | None = None, payer: Payer = Depends(current_payer)) -> CheckoutAnswer:
+async def portal(body: PortalRequest | None = None, viewer: User = Depends(current_user)) -> CheckoutAnswer:
     settings.require_billing_enabled()
-    row = await row_of(payer)
+    row = await row_of(payer_of(viewer))
+    require_portal_access(row, viewer_ref=str(viewer.id))  # 403 billing_portal_buyer_only; no buyer stored: a no-op
     return CheckoutAnswer(
         url=await billing_client().portal_url(
             customer_id=row.provider_customer_id,  # None: 409 billing_not_at_provider
@@ -833,7 +921,29 @@ async def portal(body: PortalRequest | None = None, payer: Payer = Depends(curre
             target=(body or PortalRequest()).target,  # overview, cancel, payment_method
         )
     )
+
+
+@router.post("/billing/cancel", status_code=204)  # optional for a person-payer app
+async def cancel(payer: Payer = Depends(current_payer)) -> None:
+    settings.require_billing_enabled()
+    await cancel_at_period_end(await row_of(payer), billing_client())  # 409 billing_not_at_provider, 502, 503
+
+
+@router.post("/billing/resume", status_code=204)  # "Keep subscription"
+async def resume(payer: Payer = Depends(current_payer)) -> None:
+    settings.require_billing_enabled()
+    await resume_scheduled_cancel(await row_of(payer), billing_client())
 ```
+
+**The portal for the buyer only, and the in-app cancel** (0.14, contract §16): where the
+row stores a buyer (kastlan's `provider_payer_user_id`), every portal target opens for
+that user only, since each reaches the overview of all the buyer's subscriptions. The
+overview's `portal` says `buyer_only` to anyone else, with the buyer's name (`buyer_name`,
+`None` once the buyer is gone or has left). Another admin cancels in the app, and any admin
+keeps the subscription again. Both routes are for every admin who may read the overview,
+the buyer included. They take no write lock (a read-only payer may always cancel: on the
+gate's allow-list beside `/billing/portal`) and sit behind the app's demo guard. The row
+follows Paddle's `subscription.updated`.
 
 The checkout opens on the kit's pay page on the app's pay host
 (`billing_checkout_page_url`, `https://pay.<app domain>/`, sent as the transaction's
@@ -1071,7 +1181,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.13.1/eifi1_server_kit-0.13.1-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.14.0/eifi1_server_kit-0.14.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).

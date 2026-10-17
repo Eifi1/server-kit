@@ -55,6 +55,8 @@ def test_the_billing_codes_and_statuses_are_the_contracts() -> None:
         # §15.2.10's plan switch.
         "billing_not_subscribed": 409,
         "billing_plan_unchanged": 409,
+        # §16.2: the portal for the buyer only, where the row stores one.
+        "billing_portal_buyer_only": 403,
     }
     # §15.2.10: the 409 no longer sends the payer to the portal.
     assert "portal" not in BILLING_ERROR_DETAIL[BillingErrorCode.BILLING_ALREADY_SUBSCRIBED]

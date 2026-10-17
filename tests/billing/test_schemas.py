@@ -17,6 +17,7 @@ from eifi1_server_kit.billing import (
     BillingInterval,
     BillingOverview,
     BillingSettings,
+    BillingStanding,
     BillingStatus,
     CheckoutAnswer,
     CheckoutRequest,
@@ -42,7 +43,7 @@ from eifi1_server_kit.billing import (
     require_new_checkout,
     require_plan_switch,
 )
-from tests.billing._rows import NOW, Row
+from tests.billing._rows import NOW, BuyerRow, Row
 
 DAY = timedelta(days=1)
 FREE = PlanSpec(code="free", limits={"budgets": 1})
@@ -72,6 +73,8 @@ def test_the_overview_is_built_from_the_row() -> None:
         "at_provider": False,
         "paid": None,
         "switching": False,
+        "portal": "open",
+        "buyer_name": None,
     }
     assert not BillingOverview.from_row(
         row, plan=FREE, usage={}, currency=BillingCurrency.EUR, now=NOW + 10 * DAY
@@ -450,3 +453,89 @@ def test_the_preview_carries_the_figures_and_the_over_limit_lines() -> None:
     assert (within.over_limit, within.next_minor, within.next_billed_at) == ([], None, None)
     with pytest.raises(ValidationError):
         ProviderSwitchPreview(currency="CHF", now_minor=0, next_minor=-1)
+
+
+# --- the portal for the buyer only (§16) ---------------------------------------------------
+
+
+def _bought(buyer: int | None = 7) -> BuyerRow:
+    return BuyerRow(
+        plan_code="pro",
+        status="active",
+        source="provider",
+        provider_customer_id="ctm_1",
+        provider_subscription_id="sub_1",
+        current_period_end=NOW + 30 * DAY,
+        provider_payer_user_id=buyer,
+    )
+
+
+@pytest.mark.parametrize(
+    ("row", "viewer_is_buyer", "portal", "buyer_name"),
+    [
+        (_bought(), False, "buyer_only", "Anna Muster"),  # another admin: the caption names the buyer
+        (_bought(), True, "open", None),  # the buyer
+        (_bought(), None, "open", None),  # the app doesn't say
+        (_bought(buyer=None), False, "open", None),  # no buyer stored yet
+        (Row(plan_code="pro"), False, "open", None),  # a person-payer app's row has no column
+    ],
+)
+def test_the_portal_is_for_the_buyer_only_where_one_is_stored(
+    row: Row, viewer_is_buyer: bool | None, portal: str, buyer_name: str | None
+) -> None:
+    """§16.2 decision 1, §16.3: ``buyer_only`` exactly when the row stores a buyer and the
+    viewer isn't them; the buyer's name only then (decision 3)."""
+    overview = BillingOverview.from_row(
+        row,
+        plan=PRO,
+        usage={},
+        currency="CHF",
+        now=NOW,
+        viewer_is_buyer=viewer_is_buyer,
+        buyer_name="Anna Muster",
+    )
+    standing = BillingStanding.from_row(row, now=NOW, viewer_is_buyer=viewer_is_buyer, buyer_name="Anna Muster")
+    for shape in (overview, standing):
+        assert (shape.portal, shape.buyer_name) == (portal, buyer_name)
+
+
+def test_a_gone_buyer_is_buyer_only_without_a_name() -> None:
+    """§16.2 decision 4, §16.7 G: the buyer left or was erased — the app passes no name, and
+    the caption reads "the admin who bought the subscription"."""
+    overview = BillingOverview.from_row(
+        _bought(), plan=PRO, usage={}, currency="CHF", now=NOW, viewer_is_buyer=False, buyer_name=None
+    )
+    assert overview.model_dump(include={"portal", "buyer_name"}) == {"portal": "buyer_only", "buyer_name": None}
+
+
+def test_the_standing_is_what_the_lock_and_the_banner_read() -> None:
+    """§16.7 A, ui-kit's ``BillingStanding``: the standing's four fields and the portal's
+    two, for the payment-failed banner on ``GET /billing/status``."""
+    beta = Row(status="comped", source="beta", trial_ends_at=None)
+    launch = datetime(2026, 11, 1, tzinfo=UTC)
+    assert BillingStanding.from_row(beta, now=NOW, launch=launch).model_dump(mode="json") == {
+        "status": "comped",
+        "in_good_standing": True,
+        "trial_ends_at": None,
+        "comped_until": "2027-11-01T00:00:00Z",
+        "portal": "open",
+        "buyer_name": None,
+    }
+    late = Row(status="past_due", source="provider", current_period_end=NOW - 20 * DAY)
+    assert not BillingStanding.from_row(late, now=NOW, retry_grace=timedelta(days=14)).in_good_standing
+    # Additive: built field by field, as kastlan's own model is today.
+    assert BillingStanding(status=SubscriptionStatus.ACTIVE, in_good_standing=True).portal == "open"
+
+
+def test_an_overview_built_without_the_row_is_open() -> None:
+    """Additive: a fixture built field by field keeps building, and the portal is open."""
+    overview = BillingOverview(
+        plan="free",
+        status=SubscriptionStatus.TRIALING,
+        source=SubscriptionSource.TRIAL,
+        in_good_standing=True,
+        limits={},
+        usage={},
+        currency=BillingCurrency.CHF,
+    )
+    assert (overview.portal, overview.buyer_name) == ("open", None)

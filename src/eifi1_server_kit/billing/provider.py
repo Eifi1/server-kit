@@ -63,6 +63,42 @@ the app's demo guard, for whoever may check out::
 The row follows through the ``subscription.updated`` Paddle sends: its plan, and its
 ``provider_price_id`` even under a grant (the overview's ``paid``).
 
+**The portal, for the buyer only where the row stores one** (§16.2, §16.7 F): Paddle's
+customer is a person, and every portal target reaches the overview of all that person's
+subscriptions, other apps' included. :func:`require_portal_access` refuses anyone else
+(403 ``billing_portal_buyer_only``); a row without a stored buyer passes everyone, so a
+person-payer app may call it and keep the route the same shape::
+
+    @router.post("/billing/portal", response_model=CheckoutAnswer)
+    async def portal(body: PortalRequest | None = None, viewer: User = Depends(current_user)) -> CheckoutAnswer:
+        settings.require_billing_enabled()                                  # 404
+        row = await row_of(payer_of(viewer))
+        require_portal_access(row, viewer_ref=str(viewer.id))               # 403 billing_portal_buyer_only
+        url = await billing_client().portal_url(
+            customer_id=row.provider_customer_id,                           # None: 409 billing_not_at_provider
+            subscription_id=row.provider_subscription_id,
+            target=(body or PortalRequest()).target,
+        )
+        return CheckoutAnswer(url=url)
+
+**Cancelling in the app, and keeping the subscription** (§16.2, §16.7 C, D): ``POST
+/billing/cancel`` and ``POST /billing/resume``, both 204, for every admin who may read the
+overview, the buyer included — the buyer's colleagues can't open the portal's "Cancel".
+No write lock: a read-only payer may always cancel (§3.3), so both are on the read-only
+gate's allow-list, beside ``/billing/portal``. Behind the app's demo guard. Optional for a
+person-payer app, whose payer cancels in the portal::
+
+    @router.post("/billing/cancel", status_code=204)                       # /billing/resume likewise
+    async def cancel(payer: Payer = Depends(current_payer)) -> None:
+        settings.require_billing_enabled()                                  # 404
+        row = await row_of(payer)
+        await cancel_at_period_end(row, billing_client())                   # 409 / 502 / 503
+        # resume: await resume_scheduled_cancel(row, billing_client())
+
+The row changes when the provider's ``subscription.updated`` lands
+(``cancel_at_period_end``), as after a cancellation in the portal; the page re-reads the
+overview.
+
 **The way back is configuration, never a request field** (§14.4): the pay page's
 ``successUrl`` or the hosted checkout's redirect lands on the app's subscription page with
 ``?checkout=done`` (:func:`checkout_return_url`), which the page reads and drops.
@@ -93,15 +129,20 @@ __all__ = [
     "BillingProviderClient",
     "CancelOutcome",
     "NoProviderClient",
+    "PortalAccess",
     "PortalTarget",
     "ResumeOutcome",
     "billing_provider_client",
+    "cancel_at_period_end",
     "cancel_for_deletion",
     "checkout_return_url",
+    "portal_access",
     "provider_subscription_runs",
     "require_new_checkout",
     "require_plan_switch",
+    "require_portal_access",
     "resume_after_withdrawal",
+    "resume_scheduled_cancel",
     "sold_plan",
     "switch_price",
 ]
@@ -111,6 +152,11 @@ logger = logging.getLogger("eifi1_server_kit.billing")
 #: Where a portal link opens (§14.5): ``overview`` for "Payment and invoices", ``cancel``
 #: for "Cancel subscription" (§12.26), ``payment_method`` for the payment-failed banner.
 PortalTarget = Literal["overview", "cancel", "payment_method"]
+#: Who may open the portal (§16.2): ``open`` — whoever may read the overview (a row
+#: without a stored buyer: keksdose's and Kurvenschmiede's, whose payer is the person) —
+#: or ``buyer_only``, the viewer isn't the buyer the row stores (kastlan's
+#: ``provider_payer_user_id``). :func:`portal_access` decides it.
+PortalAccess = Literal["open", "buyer_only"]
 #: What :func:`cancel_for_deletion` did, for the deletion request's audit detail.
 CancelOutcome = Literal["cancelled", "failed"]
 #: What :func:`resume_after_withdrawal` did, for the reactivation's audit detail.
@@ -498,6 +544,109 @@ async def resume_after_withdrawal(
         )
         return "failed"
     return "resumed"
+
+
+def _stored_buyer(row: SubscriptionRow) -> str | None:
+    """The buyer the row stores (§15.2.11: kastlan's ``provider_payer_user_id``), as text,
+    or ``None``. Read only where the row has the column: it isn't on the
+    :class:`~eifi1_server_kit.billing.SubscriptionRow` protocol, since a person-payer app's
+    row (keksdose's, Kurvenschmiede's) has none."""
+    buyer = getattr(row, "provider_payer_user_id", None)
+    text = "" if buyer is None else str(buyer).strip()
+    return text or None
+
+
+def portal_access(row: SubscriptionRow, *, viewer_is_buyer: bool | None = None) -> PortalAccess:
+    """Who may open the portal for ``row`` (§16.2, §16.3): ``buyer_only`` exactly when the
+    row stores a buyer (``provider_payer_user_id``, read where the row has it) and
+    ``viewer_is_buyer`` is ``False``; otherwise ``open``. ``None`` — an app that doesn't
+    say, a person-payer app — is ``open``. The overview's and the standing's ``portal``
+    (:class:`~eifi1_server_kit.billing.BillingOverview`,
+    :class:`~eifi1_server_kit.billing.BillingStanding`); the route refuses by
+    :func:`require_portal_access`."""
+    return "buyer_only" if _stored_buyer(row) is not None and viewer_is_buyer is False else "open"
+
+
+def require_portal_access(row: SubscriptionRow, *, viewer_ref: str) -> None:
+    """Refuse the portal to anyone but the buyer the row stores (§16.2, §16.3): 403
+    ``billing_portal_buyer_only`` when ``row.provider_payer_user_id`` is set and differs
+    from ``viewer_ref`` — the viewer's id as text (kastlan: ``str(user.id)``; the stored
+    buyer is compared as its text, so an integer column matches). Every target, the
+    overview, ``cancel`` and ``payment_method`` alike: each reaches the overview of all
+    the buyer's subscriptions (§16.1). A row without a stored buyer — a person-payer app,
+    or a buyer not yet known — passes everyone, so calling it keeps the route the same
+    shape (§16.7 F). Call it in ``POST /billing/portal`` before
+    :meth:`~BillingProviderClient.portal_url`.
+
+    When the buyer has left the company or is erased nobody opens the portal (§16.2
+    decision 4): any admin still cancels in the app (:func:`cancel_at_period_end`)."""
+    buyer = _stored_buyer(row)
+    if buyer is not None and buyer != viewer_ref.strip():
+        raise BillingError(BillingErrorCode.BILLING_PORTAL_BUYER_ONLY)
+
+
+async def cancel_at_period_end(row: SubscriptionRow, client: BillingProviderClient) -> None:
+    """Cancel the payer's subscription at its period's end, in the app (§16.2 decision 2,
+    §16.3): ``POST /billing/cancel``, 204, for every admin who may read the overview, the
+    buyer included. The port's :meth:`~BillingProviderClient.cancel` with ``immediately``
+    false — Paddle's API, no portal session: the subscription stays ``active`` until its
+    period ends, and the row's ``cancel_at_period_end`` follows through the
+    ``subscription.updated`` Paddle sends.
+
+    * 409 ``billing_not_at_provider``: no ``provider_subscription_id`` (a stale page; the
+      overview's ``at_provider`` hides the action).
+    * Nothing, and no request: ``cancel_at_period_end`` is already set.
+    * The provider's refusals as every call maps them (server-kit 0.13): 502
+      ``billing_provider_unavailable``, 503 ``billing_not_configured`` for the
+      deployment's fault.
+
+    It takes no write lock: a read-only payer may always cancel (§3.3). Unlike
+    :func:`cancel_for_deletion` it raises: it is the person's own action, and the page
+    says what failed."""
+    subscription_id = _subscription_of(row)
+    if row.cancel_at_period_end:
+        return
+    await client.cancel(subscription_id=subscription_id, immediately=False)
+
+
+async def resume_scheduled_cancel(row: SubscriptionRow, client: BillingProviderClient) -> None:
+    """Keep the subscription: undo a cancellation at the period's end, in the app (§16.7
+    C, §16.8): ``POST /billing/resume``, 204, for the same admins as
+    :func:`cancel_at_period_end` — the page's "Keep subscription" while the overview's
+    ``cancel_at_period_end`` is true. The port's
+    :meth:`~BillingProviderClient.remove_scheduled_cancel` (Paddle's ``PATCH
+    /subscriptions/{id} {"scheduled_change": null}``); the row follows through the
+    ``subscription.updated`` Paddle sends.
+
+    * 409 ``billing_not_at_provider``: no ``provider_subscription_id``.
+    * Nothing, and no request, unless ``cancel_at_period_end`` is set.
+    * Nothing either when Paddle answers that there is nothing to resume — the
+      subscription has ended (``subscription_update_when_canceled``) or no cancellation is
+      scheduled (``subscription_scheduled_change_invalid_update``), as for
+      :func:`resume_after_withdrawal`: the page re-reads the overview, which shows it.
+    * Any other failure raises, mapped as every call maps it (502, or 503 for the
+      deployment's fault): unlike :func:`resume_after_withdrawal` this is the person's own
+      action.
+    """
+    subscription_id = _subscription_of(row)
+    if not row.cancel_at_period_end:
+        return
+    from eifi1_server_kit.billing.paddle import PaddleError
+
+    try:
+        await client.remove_scheduled_cancel(subscription_id=subscription_id)
+    except PaddleError as exc:
+        if exc.paddle_code not in _NOTHING_TO_RESUME:
+            raise
+        logger.info("billing: nothing to resume for the subscription %s (Paddle: %s)", subscription_id, exc.paddle_code)
+
+
+def _subscription_of(row: SubscriptionRow) -> str:
+    """The row's provider subscription id, or 409 ``billing_not_at_provider``."""
+    subscription_id = row.provider_subscription_id
+    if subscription_id is None:
+        raise BillingError(BillingErrorCode.BILLING_NOT_AT_PROVIDER)
+    return subscription_id
 
 
 def checkout_return_url(app_base_url: str, path: str) -> str:

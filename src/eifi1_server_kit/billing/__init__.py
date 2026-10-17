@@ -35,7 +35,9 @@ a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy, depre
   (:func:`billing_provider_client`), and what a route checks first (:func:`sold_plan`,
   :func:`require_new_checkout`; for a plan switch :func:`require_plan_switch` and
   :func:`switch_price`; the rule both refuse by, :func:`provider_subscription_runs`); a deletion's cancellation and its undoing
-  (:func:`cancel_for_deletion`, :func:`resume_after_withdrawal`); the checkout's way back
+  (:func:`cancel_for_deletion`, :func:`resume_after_withdrawal`); the portal for the buyer
+  only (:func:`portal_access`, :func:`require_portal_access`) and the in-app cancel and its
+  undoing (:func:`cancel_at_period_end`, :func:`resume_scheduled_cancel`); the checkout's way back
   (:func:`checkout_return_url`);
 * :mod:`~eifi1_server_kit.billing.paddle` — :class:`PaddleClient`, Paddle Billing's API
   (the ``billing`` extra), :class:`PaddleError` (the 4xx codes that are the
@@ -46,7 +48,8 @@ a 30-day trial without a card, a beta payer 12 free months. Lemon Squeezy, depre
 * :mod:`~eifi1_server_kit.billing.webhooks` — the event-store port, the pure
   :func:`dispatch` with the ordering guard and the grant's precedence, and the answer
   policy;
-* :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, the plans
+* :mod:`~eifi1_server_kit.billing.schemas` — the wire shapes: status, overview, the
+  standing (:class:`BillingStanding`), the plans
   (:class:`PlanOut` with :class:`PlanPrices`, :func:`plans_out`), checkout, the operator's plans
   (:class:`AdminPlan`, :func:`admin_plans_out`) and plan change, the payer's plan switch
   (:class:`PlanSwitchRequest`, :class:`PlanSwitchPreview`, :func:`plan_switch_preview`) and
@@ -127,21 +130,27 @@ from eifi1_server_kit.billing.provider import (
     BillingProviderClient,
     CancelOutcome,
     NoProviderClient,
+    PortalAccess,
     PortalTarget,
     ResumeOutcome,
     billing_provider_client,
+    cancel_at_period_end,
     cancel_for_deletion,
     checkout_return_url,
+    portal_access,
     provider_subscription_runs,
     require_new_checkout,
     require_plan_switch,
+    require_portal_access,
     resume_after_withdrawal,
+    resume_scheduled_cancel,
     sold_plan,
     switch_price,
 )
 from eifi1_server_kit.billing.schemas import (
     AdminPlan,
     BillingOverview,
+    BillingStanding,
     BillingStatus,
     CheckoutAnswer,
     CheckoutRequest,
@@ -227,6 +236,7 @@ __all__ = [
     "BillingProvider",
     "BillingProviderClient",
     "BillingSettings",
+    "BillingStanding",
     "BillingStatus",
     "CancelOutcome",
     "CheckoutAnswer",
@@ -257,6 +267,7 @@ __all__ = [
     "PlanSwitchPreview",
     "PlanSwitchRequest",
     "PoisonEventError",
+    "PortalAccess",
     "PortalRequest",
     "PortalTarget",
     "PriceRef",
@@ -273,6 +284,7 @@ __all__ = [
     "billing_notices_owed",
     "billing_provider_client",
     "billing_write_allowed",
+    "cancel_at_period_end",
     "cancel_for_deletion",
     "check_limit",
     "checkout_custom_data",
@@ -292,11 +304,14 @@ __all__ = [
     "plan_catalogue",
     "plan_switch_preview",
     "plans_out",
+    "portal_access",
     "provider_subscription_runs",
     "refuse_billing_read_only",
     "require_new_checkout",
     "require_plan_switch",
+    "require_portal_access",
     "resume_after_withdrawal",
+    "resume_scheduled_cancel",
     "row_changes",
     "sold_plan",
     "switch_price",
