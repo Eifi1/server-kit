@@ -635,11 +635,11 @@ in 0.7): `BillingProvider` is `paddle` alone, and a price id is text.
 | Standing | `SubscriptionStatus` (`trialing`, `active`, `past_due`, `canceled`, `expired`, `comped`), `SubscriptionSource` (`trial`, `provider`, `manual`, `beta`), the `SubscriptionRow` protocol; `in_good_standing(row, now, *, retry_grace=None, launch=None)`, `grant_holds(row, now, *, launch=None)`, `effective_comped_until(row, launch)`; `trial_ends_at(now)` (`TRIAL_LENGTH` 30 days), `beta_comped_until(launch)` (`BETA_FREE_MONTHS` 12), `is_beta(invitation_created_at, launch)` |
 | The gate | `billing_write_allowed(method, path, *, standing, allow=frozenset())`, `refuse_billing_read_only(in_good_standing, what)` |
 | Webhooks | `verify_webhook_signature(provider, raw_body, headers, secret)`, `verify_paddle_signature`, `PADDLE_SIGNATURE_TOLERANCE` 5 s; `EventKind`, `NormalisedEvent` (`.payer_ref`, `.app`, `.buyer`), `parse_webhook_event(provider, raw_body, *, app=None)`, `map_paddle_event`, `PoisonEventError`, `checkout_custom_data(payer_ref, *, app=None, buyer=None)`, `PAYER_REF_KEY`, `APP_KEY`, `BUYER_KEY` (kastlan's buying admin); the `EventStore` port and `DuplicateEventError`, `dispatch(event, store, apply, *, load, plan_for_price, now=None, launch=None)` → `DispatchOutcome`, `row_changes` (`provider_price_id` from every snapshot, a grant's too), `webhook_answer(result)` → `WebhookAnswer(status_code, log)` |
-| The provider | the `BillingProviderClient` port (`checkout_url` with `customer_email`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`, `preview_plan_change` / `change_plan` → `ProviderSwitchPreview`, `customer_for(email)`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`), `require_plan_switch(row, now)` (409 `billing_not_subscribed`), `switch_price(catalogue, row, request, settings, *, sold=None)` (422 `billing_plan_not_sold`, 409 `billing_plan_unchanged`, 503 without a known price on the row); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
+| The provider | the `BillingProviderClient` port (`checkout_url` with `customer_email`, `portal_url` with `PortalTarget` `overview` / `cancel` / `payment_method`, `cancel`, `remove_scheduled_cancel`, `preview_plan_change` / `change_plan` → `ProviderSwitchPreview`, `customer_for(email)`), `billing_provider_client(settings, *, client=None)` → `PaddleClient` or `NoProviderClient` (503); `sold_plan(catalogue, request, *, sold=None)` (422 `billing_plan_not_sold`), `require_new_checkout(row, now)` (409 `billing_already_subscribed`), `require_plan_switch(row, now)` (409 `billing_not_subscribed`), `switch_price(catalogue, row, request, settings, *, sold=None)` (422 `billing_plan_not_sold`, 409 `billing_plan_unchanged`, 503 without a known price on the row); `cancel_for_deletion(row, client)` → `CancelOutcome`, `resume_after_withdrawal(row, client, now=None)` → `ResumeOutcome`; (0.14) the portal for the buyer only, `PortalAccess` (`open` / `buyer_only`), `portal_access(row, *, viewer_is_buyer=None)`, `require_portal_access(row, *, viewer_ref)` (403 `billing_portal_buyer_only` when the row's `provider_payer_user_id` is set and isn't the viewer; a no-op without one), and the in-app cancel and its undoing, `async cancel_at_period_end(row, client)` and `async resume_scheduled_cancel(row, client)` (409 `billing_not_at_provider` without a subscription, a no-op when already cancelled / not cancelled, 502 / 503 as mapped; for `POST /billing/cancel` and `POST /billing/resume`, 204); `CHECKOUT_RETURN_PARAM`, `CHECKOUT_RETURN_VALUE`, `checkout_return_url(app_base_url, path)` |
 | Paddle (the `billing` extra) | `PaddleClient(api_key, *, environment, app=None, checkout_page_url=None, hosted_checkout_url=None, timeout=15, client=None)`, `PaddleError` (`.status`, `.paddle_code`, `.paddle_detail`, `.request_id`; 502, or 503 for a 401/403 and for a 4xx in `PADDLE_CONFIGURATION_CODES` (0.13)), `paddle_environment_of(api_key)`, `paddle_locale(kit_locale)` (ui-kit's `paddleLocale`: `de-CH` → `de`, `zh` → `zh-Hans`, `hu` → `en`; a hosted checkout's `locale`), `PADDLE_API_BASES`, `PADDLE_API_VERSION`, `PADDLE_TIMEOUT_SECONDS` |
 | Notices | `billing_notice_due(row, now, *, launch, sent, ahead=NOTICE_AHEAD, late_limit=NOTICE_LATE_LIMIT)` → `BillingNotice(kind, ends_at, days_left)` (`.key`, the marker), `BillingNoticeKind` (`trial_ending`, `trial_ended`, `grant_ending`, `grant_ended`), `NOTICE_STATUSES`; over the app's candidates, `billing_notices_owed(candidates, now, *, settings)` → `OwedNotice(payer, kind, ends_at, days_left, row)` (the candidate's row, typed as the app's) from `NoticeCandidate(payer, row, sent, deactivated, deletion_requested)` |
-| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…, price_ref=None)`, with `at_provider`, `paid: PaidPrice | None` and (0.13) `switching`, which `provider_subscription_runs(row, now)` computes: a plan pick goes to the switch while it is true), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`; `comped_until` required, may be `null`), `AdminPlan` (`.from_spec(plan)`) and `admin_plans_out(catalogue)` for `GET /admin/plans`, the payer's switch `PlanSwitchRequest` `{plan, interval}`, `ProviderSwitchPreview` `{currency, now_minor, next_minor, next_billed_at}`, `PlanSwitchPreview` (that plus `{plan, interval, over_limit, limits, usage}`, from `plan_switch_preview(answer, plan, usage, *, interval)`), `PaidPrice` `{plan, interval, currency}`, `SyncRefusal` |
-| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422, `billing_not_subscribed` 409, `billing_plan_unchanged` 409), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
+| Schemas | `BillingStatus`, `BillingOverview` (`.from_row(…, price_ref=None)`, with `at_provider`, `paid: PaidPrice | None` and (0.13) `switching`, which `provider_subscription_runs(row, now)` computes: a plan pick goes to the switch while it is true; (0.14) `portal` and `buyer_name` from `.from_row(…, viewer_is_buyer=None, buyer_name=None)`), (0.14) `BillingStanding` (`.from_row(row, *, now, retry_grace=None, launch=None, viewer_is_buyer=None, buyer_name=None)`: `{status, in_good_standing, trial_ends_at, comped_until, portal, buyer_name}`, for a `GET /billing/status` that carries the standing), `PlanOut` (`.from_spec(plan)`) with `PlanPrices` / `PlanIntervalPrices`, `plans_out(catalogue)`, `CheckoutRequest`, `CheckoutAnswer`, `PortalRequest` (`target`), `PlanChangeRequest`, `PlanChangeResponse` (`.of(previous_plan, plan, usage, *, kept_beta=False, comped_until=None)`; `comped_until` required, may be `null`), `AdminPlan` (`.from_spec(plan)`) and `admin_plans_out(catalogue)` for `GET /admin/plans`, the payer's switch `PlanSwitchRequest` `{plan, interval}`, `ProviderSwitchPreview` `{currency, now_minor, next_minor, next_billed_at}`, `PlanSwitchPreview` (that plus `{plan, interval, over_limit, limits, usage}`, from `plan_switch_preview(answer, plan, usage, *, interval)`), `PaidPrice` `{plan, interval, currency}`, `SyncRefusal` |
+| Refusals | `BillingErrorCode` (`billing_disabled` 404, `billing_read_only` 402, `billing_not_configured` 503, `invalid_signature` 400, `billing_provider_unavailable` 502, `billing_not_at_provider` 409, `billing_already_subscribed` 409, `billing_plan_not_sold` 422, `billing_not_subscribed` 409, `billing_plan_unchanged` 409, `billing_portal_buyer_only` 403), `BillingError(code, detail=None)`; `PlanLimitError` 402 `{detail, code: "plan_limit", dimension, plan, limit, used}` |
 | Test helpers | `eifi1_server_kit.billing.testing`, in the wheel, not re-exported: `paddle_event(step, *, payer_ref, price_id, app=None, …)`, `PADDLE_STEPS` (with `plan_switched`), `PADDLE_STEP_PERIODS`, `sign_paddle`, `signed_paddle_event`, `post_signed` (localhost only), `FakeBillingProvider` (`.previews`, `.switches`, `.customers` beside the others), `PaddleApiFake` (the preview, the update, `GET` / `POST /customers`; `.customers`, `.preview`), `PADDLE_API_EXAMPLES` |
 
 **The switch is off by default**, and switching on without the provider, the API key or the
@@ -824,9 +824,10 @@ async def checkout(body: CheckoutRequest, payer: Payer = Depends(current_payer))
 
 
 @router.post("/billing/portal", response_model=CheckoutAnswer)
-async def portal(body: PortalRequest | None = None, payer: Payer = Depends(current_payer)) -> CheckoutAnswer:
+async def portal(body: PortalRequest | None = None, viewer: User = Depends(current_user)) -> CheckoutAnswer:
     settings.require_billing_enabled()
-    row = await row_of(payer)
+    row = await row_of(payer_of(viewer))
+    require_portal_access(row, viewer_ref=str(viewer.id))  # 403 billing_portal_buyer_only; no buyer stored: a no-op
     return CheckoutAnswer(
         url=await billing_client().portal_url(
             customer_id=row.provider_customer_id,  # None: 409 billing_not_at_provider
@@ -834,7 +835,29 @@ async def portal(body: PortalRequest | None = None, payer: Payer = Depends(curre
             target=(body or PortalRequest()).target,  # overview, cancel, payment_method
         )
     )
+
+
+@router.post("/billing/cancel", status_code=204)  # optional for a person-payer app
+async def cancel(payer: Payer = Depends(current_payer)) -> None:
+    settings.require_billing_enabled()
+    await cancel_at_period_end(await row_of(payer), billing_client())  # 409 billing_not_at_provider, 502, 503
+
+
+@router.post("/billing/resume", status_code=204)  # "Keep subscription"
+async def resume(payer: Payer = Depends(current_payer)) -> None:
+    settings.require_billing_enabled()
+    await resume_scheduled_cancel(await row_of(payer), billing_client())
 ```
+
+**The portal for the buyer only, and the in-app cancel** (0.14, contract §16): where the
+row stores a buyer (kastlan's `provider_payer_user_id`), every portal target opens for
+that user only, since each reaches the overview of all the buyer's subscriptions. The
+overview's `portal` says `buyer_only` to anyone else, with the buyer's name (`buyer_name`,
+`None` once the buyer is gone or has left). Another admin cancels in the app, and any admin
+keeps the subscription again. Both routes are for every admin who may read the overview,
+the buyer included. They take no write lock (a read-only payer may always cancel: on the
+gate's allow-list beside `/billing/portal`) and sit behind the app's demo guard. The row
+follows Paddle's `subscription.updated`.
 
 The checkout opens on the kit's pay page on the app's pay host
 (`billing_checkout_page_url`, `https://pay.<app domain>/`, sent as the transaction's

@@ -29,17 +29,21 @@ from eifi1_server_kit.billing import (
     SubscriptionSource,
     SubscriptionStatus,
     billing_provider_client,
+    cancel_at_period_end,
     cancel_for_deletion,
     checkout_return_url,
     plan_catalogue,
+    portal_access,
     require_new_checkout,
     require_plan_switch,
+    require_portal_access,
     resume_after_withdrawal,
+    resume_scheduled_cancel,
     sold_plan,
     switch_price,
 )
 from eifi1_server_kit.billing.testing import FakeBillingProvider, PaddleApiFake
-from tests.billing._rows import NOW, Row
+from tests.billing._rows import NOW, BuyerRow, Row
 
 DAY = timedelta(days=1)
 FREE = PlanSpec(code="free", limits={"budgets": 1})
@@ -484,6 +488,173 @@ async def test_a_failed_resume_is_logged_for_the_operator(
     paddle = PaddleApiFake()
     paddle.fail_with(*failure)
     assert await resume_after_withdrawal(_cancelled(), _paddle(paddle), NOW) == "failed"
+
+
+# --- the portal for the buyer only (§16.2, §16.3) -----------------------------------------
+
+
+@pytest.mark.parametrize("buyer", [7, "7", " 7 "])
+def test_the_buyer_opens_the_portal(buyer: Any) -> None:
+    """kastlan's column is an integer; the viewer's reference is its text."""
+    row = BuyerRow(**{**vars(_subscribed()), "provider_payer_user_id": buyer})
+    require_portal_access(row, viewer_ref="7")
+    require_portal_access(row, viewer_ref=" 7")
+
+
+@pytest.mark.parametrize("viewer_ref", ["8", "", "user:7"])
+def test_another_admin_is_refused_every_portal_target(viewer_ref: str) -> None:
+    """§16.2 decision 1: every target reaches the buyer's overview (§16.1), so it is a 403
+    for each, before the provider is asked."""
+    row = BuyerRow(**{**vars(_subscribed()), "provider_payer_user_id": 7})
+    with pytest.raises(BillingError) as refused:
+        require_portal_access(row, viewer_ref=viewer_ref)
+    assert (refused.value.status_code, refused.value.code) == (403, BillingErrorCode.BILLING_PORTAL_BUYER_ONLY)
+    assert str(refused.value) == "Only the subscription's buyer opens the provider's portal"
+
+
+@pytest.mark.parametrize("row", [_subscribed(), Row(), BuyerRow(), BuyerRow(provider_payer_user_id=None)])
+def test_without_a_stored_buyer_everyone_opens_the_portal(row: Row) -> None:
+    """§16.7 F: a no-op for a person-payer app (no column) and for a row whose buyer isn't
+    known (an empty text counts as none)."""
+    require_portal_access(row, viewer_ref="anyone")
+    assert portal_access(row, viewer_is_buyer=False) == "open"
+
+
+def test_an_empty_stored_buyer_is_none() -> None:
+    row = BuyerRow()
+    row.provider_payer_user_id = " "  # type: ignore[assignment]  # a text column left blank
+    require_portal_access(row, viewer_ref="8")
+    assert portal_access(row, viewer_is_buyer=False) == "open"
+
+
+def test_the_portal_access_follows_the_viewer() -> None:
+    row = BuyerRow(provider_payer_user_id=7)
+    assert portal_access(row, viewer_is_buyer=False) == "buyer_only"
+    assert portal_access(row, viewer_is_buyer=True) == "open"
+    assert portal_access(row) == "open"
+
+
+# --- the in-app cancel and keeping the subscription (§16.2, §16.7 C) -----------------------
+
+
+async def test_an_admin_cancels_at_the_periods_end() -> None:
+    """§16.2 decision 2: the port's cancel, at the period's end — no portal session."""
+    provider = FakeBillingProvider()
+    for status in ("active", "past_due", "trialing"):
+        await cancel_at_period_end(_subscribed(status=status), provider)
+    # Bought under a grant (§12.11): the row keeps the grant's status and source.
+    await cancel_at_period_end(_subscribed(status="comped", source="manual"), provider)
+    assert provider.cancels == [{"subscription_id": "sub_1", "immediately": False}] * 4
+
+
+async def test_a_cancel_reaches_paddle_for_the_next_billing_period() -> None:
+    paddle = PaddleApiFake()
+    await cancel_at_period_end(_subscribed(), _paddle(paddle))
+    (request,) = paddle.requests
+    assert (request.method, str(request.url)) == ("POST", "https://sandbox-api.paddle.com/subscriptions/sub_1/cancel")
+    assert paddle.sent == {"effective_from": "next_billing_period"}
+
+
+async def test_a_cancel_already_scheduled_is_nothing() -> None:
+    provider = FakeBillingProvider()
+    await cancel_at_period_end(_cancelled(), provider)
+    assert provider.cancels == []
+
+
+@pytest.mark.parametrize("act", [cancel_at_period_end, resume_scheduled_cancel])
+@pytest.mark.parametrize(
+    "row", [Row(), _cancelled(provider_subscription_id=None), _subscribed(provider_subscription_id=None)]
+)
+async def test_cancel_and_resume_without_a_subscription_are_409(act: Any, row: Row) -> None:
+    """A stale page: the overview's ``at_provider`` hides both actions."""
+    provider = FakeBillingProvider()
+    with pytest.raises(BillingError) as refused:
+        await act(row, provider)
+    assert (refused.value.status_code, refused.value.code) == (409, BillingErrorCode.BILLING_NOT_AT_PROVIDER)
+    assert provider.cancels == provider.resumes == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    [
+        ((404, "not_found"), 502, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE),
+        ((400, "subscription_update_when_canceled"), 502, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE),
+        ((429, None), 502, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE),
+        ((403, "forbidden"), 503, BillingErrorCode.BILLING_NOT_CONFIGURED),
+    ],
+)
+async def test_a_failed_cancel_raises_as_mapped(
+    failure: tuple[int, str | None], status: int, code: BillingErrorCode
+) -> None:
+    """The person's own action: it raises (unlike the deletion's), mapped as in 0.13."""
+    paddle = PaddleApiFake()
+    paddle.fail_with(*failure)
+    with pytest.raises(BillingError) as refused:
+        await cancel_at_period_end(_subscribed(), _paddle(paddle))
+    assert (refused.value.status_code, refused.value.code) == (status, code)
+
+
+async def test_a_cancel_without_a_provider_client_is_503() -> None:
+    with pytest.raises(BillingError) as refused:
+        await cancel_at_period_end(_subscribed(), NoProviderClient())
+    assert refused.value.code is BillingErrorCode.BILLING_NOT_CONFIGURED
+
+
+async def test_an_admin_keeps_the_subscription() -> None:
+    """§16.7 C: "Keep subscription" removes the scheduled cancellation."""
+    provider = FakeBillingProvider()
+    await resume_scheduled_cancel(_cancelled(), provider)
+    assert provider.resumes == [{"subscription_id": "sub_1"}]
+    paddle = PaddleApiFake()
+    await resume_scheduled_cancel(_cancelled(), _paddle(paddle))
+    (request,) = paddle.requests
+    assert (request.method, str(request.url)) == ("PATCH", "https://sandbox-api.paddle.com/subscriptions/sub_1")
+    assert paddle.sent == {"scheduled_change": None}
+
+
+@pytest.mark.parametrize("cancelled", [False, None])
+async def test_nothing_scheduled_is_nothing_to_keep(cancelled: bool | None) -> None:
+    provider = FakeBillingProvider()
+    await resume_scheduled_cancel(_subscribed(cancel_at_period_end=cancelled), provider)
+    assert provider.resumes == []
+
+
+@pytest.mark.parametrize(
+    "paddle_code", ["subscription_update_when_canceled", "subscription_scheduled_change_invalid_update"]
+)
+async def test_paddle_saying_nothing_to_resume_is_nothing(paddle_code: str, caplog: pytest.LogCaptureFixture) -> None:
+    """As for :func:`resume_after_withdrawal`: ended at Paddle, or nothing scheduled — the
+    page re-reads the overview."""
+    paddle = PaddleApiFake()
+    paddle.fail_with(400, paddle_code)
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.billing"):
+        await resume_scheduled_cancel(_cancelled(), _paddle(paddle))
+    assert f"nothing to resume for the subscription sub_1 (Paddle: {paddle_code})" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "code"),
+    [
+        ((404, "not_found"), 502, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE),
+        ((500, None), 502, BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE),
+        ((401, None), 503, BillingErrorCode.BILLING_NOT_CONFIGURED),
+    ],
+)
+async def test_a_failed_resume_raises_as_mapped(
+    failure: tuple[int, str | None], status: int, code: BillingErrorCode
+) -> None:
+    """Unlike :func:`resume_after_withdrawal`, the person's own action raises."""
+    paddle = PaddleApiFake()
+    paddle.fail_with(*failure)
+    with pytest.raises(BillingError) as refused:
+        await resume_scheduled_cancel(_cancelled(), _paddle(paddle))
+    assert (refused.value.status_code, refused.value.code) == (status, code)
+    with pytest.raises(BillingError) as unanswered:
+        await resume_scheduled_cancel(_cancelled(), FakeBillingProvider(fail=True))
+    assert unanswered.value.code is BillingErrorCode.BILLING_PROVIDER_UNAVAILABLE
+    with pytest.raises(BillingError) as unconfigured:
+        await resume_scheduled_cancel(_cancelled(), NoProviderClient())
+    assert unconfigured.value.code is BillingErrorCode.BILLING_NOT_CONFIGURED
 
 
 # --- the way back (§14.4) ------------------------------------------------------------------

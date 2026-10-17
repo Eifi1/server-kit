@@ -1,5 +1,5 @@
 """Billing's wire shapes (``docs/billing-harmonization.md`` §3.1, §4, §6, §12.5, §14.5,
-§14.12 and §15.2.10 in ``Eifi1/ui-kit``).
+§14.12, §15.2.10 and §16 in ``Eifi1/ui-kit``).
 
 Like the other kit schemas, meant to be used as they are or SUBCLASSED: the app adds its
 fields and narrows a type. The request bodies refuse unknown fields (``extra="forbid"``): a
@@ -31,7 +31,7 @@ from eifi1_server_kit.billing.plans import (
     dimensions_over_limit,
     normalize_plan,
 )
-from eifi1_server_kit.billing.provider import PortalTarget, provider_subscription_runs
+from eifi1_server_kit.billing.provider import PortalAccess, PortalTarget, portal_access, provider_subscription_runs
 from eifi1_server_kit.billing.settings import PriceRef
 from eifi1_server_kit.billing.standing import (
     SubscriptionRow,
@@ -44,6 +44,7 @@ from eifi1_server_kit.billing.standing import in_good_standing as _in_good_stand
 __all__ = [
     "AdminPlan",
     "BillingOverview",
+    "BillingStanding",
     "BillingStatus",
     "CheckoutAnswer",
     "CheckoutRequest",
@@ -131,6 +132,16 @@ class BillingOverview(BaseModel):
     #: two routes never disagree. False by default: an app's own overview built without
     #: :meth:`from_row` keeps building.
     switching: bool = False
+    #: Who may open the portal (§16.2, §16.3): ``open``, or ``buyer_only`` — the row stores
+    #: a buyer (kastlan's ``provider_payer_user_id``) and the viewer isn't them, so "Payment
+    #: and invoices" becomes a caption naming :attr:`buyer_name` and "Cancel subscription"
+    #: cancels in the app (``POST /billing/cancel``). :func:`~eifi1_server_kit.billing.portal_access`.
+    portal: PortalAccess = "open"
+    #: The buyer's display name for that caption, only with ``buyer_only`` (§16.3, §16.7
+    #: G): the app looks it up — kastlan: first and last name — and passes ``None`` once
+    #: the buyer is gone or no longer a member; the caption then names "the admin who
+    #: bought the subscription".
+    buyer_name: str | None = None
 
     @classmethod
     def from_row(
@@ -144,6 +155,8 @@ class BillingOverview(BaseModel):
         retry_grace: timedelta | None = None,
         launch: datetime | None = None,
         price_ref: Callable[[str], PriceRef | None] | None = None,
+        viewer_is_buyer: bool | None = None,
+        buyer_name: str | None = None,
     ) -> Self:
         """The overview of ``row``, whose plan is ``plan`` (the catalogue's entry for
         ``row.plan_code`` — another plan is a :class:`ValueError`), with the payer's
@@ -157,7 +170,12 @@ class BillingOverview(BaseModel):
         ``provider_price_id`` as a plan, interval and currency.
 
         ``switching`` is :func:`~eifi1_server_kit.billing.provider_subscription_runs`
-        ``(row, now)``."""
+        ``(row, now)``.
+
+        Pass ``viewer_is_buyer`` where the row stores a buyer (kastlan: ``row.
+        provider_payer_user_id == user.id``) and the buyer's ``buyer_name`` (§16.3):
+        ``portal`` is :func:`~eifi1_server_kit.billing.portal_access`, and ``buyer_name``
+        is kept only with ``buyer_only``. A person-payer app passes neither: ``open``."""
         if normalize_plan(row.plan_code) != plan.code:
             raise ValueError(f"the row's plan is {row.plan_code!r}, not {plan.code!r}")
         ref = price_ref(row.provider_price_id) if price_ref is not None and row.provider_price_id else None
@@ -176,6 +194,63 @@ class BillingOverview(BaseModel):
             at_provider=row.provider_customer_id is not None,
             paid=None if ref is None else PaidPrice(plan=ref.plan, interval=ref.interval, currency=ref.currency),
             switching=provider_subscription_runs(row, now),
+            **_portal_fields(row, viewer_is_buyer, buyer_name),
+        )
+
+
+def _portal_fields(row: SubscriptionRow, viewer_is_buyer: bool | None, buyer_name: str | None) -> _PortalFields:
+    access = portal_access(row, viewer_is_buyer=viewer_is_buyer)
+    return {"portal": access, "buyer_name": buyer_name if access == "buyer_only" else None}
+
+
+class _PortalFields(TypedDict):
+    portal: PortalAccess
+    buyer_name: str | None
+
+
+class BillingStanding(BaseModel):
+    """The payer's standing as every member's write lock and banners read it (§3.3,
+    §12.5, §16.7 A) — ui-kit's ``BillingStanding`` — with the portal's ``portal`` and
+    ``buyer_name`` as the overview has them. For an app whose ``GET /billing/status``
+    carries the standing beside ``billing_enabled`` (kastlan's ``standing``), where the
+    payment-failed banner reads it: with ``buyer_only`` the banner names the buyer and
+    shows no button, so no request ends in the 403. Never the provider's details: those
+    are the overview's. Build it with :meth:`from_row`::
+
+        class AppBillingStatus(BillingStatus):
+            standing: BillingStanding | None = None          # null while off, and for a demo
+    """
+
+    status: SubscriptionStatus
+    #: :func:`~eifi1_server_kit.billing.in_good_standing` now: false = read-only (§3.3).
+    in_good_standing: bool
+    trial_ends_at: UtcDateTime | None = None
+    #: :func:`~eifi1_server_kit.billing.effective_comped_until`, as on the overview.
+    comped_until: UtcDateTime | None = None
+    #: As :attr:`BillingOverview.portal`.
+    portal: PortalAccess = "open"
+    #: As :attr:`BillingOverview.buyer_name`: only with ``buyer_only``.
+    buyer_name: str | None = None
+
+    @classmethod
+    def from_row(
+        cls,
+        row: SubscriptionRow,
+        *,
+        now: datetime,
+        retry_grace: timedelta | None = None,
+        launch: datetime | None = None,
+        viewer_is_buyer: bool | None = None,
+        buyer_name: str | None = None,
+    ) -> Self:
+        """The standing of ``row`` as of ``now``, with :meth:`BillingOverview.from_row`'s
+        ``retry_grace``, ``launch``, ``viewer_is_buyer`` and ``buyer_name``."""
+        return cls(
+            status=SubscriptionStatus(row.status),
+            in_good_standing=_in_good_standing(row, now, retry_grace=retry_grace, launch=launch),
+            trial_ends_at=row.trial_ends_at,
+            comped_until=effective_comped_until(row, launch),
+            **_portal_fields(row, viewer_is_buyer, buyer_name),
         )
 
 
@@ -412,12 +487,15 @@ class PortalRequest(BaseModel):
     """``POST /billing/portal {target?}`` (§14.5), an optional body: where the portal link
     opens — ``overview`` ("Payment and invoices", the default), ``cancel`` ("Cancel
     subscription", the subscription's cancel link, §12.26) or ``payment_method`` (the
-    payment-failed banner). The link is never stored::
+    payment-failed banner). The link is never stored. Every target is for the buyer only
+    where the row stores one (§16.2): :func:`~eifi1_server_kit.billing.require_portal_access`
+    first, a no-op for a person-payer app::
 
         @router.post("/billing/portal", response_model=CheckoutAnswer)
-        async def portal(body: PortalRequest | None = None, payer=Depends(current_payer)) -> CheckoutAnswer:
+        async def portal(body: PortalRequest | None = None, viewer=Depends(current_user)) -> CheckoutAnswer:
             settings.require_billing_enabled()
-            row = await row_of(payer)
+            row = await row_of(payer_of(viewer))
+            require_portal_access(row, viewer_ref=str(viewer.id))   # 403 billing_portal_buyer_only
             url = await billing_client().portal_url(
                 customer_id=row.provider_customer_id,           # None: 409 billing_not_at_provider
                 subscription_id=row.provider_subscription_id,

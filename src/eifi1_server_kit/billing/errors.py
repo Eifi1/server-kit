@@ -80,6 +80,13 @@ class BillingErrorCode(enum.StrEnum):
     BILLING_NOT_SUBSCRIBED = "billing_not_subscribed"
     #: A plan switch to the price the payer pays now (§15.2.10): 409.
     BILLING_PLAN_UNCHANGED = "billing_plan_unchanged"
+    #: A portal request by anyone but the buyer, where the row stores one (§16.2, kastlan's
+    #: ``provider_payer_user_id``): 403. Paddle's customer is a person, and every portal
+    #: target reaches the overview of all that person's subscriptions, other apps'
+    #: included. The page reads the overview's ``portal`` (``buyer_only``) and never asks,
+    #: so this answers a stale page; another admin cancels in the app
+    #: (:func:`~eifi1_server_kit.billing.cancel_at_period_end`).
+    BILLING_PORTAL_BUYER_ONLY = "billing_portal_buyer_only"
 
 
 #: Each code's status.
@@ -94,6 +101,7 @@ BILLING_ERROR_STATUS: Mapping[BillingErrorCode, int] = {
     BillingErrorCode.BILLING_PLAN_NOT_SOLD: 422,
     BillingErrorCode.BILLING_NOT_SUBSCRIBED: 409,
     BillingErrorCode.BILLING_PLAN_UNCHANGED: 409,
+    BillingErrorCode.BILLING_PORTAL_BUYER_ONLY: 403,
 }
 
 #: The English ``detail`` of each code, for logs and API clients; the kit's pages show their
@@ -110,6 +118,7 @@ BILLING_ERROR_DETAIL: Mapping[BillingErrorCode, str] = {
     BillingErrorCode.BILLING_PLAN_NOT_SOLD: "This plan is not sold that way",
     BillingErrorCode.BILLING_NOT_SUBSCRIBED: "No subscription is running: check out instead",
     BillingErrorCode.BILLING_PLAN_UNCHANGED: "This is the plan you pay for now",
+    BillingErrorCode.BILLING_PORTAL_BUYER_ONLY: "Only the subscription's buyer opens the provider's portal",
 }
 
 

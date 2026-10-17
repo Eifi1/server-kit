@@ -29,6 +29,15 @@ class Row:
     updated_from_event_at: datetime | None = None
 
 
+@dataclass
+class BuyerRow(Row):
+    """kastlan's row (§15.2.11): the buying admin's user id, an integer column without a
+    foreign key, beside §3.2's."""
+
+    provider_payer_user_id: int | None = None
+
+
 def _satisfies_the_protocol(row: Row) -> SubscriptionRow:
-    """mypy checks that the dataclass is a :class:`SubscriptionRow`."""
+    """mypy checks that the dataclass is a :class:`SubscriptionRow` — and so is kastlan's
+    row with its buyer (:class:`BuyerRow`, a ``Row``)."""
     return row
