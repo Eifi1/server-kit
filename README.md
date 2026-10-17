@@ -642,6 +642,7 @@ explicit flag, the app's proof of a local run, and production off.
 class Settings(BaseSettings, DevSwitchSettings):  # KASTLAN_DEV_SWITCH_ENABLED=true in .env only
     model_config = SettingsConfigDict(env_prefix="KASTLAN_")
 
+
 def dev_switch_on(settings: Settings) -> bool:
     return dev_switch_enabled(
         flag=settings.dev_switch_enabled,
@@ -651,18 +652,24 @@ def dev_switch_on(settings: Settings) -> bool:
         production=settings.environment == "production",
     )
 
+
 def create_app(settings: Settings) -> FastAPI:
     assert_dev_switch_safe(flag=settings.dev_switch_enabled, production=settings.environment == "production")
     ...
     if dev_switch_on(settings):  # otherwise absent: 404
         app.include_router(dev_router)
 
-dev_router = APIRouter(include_in_schema=False, dependencies=[Depends(require_dev_switch(lambda: dev_switch_on(get_settings())))])
+
+dev_router = APIRouter(
+    include_in_schema=False, dependencies=[Depends(require_dev_switch(lambda: dev_switch_on(get_settings())))]
+)
+
 
 @dev_router.post(DEV_SWITCH_PATH)
 async def dev_switch(body: DevSwitchRequest, user=Depends(get_current_user), session=Depends(db)) -> DevSwitchAnswer:
     body = validate_dev_switch(body, roles=[r.value for r in Role], plans=PLANS)  # signed in, NOT require_admin
     ...  # the app's writes, below; then commit
+
 
 @dev_router.get(DEV_SWITCH_PATH)
 async def dev_switch_state(user=Depends(get_current_user)) -> DevSwitchAnswer:
