@@ -120,7 +120,7 @@ def install_sync_stamping(
     carry the same knowledge, so ``knowledge`` alone does not order them. A pull that needs
     parents first orders within a value itself — :func:`~eifi1_server_kit.sync.page_order`'s
     ``(knowledge, id)`` per entity, entities in the app's order (kastlan, moving from its
-    own per-row bump, sorts by ``(knowledge, entity order)``; 0.15.1).
+    own per-row bump, sorts by ``(knowledge, entity order)``; 0.16.0).
 
     **A synced model without an ``updated_at`` column** (kastlan's handover children) gets
     its knowledge and no stamp, checked on the mapper; it then has no LWW stamp to compare

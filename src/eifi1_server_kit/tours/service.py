@@ -55,7 +55,7 @@ class TourProgressService:
         ``tour_id``, ``completed_at`` an ISO instant in UTC (a naive one read as UTC) or ``None`` for ``""``.
 
         The instant is spelled as ``GET /tours/progress`` answers it — ``2026-10-18T07:00:00Z``,
-        not ``isoformat()``'s ``+00:00`` — so one record has one spelling (0.15.1)."""
+        not ``isoformat()``'s ``+00:00`` — so one record has one spelling (0.16.0)."""
         rows = await self.store.completions(user_id)
         return [
             {"tour_id": tour_id, "completed_at": None if at is None else _INSTANT.dump_python(as_utc(at), mode="json")}

@@ -67,7 +67,8 @@ class SyncChange(BaseModel):
     op: Literal["upsert", "delete"]
     data: dict[str, Any] | None = None
     #: The device's edit time (D2), the LWW stamp of an upsert; ``None`` (an older client)
-    #: falls back to server-now for one release. A future stamp is clamped
+    #: falls back to server-now for one release. Shifted by the push's clock skew
+    #: (:attr:`SyncRequest.client_now`), then a future stamp is clamped
     #: (:func:`~eifi1_server_kit.sync.clamp_stamp`).
     updated_at: _EditTime | None = None
     #: The row's server cursor, on replies; ignored on requests.
@@ -114,6 +115,12 @@ class SyncRequest(BaseModel):
     paged: bool = False
     #: Where the previous page stopped; ``None`` starts a fresh walk.
     page_cursor: SyncPageCursor | None = None
+    #: The device's clock when it SENDS this push (0.16.0), spelt as ``updated_at``. The
+    #: server corrects every change's stamp by its own now minus this
+    #: (:func:`~eifi1_server_kit.sync.clock_skew`), so a slow or fast device clock neither
+    #: loses nor wins conflicts it should not. Read it fresh for every request, retries
+    #: included. ``None`` (an older client): no correction, the clamp alone.
+    client_now: _EditTime | None = None
 
 
 class SyncRefusal(BaseModel):

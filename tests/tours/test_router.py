@@ -185,7 +185,7 @@ async def test_the_service_exports_the_accounts_rows(store: SpyStore) -> None:
 
 async def test_the_export_spells_an_instant_as_the_wire_does(client: Sign) -> None:
     """One record, one spelling: the export's ``completed_at`` is the ``GET``'s string
-    (``Z``, not ``+00:00``), fractions and other zones included (0.15.1, KS's adoption)."""
+    (``Z``, not ``+00:00``), fractions and other zones included (0.16.0, KS's adoption)."""
     rows = {
         "a": datetime(2026, 10, 18, 7, 0, 0, 120000, tzinfo=UTC),
         "b": datetime(2026, 10, 18, 9, 30, tzinfo=timezone(timedelta(hours=2))),

@@ -1082,7 +1082,7 @@ the mail with its link — development only; kastlan passes `logging.WARNING`.
 backend, sent_at)` → `HtmlMailMessage` in the admin's language (seven, through `pick_entry`'s
 fallback), naming the app, the transport and the time in UTC — never the recipient, so
 neither the mail nor the route's log line carries the address; `sent_at` must be aware.
-`HtmlMailMessage` (0.15.1) is a `MailMessage` whose `html` is a `str`, so an app whose own
+`HtmlMailMessage` (0.16.0) is a `MailMessage` whose `html` is a `str`, so an app whose own
 send takes `html: str` passes `message.html` as it is, no `or ""`.
 `MAIL_TEST_KIND` (`mail_test`) is its `kind` and metric label, `MAIL_TEST_LIMIT` (3 per 10
 minutes per account) the app's limiter's budget, `MailTestResult` `{sent, mail_backend}` the
@@ -1240,7 +1240,7 @@ install_contract_error_handlers(app)
 ```
 
 The export's `completed_at` is spelled as the routes answer it, `2026-10-18T07:00:00Z`
-(0.15.1; 0.15.0 wrote `isoformat()`'s `+00:00`). **A dead-code check** (vulture, as in
+(0.16.0; 0.15.0 wrote `isoformat()`'s `+00:00`). **A dead-code check** (vulture, as in
 Kurvenschmiede) sees the store's `completions` called only by the kit's service through the
 port: baseline it, as the feedback and translation-review store methods already are.
 
@@ -1255,8 +1255,8 @@ loads without it.
 
 | Area | Names |
 |---|---|
-| Wire shapes | `SyncChange` (`entity`, `id`: a UUID or text of 1–200 characters, `op`, `data`, the device's edit time `updated_at`, `knowledge`), `SyncRequest` (`scope`, `last_knowledge`, `changes`, `refusals`, `paged`, `page_cursor`), `SyncResponse` (`server_knowledge`, `changes`, `refused`, the per-change `rejections`, `page_cursor`), `SyncRefusal` (the WHOLE push; moved from billing, which re-exports it), `SyncRejection(change_id, code, detail)` with `SYNC_REJECTED` / `SYNC_PLAN_LIMIT`, `SyncPageCursor`; subclass them (no model forbids extra fields; `id` and `changes` narrow covariantly). A request without `refusals` or a change without `updated_at` still parses, for one release |
-| The merge | `merge_lww(existing_updated, incoming_updated, *, now)` (whole-row LWW on the device's edit time; equal keeps the incoming row; a row without a stamp loses), `merge_delete(…)` (always tombstones, stamped now), `clamp_stamp(stamp, *, now)` (none or a future stamp → now), `as_utc` (a naive value read as UTC) |
+| Wire shapes | `SyncChange` (`entity`, `id`: a UUID or text of 1–200 characters, `op`, `data`, the device's edit time `updated_at`, `knowledge`), `SyncRequest` (`scope`, `last_knowledge`, `changes`, `refusals`, `paged`, `page_cursor`, (0.16.0) `client_now`: the device's clock when it sends the push, spelt as `updated_at`), `SyncResponse` (`server_knowledge`, `changes`, `refused`, the per-change `rejections`, `page_cursor`), `SyncRefusal` (the WHOLE push; moved from billing, which re-exports it), `SyncRejection(change_id, code, detail)` with `SYNC_REJECTED` / `SYNC_PLAN_LIMIT`, `SyncPageCursor`; subclass them (no model forbids extra fields; `id` and `changes` narrow covariantly). A request without `refusals` or a change without `updated_at` still parses, for one release |
+| The merge | `merge_lww(existing_updated, incoming_updated, *, now, skew=timedelta(0))` (whole-row LWW on the device's edit time; equal keeps the incoming row; a row without a stamp loses), `merge_delete(…)` (always tombstones, stamped now), `clamp_stamp(stamp, *, now, skew=timedelta(0))` (the stamp shifted by `skew`, then none or a future stamp → now), `as_utc` (a naive value read as UTC); (0.16.0) the device clock's skew, `clock_skew(client_now, *, now)` once per push (`now - client_now`: a SLOW clock's edits no longer lose to a colleague's later-arriving older edit, a FAST clock's no longer win; `timedelta(0)` without `client_now`, i.e. 0.15.0's clamp alone, or within `CLOCK_SKEW_TOLERANCE` (2 s, latency); capped at `MAX_CLOCK_SKEW` (24 h), past which the clock likely changed between edit and push) and `correct_stamp(stamp, *, skew)` (saturates at the calendar's edge). It assumes the device's clock did not change between the edit and the push: `skew = clock_skew(request.client_now, now=now)`, then `merge_lww(row.updated_at, change.updated_at, now=now, skew=skew)` and store `clamp_stamp(change.updated_at, now=now, skew=skew)` |
 | The counter | `KnowledgeCounter` (`bump(session, tenant_id)` → the next value under a row lock, synchronous, inside `before_flush`; `None`: unstamped), `TenantOf` |
 | The paged pull | `begin_page`, `PageStart` (`.resume_in(index)`), `cut_page`, `page_of` (the walk over rows in memory), `cursor_at_start`, `page_order`, `is_after`, `SYNC_PAGE_LIMIT` (2000): ordered `(knowledge, id)` per entity, entities in the app's order, the window pinned at `window_end` |
 | SQLAlchemy (`sync.mixin`, the `sync` extra) | `SyncColumns` (`knowledge`, `deleted_at`, a client-owned `updated_at`); `install_sync_stamping(session_cls, *, counter, tenant_of, is_synced, now=)` (one bump per tenant per flush, so rows of one flush share a knowledge: a pull orders within it itself, entities in the app's order; a model without `updated_at` gets its knowledge only; naive columns get naive UTC); `install_tombstone_filter(session_cls, *, synced)` and `INCLUDE_TOMBSTONED` (the pull's opt-out); `tombstone(obj, *, now=)`, `bulk_tombstone(model, *where, knowledge, now)`, `bulk_restamp(…)` |

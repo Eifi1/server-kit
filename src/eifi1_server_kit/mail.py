@@ -327,7 +327,7 @@ class MailMessage:
 class HtmlMailMessage(MailMessage):
     """A :class:`MailMessage` whose ``html`` is always there, as :func:`test_mail_message`
     returns it: an app whose own send takes ``html: str`` passes ``message.html`` as it is
-    (keksdose N2, 0.15.1). Every :class:`MailMessage` rule holds; ``html`` is required."""
+    (keksdose N2, 0.16.0). Every :class:`MailMessage` rule holds; ``html`` is required."""
 
     html: str
 
