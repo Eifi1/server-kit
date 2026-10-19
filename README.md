@@ -1229,7 +1229,9 @@ ON DELETE CASCADE, `tour_id varchar(64)`, `completed_at timestamptz NULL`, prima
 from eifi1_server_kit.tours.router import TourProgressDeps, tour_progress_router
 
 app.include_router(
-    tour_progress_router(TourProgressDeps(store=tour_progress_store, current_user_id=current_user_id, guards=(refuse_demo,))),
+    tour_progress_router(
+        TourProgressDeps(store=tour_progress_store, current_user_id=current_user_id, guards=(refuse_demo,))
+    ),
     prefix="/api/v1",
 )
 install_contract_error_handlers(app)
