@@ -11,9 +11,8 @@ The account is always the session's own: no admin route reads or writes someone 
 
 from __future__ import annotations
 
-from datetime import UTC
-
 from eifi1_server_kit.clock import Clock, utc_now
+from eifi1_server_kit.sync.merge import as_utc
 from eifi1_server_kit.tours.ports import TourProgressStore
 from eifi1_server_kit.tours.rules import merge_completions, progress_response
 from eifi1_server_kit.tours.schemas import TourProgressPatch, TourProgressResponse
@@ -46,9 +45,9 @@ class TourProgressService:
 
     async def export(self, user_id: int) -> list[dict[str, str | None]]:
         """The account export's rows (§10.2.9): ``[{tour_id, completed_at}]`` by
-        ``tour_id``, ``completed_at`` an ISO instant in UTC or ``None`` for ``""``."""
+        ``tour_id``, ``completed_at`` an ISO instant in UTC (a naive one read as UTC) or ``None`` for ``""``."""
         rows = await self.store.completions(user_id)
         return [
-            {"tour_id": tour_id, "completed_at": None if at is None else at.astimezone(UTC).isoformat()}
+            {"tour_id": tour_id, "completed_at": None if at is None else as_utc(at).isoformat()}
             for tour_id, at in sorted(rows.items())
         ]

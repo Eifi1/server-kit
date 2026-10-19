@@ -15,7 +15,11 @@
  * Reads git's pre-push lines from stdin (`<local ref> <local sha> <remote ref> <remote
  * sha>`). The range is `<remote sha>..<local sha>`; for a branch the remote doesn't have
  * yet, everything not already on the remote's default branch (`<remote>/HEAD`, else
- * `<remote>/main`, else `<remote>/master`), or just the tip when none is known. A deletion
+ * `<remote>/main`, else `<remote>/master`), or just the tip when none is known. A remote sha
+ * this clone doesn't have (someone else pushed, not fetched) can't bound the range, so the
+ * check falls back to everything not on the default branch; with no default branch known
+ * either, it fails CLOSED and asks for a `git fetch` (an unfetched range could hide earlier
+ * bad commits, keksdose's own hook blocked there too). A deletion
  * (local sha all zeros) checks nothing. The optional argument is the remote name (git
  * passes it to the hook as $1); it defaults to `origin`. Exit 1 with the offending commits
  * listed.
@@ -63,6 +67,16 @@ function rangeOf(localSha, remoteSha, remote = "origin") {
   }
 }
 
+/** A remote sha this clone doesn't have, with no default branch to bound the range. */
+class UnknownRemote extends Error {
+  constructor(sha) {
+    super(
+      `The remote's ${sha.slice(0, 8)} is not in this clone and no default branch is known, so the ` +
+        "pushed range can't be checked. Run `git fetch` and push again.",
+    );
+  }
+}
+
 /** Every non-merge commit the pre-push input would send, deduplicated, in order. */
 function pushedCommits(input, remote = "origin") {
   const shas = new Set();
@@ -75,8 +89,11 @@ function pushedCommits(input, remote = "origin") {
     try {
       list = git("rev-list", "--no-merges", ...range.split(" "));
     } catch {
-      // The remote sha is unknown locally (someone else pushed; not fetched): the tip only.
-      list = git("rev-list", "--no-merges", "-1", localSha);
+      // The remote sha is unknown locally (someone else pushed; not fetched): everything
+      // not on the default branch, or fail closed when that isn't known either.
+      const base = defaultBranch(remote);
+      if (!base) throw new UnknownRemote(remoteSha);
+      list = git("rev-list", "--no-merges", `${base}..${localSha}`);
     }
     for (const sha of list.split("\n").filter(Boolean)) shas.add(sha);
   }
@@ -93,11 +110,18 @@ function check(input, remote = "origin") {
   return failures;
 }
 
-module.exports = { defaultBranch, rangeOf, pushedCommits, check };
+module.exports = { defaultBranch, rangeOf, pushedCommits, check, UnknownRemote };
 
 if (require.main === module) {
   const remote = process.argv[2] || "origin";
-  const failures = check(require("fs").readFileSync(0, "utf8"), remote);
+  let failures;
+  try {
+    failures = check(require("fs").readFileSync(0, "utf8"), remote);
+  } catch (error) {
+    if (!(error instanceof UnknownRemote)) throw error;
+    console.error(`✖ ${error.message}`);
+    process.exit(1);
+  }
   for (const { sha, subject, error } of failures) {
     console.error(`✖ ${sha.slice(0, 8)} ${subject}`);
     console.error(`  ${error.replace(/\n/g, "\n  ")}`);

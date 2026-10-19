@@ -6,6 +6,7 @@ once against its own adapters, and ``check_round_trip`` over its own client.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
@@ -122,6 +123,52 @@ async def test_check_repository_fails_on_a_crash_lookup_that_keeps_settled_rows(
 
     with pytest.raises(AssertionError, match="open_crash: not a DONE row"):
         await _check(KeepsDone(emails=EMAILS, policy=POLICY))
+
+
+async def test_check_repository_checks_count_by_status_with_a_demo_account() -> None:
+    """Admin §9.5: a demo's report out, a crash and an erased author's report in."""
+    demo = actor(id=9, email="demo@example.test", is_demo=True)
+
+    async def check(repository: InMemoryFeedbackRepository) -> None:
+        await check_repository(
+            repository,
+            storage=InMemoryAttachmentStorage(),
+            policy=POLICY,
+            author=AUTHOR,
+            other=STRANGER,
+            demo=demo,
+        )
+
+    await check(InMemoryFeedbackRepository(emails=EMAILS, policy=POLICY, demo_authors={9}))
+
+    class CountsDemos(InMemoryFeedbackRepository):
+        async def count_by_status(self) -> Mapping[FeedbackStatus, int]:
+            return dict(Counter(FeedbackStatus(row.status) for row in self.rows.values()))
+
+    class DropsErased(InMemoryFeedbackRepository):
+        async def count_by_status(self) -> Mapping[FeedbackStatus, int]:
+            rows = self.rows.values()
+            return dict(Counter(FeedbackStatus(row.status) for row in rows if row.user_id not in (None, 9)))
+
+    class DropsCrashes(InMemoryFeedbackRepository):
+        async def count_by_status(self) -> Mapping[FeedbackStatus, int]:
+            rows = self.rows.values()
+            return dict(
+                Counter(FeedbackStatus(row.status) for row in rows if row.category is not FeedbackCategory.CRASH)
+            )
+
+    class CountsNothing(InMemoryFeedbackRepository):
+        async def count_by_status(self) -> Mapping[FeedbackStatus, int]:
+            return {}
+
+    for broken, message in (
+        (CountsNothing, "count_by_status: the inbox's rows by status"),
+        (DropsCrashes, "count_by_status: a crash report counts"),
+        (DropsErased, "count_by_status: an erased author's report counts"),
+        (CountsDemos, "count_by_status: a demo account's report is left out"),
+    ):
+        with pytest.raises(AssertionError, match=message):
+            await check(broken(emails=EMAILS, policy=POLICY, demo_authors={9}))
 
 
 async def test_the_checks_fail_on_a_storage_whose_key_the_policy_refuses() -> None:

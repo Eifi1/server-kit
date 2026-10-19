@@ -5,6 +5,10 @@ Layer 2. Each app implements :class:`TourProgressStore` over its own table — `
 NULL``, primary key ``(user_id, tour_id)`` — on the request's session. No ``company_id``:
 the progress is the person's. The store is async and runs in the caller's transaction:
 **``write`` flushes and never commits**.
+
+A naive ``timestamp`` column works too: the kit reads a naive ``completed_at`` as UTC, and
+its upserts are aware UTC, so such a store writes ``value.replace(tzinfo=None)`` (asyncpg
+refuses an aware value for a naive parameter).
 """
 
 from __future__ import annotations

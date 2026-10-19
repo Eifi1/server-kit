@@ -11,9 +11,10 @@ taken.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import NamedTuple
 
+from eifi1_server_kit.sync.merge import as_utc
 from eifi1_server_kit.tours.errors import TOUR_PROGRESS_CONFLICT, TOUR_PROGRESS_FULL, TourProgressError
 from eifi1_server_kit.tours.schemas import TOUR_PROGRESS_LIMIT, TourProgressPatch, TourProgressResponse
 
@@ -32,9 +33,10 @@ class TourProgressMerge(NamedTuple):
 
 
 def progress_response(rows: Mapping[str, datetime | None]) -> TourProgressResponse:
-    """The wire shape of stored rows: by id, instants in UTC, ``None`` as ``""``."""
+    """The wire shape of stored rows: by id, instants in UTC (a naive one is read as UTC),
+    ``None`` as ``""``."""
     return TourProgressResponse(
-        completed={tour_id: "" if at is None else at.astimezone(UTC) for tour_id, at in sorted(rows.items())}
+        completed={tour_id: "" if at is None else as_utc(at) for tour_id, at in sorted(rows.items())}
     )
 
 
@@ -46,7 +48,10 @@ def merge_completions(
     A :class:`~eifi1_server_kit.tours.TourProgressError` ``tour_progress_conflict`` for an
     id in both ``completed`` and ``forget``, ``tour_progress_full`` for a body of more than
     :data:`~eifi1_server_kit.tours.TOUR_PROGRESS_LIMIT` entries or an account that would
-    grow past it. Only rows that change are in ``upserts``.
+    grow past it. Only rows that change are in ``upserts``, aware and in UTC.
+
+    A naive ``stored`` value or ``now`` is read as UTC (a store over ``timestamp without
+    time zone``); such a store writes ``value.replace(tzinfo=None)``.
     """
     if set(patch.completed) & set(patch.forget):
         raise TourProgressError(TOUR_PROGRESS_CONFLICT)
@@ -58,10 +63,10 @@ def merge_completions(
         del rows[tour_id]
     upserts: dict[str, datetime | None] = {}
     for tour_id, sent in patch.completed.items():
-        instant = min(sent.astimezone(UTC), now) if isinstance(sent, datetime) else None
+        instant = min(as_utc(sent), as_utc(now)) if isinstance(sent, datetime) else None
         if tour_id in rows:
             kept = rows[tour_id]
-            if instant is None or (kept is not None and kept >= instant):
+            if instant is None or (kept is not None and as_utc(kept) >= instant):
                 continue
         rows[tour_id] = upserts[tour_id] = instant
     if len(rows) > TOUR_PROGRESS_LIMIT and len(rows) > len(stored):

@@ -143,3 +143,17 @@ def test_a_naive_offset_is_converted_not_kept() -> None:
     plus_two = timezone(timedelta(hours=2))
     change = SyncChange(entity="e", id="r", op="upsert", updated_at=datetime(2026, 1, 1, 2, tzinfo=plus_two))
     assert change.updated_at == datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def test_the_ids_text_arm_is_bounded_and_stays_text_from_python() -> None:
+    """keksdose S1: the str arm has _ChangeId's bounds; a dict keeps a UUID's text as str
+    (smart union), so an app keyed on UUIDs narrows to ``id: uuid.UUID``."""
+    for bad in ("", "x" * 201):
+        with pytest.raises(ValidationError):
+            SyncChange.model_validate({"entity": "e", "id": bad, "op": "delete"})
+    assert SyncChange.model_validate({"entity": "e", "id": ROW, "op": "delete"}).id == ROW
+
+    class Narrowed(SyncChange):
+        id: uuid.UUID
+
+    assert Narrowed.model_validate({"entity": "e", "id": ROW, "op": "delete"}).id == uuid.UUID(ROW)

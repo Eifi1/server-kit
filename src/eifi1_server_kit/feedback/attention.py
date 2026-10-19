@@ -8,7 +8,15 @@ from the kit's own sets, so a status the kit adds to a set joins every app's til
 
     counts = await repository.count_by_status()
     tiles = feedback_attention(counts)
-    AdminAttention.of(feedback_open=tiles.to_triage, awaiting_verdict=tiles.awaiting_verdict, ...)
+    AdminAttention.of(
+        feedback_waiting=tiles.to_triage,
+        ...,
+        extra={"awaiting_verdict": tiles.awaiting_verdict, "released_for_work": tiles.released_for_work},
+    )
+
+``feedback_waiting`` is :class:`~eifi1_server_kit.user_admin.AdminAttention`'s own field;
+the other two tiles are ``extra`` keys, named by the app (the ones above are the kit's
+suggestion, as ui-kit's admin area reads them).
 
 Pure: no ports, no I/O.
 """
@@ -32,15 +40,18 @@ _AWAITING_VERDICT: frozenset[FeedbackStatus] = AWAITING_STATUSES - _TO_TRIAGE
 
 @dataclass(frozen=True, slots=True)
 class FeedbackAttention:
-    """The three feedback tiles (§9.5.2). An app shows the ones it has a tile for."""
+    """The three feedback tiles (§9.5.2). An app shows the ones it has a tile for:
+    ``to_triage`` as ``AdminAttention``'s ``feedback_waiting``, the other two as ``extra``
+    keys."""
 
     #: OPEN: new reports nobody has looked at.
     to_triage: int
     #: :data:`~eifi1_server_kit.feedback.AWAITING_STATUSES` without OPEN: answered, waiting
-    #: on the admin's verdict.
+    #: on the admin's verdict. An ``extra`` key (``"awaiting_verdict"``).
     awaiting_verdict: int
     #: :data:`~eifi1_server_kit.feedback.QUEUE_STATUSES`: released for work, or being
-    #: worked on (Kurvenschmiede's queue tile; its loop's queue adds OPEN on its own).
+    #: worked on (Kurvenschmiede's queue tile; its loop's queue adds OPEN on its own). An
+    #: ``extra`` key (``"released_for_work"``).
     released_for_work: int
 
 

@@ -608,6 +608,7 @@ async def check_repository(
     policy: AttachmentUrlPolicy,
     author: FeedbackActor,
     other: FeedbackActor,
+    demo: FeedbackActor | None = None,
 ) -> None:
     """Does the app's repository keep the port's promises (§2.14)? Raises
     :class:`AssertionError` naming the first that fails.
@@ -617,8 +618,13 @@ async def check_repository(
     uploads (Kurvenschmiede). Not checked: ``resolved_at`` (an app may derive it), whom
     ``get`` hides and an app's claim refusal — those are the app's own tests. It asserts
     only on the rows it adds, so it runs on the app's test database as it is.
+
+    ``count_by_status`` (0.15, admin §9.5) is checked by the change each step makes: a
+    report counts, a crash report counts, an erased author's report still counts, and with
+    ``demo`` (an existing demo account) a demo's report does not.
     """
     token = secrets.token_hex(8)
+    counted = await repository.count_by_status()
     picture = await _url(storage, policy, _png(token), "image/png", uploader=author)
     document = await _url(storage, policy, _pdf(token), "application/pdf", uploader=author)
 
@@ -643,6 +649,7 @@ async def check_repository(
     _check(list(with_files.attachment_urls or ()) == [document], "add: attachment_urls read back")
     _check(bare.screenshot_url is None, "add: no screenshot reads back as None")
     _check(bare.attachment_urls is None, "add: no files read back as None, never []")
+    counted = await _count_grew(repository, counted, 2, "count_by_status: the inbox's rows by status")
 
     # 2. get: the author's own row; a missing id is None.
     found = await repository.get(with_files.id, viewer=author)
@@ -682,9 +689,11 @@ async def check_repository(
 
     # 6. open_crash: finds an open crash by its fingerprint, and no longer once it is settled.
     fingerprint = secrets.token_hex(16)
+    counted = await repository.count_by_status()
     crash = await repository.add(
         report("[crash] Error: check", category=FeedbackCategory.CRASH, crash_fingerprint=fingerprint)
     )
+    await _count_grew(repository, counted, 1, "count_by_status: a crash report counts")
     open_crash = await repository.open_crash(fingerprint)
     _check(open_crash is not None and open_crash.id == crash.id, "open_crash: finds the open row")
     for settled in (FeedbackStatus.DONE, FeedbackStatus.WONT_DO):
@@ -708,7 +717,9 @@ async def check_repository(
     _check(all(row.user_id == author.id for row in await repository.by_author(author.id)), "by_author: only theirs")
 
     # 8. The erasure's write: no author, no files.
+    counted = await repository.count_by_status()
     await repository.apply(with_files, {"user_id": None, "screenshot_url": None, "attachment_urls": None}, actor=None)
+    await _count_grew(repository, counted, 0, "count_by_status: an erased author's report counts")
     erased = {row.id: (row, address) for row, address in await repository.inbox(None)}.get(with_files.id)
     _check(erased is not None and erased[1] is None, "apply(actor=None): the inbox pairs an erased row with None")
     _check(
@@ -719,6 +730,22 @@ async def check_repository(
         with_files.id not in {row.id for row in await repository.by_author(author.id)},
         "apply(actor=None): by_author no longer lists it",
     )
+
+    # 9. count_by_status leaves a demo account's report out.
+    if demo is not None:
+        counted = await repository.count_by_status()
+        await repository.add(report("By the demo", user_id=demo.id))
+        await _count_grew(repository, counted, 0, "count_by_status: a demo account's report is left out")
+
+
+async def _count_grew(
+    repository: FeedbackRepository[Any], before: Mapping[FeedbackStatus, int], by: int, message: str
+) -> Mapping[FeedbackStatus, int]:
+    """The OPEN count grew by ``by`` since ``before``; answers the count now."""
+    now = await repository.count_by_status()
+    status = FeedbackStatus.OPEN
+    _check(now.get(status, 0) - before.get(status, 0) == by, message)
+    return now
 
 
 #: Each hex digit to the next one, ``f`` to ``0``.

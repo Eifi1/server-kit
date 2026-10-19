@@ -7,10 +7,10 @@ import importlib
 import subprocess
 import sys
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import ForeignKey, String, create_engine, select, update
+from sqlalchemy import DateTime, ForeignKey, String, create_engine, select, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 from eifi1_server_kit import sync
@@ -266,3 +266,108 @@ def test_the_mixin_names_its_extra_without_sqlalchemy(monkeypatch: pytest.Monkey
     monkeypatch.setitem(sys.modules, "sqlalchemy", None)
     with pytest.raises(ImportError, match=r"install the kit with its sync extra, eifi1-server-kit\[sync\]"):
         importlib.import_module("eifi1_server_kit.sync.mixin")
+
+
+class Room(Base):
+    """kastlan's handover child: synced, but no ``updated_at`` column (B1)."""
+
+    __tablename__ = "rooms"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(36))
+    knowledge: Mapped[int] = mapped_column(default=0)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    name: Mapped[str] = mapped_column(String(50), default="")
+
+
+class NaiveNote(Base):
+    """kastlan's naive ``timestamp`` columns (S1)."""
+
+    __tablename__ = "naive_notes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(36))
+    knowledge: Mapped[int] = mapped_column(default=0)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(), default=None)
+    text: Mapped[str] = mapped_column(String(50), default="")
+
+
+@pytest.fixture
+def own(counter: InMemoryKnowledgeCounter) -> Iterator[sessionmaker[Session]]:
+    """A session class stamping Room and NaiveNote, as kastlan's ``isinstance(o, SyncMixin)``."""
+
+    class OwnSession(Session):
+        pass
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    remove = install_sync_stamping(
+        OwnSession,
+        counter=counter,
+        tenant_of=lambda obj: getattr(obj, "tenant_id", None),
+        is_synced=lambda obj: isinstance(obj, (Room, NaiveNote)),
+        now=lambda: NOW,
+    )
+    yield sessionmaker(engine, class_=OwnSession, expire_on_commit=False)
+    remove()
+    engine.dispose()
+
+
+def test_a_model_without_updated_at_gets_its_knowledge_and_no_stamp(own: sessionmaker[Session]) -> None:
+    with own() as session:
+        session.add(Room(id="r1", tenant_id="t1"))
+        session.commit()
+        room = session.get(Room, "r1")
+        assert room is not None and room.knowledge == 1 and not hasattr(room, "updated_at")
+        room.name = "Kitchen"
+        session.commit()
+        assert room.knowledge == 2
+        tombstone(room, now=EDITED)
+        assert room.deleted_at == EDITED and not hasattr(room, "updated_at")
+        session.commit()
+        assert room.knowledge == 3
+
+
+def test_a_naive_store_gets_naive_utc(own: sessionmaker[Session]) -> None:
+    berlin = timezone(timedelta(hours=2))
+    with own() as session:
+        session.add(NaiveNote(id="n1", tenant_id="t1"))
+        session.add(NaiveNote(id="n2", tenant_id="t1", updated_at=EDITED.astimezone(berlin)))
+        session.commit()
+        n1, n2 = session.get(NaiveNote, "n1"), session.get(NaiveNote, "n2")
+        assert n1 is not None and n2 is not None
+        assert n1.updated_at == NOW.replace(tzinfo=None)
+        assert n2.updated_at == EDITED.replace(tzinfo=None)
+        # A loaded naive stamp is left as it is; an aware one written by the apply path is fitted.
+        n1.text = "rest"
+        n2.updated_at = sync.clamp_stamp(EDITED + timedelta(hours=1), now=NOW)
+        session.commit()
+        assert n1.updated_at == NOW.replace(tzinfo=None)
+        assert n2.updated_at == (EDITED + timedelta(hours=1)).replace(tzinfo=None)
+        tombstone(n1, now=EDITED.astimezone(berlin))
+        assert n1.deleted_at == n1.updated_at == EDITED.replace(tzinfo=None)
+        tombstone(n2)
+        assert n2.deleted_at is not None and n2.deleted_at.tzinfo is None
+        session.commit()
+
+
+def test_bulk_statements_fit_the_columns(own: sessionmaker[Session]) -> None:
+    with own() as session:
+        session.add_all([Room(id="r1", tenant_id="t1"), NaiveNote(id="n1", tenant_id="t1")])
+        session.commit()
+        session.execute(bulk_tombstone(Room, Room.id == "r1", knowledge=7, now=EDITED))
+        session.execute(bulk_restamp(NaiveNote, NaiveNote.id == "n1", values={"text": "x"}, knowledge=7, now=EDITED))
+        session.commit()
+        session.expire_all()
+        room, note = session.get(Room, "r1"), session.get(NaiveNote, "n1")
+        assert room is not None and room.knowledge == 7 and _naive_utc(room.deleted_at) == EDITED
+        assert note is not None and note.updated_at == EDITED.replace(tzinfo=None) and note.knowledge == 7
+
+
+def test_tombstone_on_an_unmapped_object_sets_both() -> None:
+    class Loose:
+        deleted_at: datetime | None = None
+        updated_at: datetime | None = None
+
+    loose = Loose()
+    tombstone(loose, now=EDITED)
+    assert loose.deleted_at == loose.updated_at == EDITED

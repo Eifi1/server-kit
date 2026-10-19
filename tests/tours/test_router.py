@@ -7,6 +7,7 @@ No ``from __future__ import annotations``: the app's dependencies below are read
 FastAPI, as an app's would be.
 """
 
+import time
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
@@ -202,3 +203,14 @@ async def test_the_store_is_resolved_per_request(store: SpyStore) -> None:
         await made.get(URL, headers={"X-User": "ada"})
         await made.get(URL, headers={"X-User": "ada"})
     assert seen == [1, 1]
+
+
+async def test_a_naive_store_exports_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A naive ``completed_at`` is UTC, never the server's local zone (S1)."""
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    time.tzset()
+    service = TourProgressService(InMemoryTourProgressStore({1: {"intro": datetime(2026, 10, 1, 8, 0)}}))
+    assert await service.export(1) == [{"tour_id": "intro", "completed_at": "2026-10-01T08:00:00+00:00"}]
+    assert (await service.progress(1)).completed == {"intro": datetime(2026, 10, 1, 8, 0, tzinfo=UTC)}
+    monkeypatch.undo()
+    time.tzset()

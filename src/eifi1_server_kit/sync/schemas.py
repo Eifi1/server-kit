@@ -60,8 +60,10 @@ class SyncChange(BaseModel):
 
     entity: str
     #: The client-minted id of the row (keksdose ``id``, kastlan ``sync_uuid``): a UUID or
-    #: its text; an app narrows it.
-    id: uuid.UUID | str
+    #: text of 1-200 characters. The union is smart: JSON (``model_validate_json``) gives a
+    #: ``UUID`` for a UUID's text, a Python dict (``model_validate``) keeps it a ``str``. An
+    #: app whose lookups key on UUIDs (keksdose) narrows to ``id: uuid.UUID``.
+    id: uuid.UUID | Annotated[str, Field(min_length=1, max_length=200)]
     op: Literal["upsert", "delete"]
     data: dict[str, Any] | None = None
     #: The device's edit time (D2), the LWW stamp of an upsert; ``None`` (an older client)
@@ -130,9 +132,9 @@ class SyncRefusal(BaseModel):
             refused: SyncRefusal | None = None
 
     ``change_ids`` are the client-minted ids of the refused changes (keksdose's and
-    kastlan's ``SyncChange.id``; a UUID is written as its string). ``code`` is another
-    kit code where a change is refused for another reason (``plan_limit`` for a create past
-    the limit, after the read-only check, §12.3).
+    kastlan's ``SyncChange.id``; a UUID is written as its string). ``code`` stays
+    ``billing_read_only``: a create past the plan's limit is a per-change
+    :class:`SyncRejection` with :data:`SYNC_PLAN_LIMIT`, never this refusal.
 
     Since 0.15 it lives in :mod:`eifi1_server_kit.sync` (local-first §1.6) and
     :mod:`eifi1_server_kit.billing` re-exports the same class. It is ONE refusal for the

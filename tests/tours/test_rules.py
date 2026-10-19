@@ -150,3 +150,15 @@ def test_more_than_500_per_account_is_full() -> None:
     # An account already past it (written by hand) can still forget.
     over = {**stored, "extra": None}
     assert merge_completions(over, patch(forget=["extra"]), now=NOW).deletes == ("extra",)
+
+
+def test_a_naive_store_and_clock_are_read_as_utc() -> None:
+    """kastlan's naive ``timestamp`` columns and naive clock (S1): no TypeError, naive is UTC."""
+    naive_now = NOW.replace(tzinfo=None)
+    merged = merge_completions(
+        {"kept": LATER.replace(tzinfo=None), "older": EARLIER.replace(tzinfo=None)},
+        patch(completed={"kept": iso(EARLIER), "older": iso(LATER), "future": iso(NOW + timedelta(days=1))}),
+        now=naive_now,
+    )
+    assert merged.upserts == {"older": LATER, "future": NOW}
+    assert merged.answer.completed["kept"] == LATER
