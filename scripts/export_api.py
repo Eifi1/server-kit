@@ -96,6 +96,8 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("eifi1_server_kit.translation_review.router", "docs/server-services-harmonization.md", "§6.2"),
     # The showcase reviews translations across origins: the review contract's routes.
     ("eifi1_server_kit.cors", "docs/i18n-harmonization.md", "§2"),
+    # Local-first sync, the server half (0.15): keksdose's /sync protocol, shared with kastlan.
+    ("eifi1_server_kit.sync", "docs/local-first-harmonization.md", "§1.5, §1.6"),
 )
 
 Json = dict[str, Any]

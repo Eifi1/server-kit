@@ -11,15 +11,13 @@ float: a plan's prices are integer minor units (§4), formatted by the kit's
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from typing import Annotated, Self, TypedDict
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, with_config
+from pydantic import AfterValidator, BaseModel, ConfigDict, with_config
 
 from eifi1_server_kit.auth.schemas import UtcDateTime
-from eifi1_server_kit.billing.errors import BILLING_ERROR_DETAIL, BillingErrorCode
 from eifi1_server_kit.billing.plans import (
     BillingCurrency,
     BillingInterval,
@@ -40,6 +38,9 @@ from eifi1_server_kit.billing.standing import (
     effective_comped_until,
 )
 from eifi1_server_kit.billing.standing import in_good_standing as _in_good_standing
+
+# Moved to `sync` in 0.15 (local-first §1.6); still a billing name, the same class.
+from eifi1_server_kit.sync.schemas import SyncRefusal
 
 __all__ = [
     "AdminPlan",
@@ -610,36 +611,3 @@ class PlanChangeResponse(BaseModel):
             kept_beta=kept_beta,
             comped_until=comped_until,
         )
-
-
-def _id_text(value: object) -> object:
-    return str(value) if isinstance(value, uuid.UUID) else value
-
-
-_ChangeId = Annotated[str, BeforeValidator(_id_text), Field(min_length=1, max_length=200)]
-
-
-class SyncRefusal(BaseModel):
-    """The changes a sync reply refused (§12.5): ``{code, detail, change_ids}``, on the
-    app's sync answer beside the updates it still sends.
-
-    **A 402 is not a refusal of one change.** Sync endpoints stay on the gate's allow-list;
-    inside them, a lapsed payer's changes are refused as ``billing_read_only`` and not
-    applied, and the reply still carries the updates — keksdose's E2EE gate is the
-    precedent. The client keeps the refused changes queued, as "N changes waiting for a
-    plan", and sends them after payment::
-
-        class SyncResponse(BaseModel):
-            server_knowledge: int
-            changes: list[SyncChange]
-            refused: SyncRefusal | None = None
-
-    ``change_ids`` are the client-minted ids of the refused changes (keksdose's and
-    kastlan's ``SyncChange.id``; a UUID is written as its string). ``code`` is another
-    kit code where a change is refused for another reason (``plan_limit`` for a create past
-    the limit, after the read-only check, §12.3).
-    """
-
-    code: str = BillingErrorCode.BILLING_READ_ONLY.value
-    detail: str = BILLING_ERROR_DETAIL[BillingErrorCode.BILLING_READ_ONLY]
-    change_ids: list[_ChangeId] = Field(min_length=1)

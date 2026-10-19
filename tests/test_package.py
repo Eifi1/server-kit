@@ -44,6 +44,8 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.mail",
         "eifi1_server_kit.notifications",
         "eifi1_server_kit.settings",
+        "eifi1_server_kit.sync",
+        "eifi1_server_kit.sync.testing",
         "eifi1_server_kit.tours",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.tours.testing",
