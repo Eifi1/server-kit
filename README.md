@@ -15,17 +15,21 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 §6, [`docs/billing-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/billing-harmonization.md)
 §10 with §14, [`docs/text-size-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/text-size-harmonization.md)
 §6, [`docs/notifications-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/notifications-harmonization.md)
-§4.1 and [`docs/top-bar-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/top-bar-harmonization.md)
-§2.7 with §6.1–§6.3 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
+§4.1, [`docs/top-bar-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/top-bar-harmonization.md)
+§2.7 with §6.1–§6.3, [`docs/admin-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/admin-harmonization.md)
+§9, [`docs/tours-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/tours-harmonization.md)
+§10 and [`docs/local-first-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/local-first-harmonization.md)
+§1.5–§1.6 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
 from the `server-kit-api.json` each release carries ([Developing](#developing)).
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
-  Four optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
+  Five optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
   `mail` (`httpx>=0.28`) for `mail.ResendClient` only, `billing` (`httpx>=0.28`) for
-  `billing.PaddleClient` only, and `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
-  for `feedback.router` and `translation_review.router` only. No JWT library: the kit builds and checks claims, each app
+  `billing.PaddleClient` only, `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
+  for `feedback.router`, `translation_review.router` and `tours.router` only, and `sync`
+  (`sqlalchemy>=2.0`) for `sync.mixin` only. No JWT library: the kit builds and checks claims, each app
   signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
@@ -102,7 +106,8 @@ written once (server-services §2, §4.1). The ports and the service come with
 | Service | `FeedbackService(repository, *, policy, foreign_row="forbidden", now=utc_now)`: `create`, `report_crash(…, limiter=)`, `list_mine`, `inbox`, `update`, `erase_author(user_id, identifiers)` → `ErasedFeedback(reports, keys)`; `throttle_upload(limiter, user_id)`, `upload_attachment(…)` → the URL, `download_attachment(…)` → `AttachmentDownload(data, media_type, headers)` |
 | Routes (`feedback.router`) | `FeedbackDeps(actor=, repository=, storage=, demo_guard=, admin_guard=, policy=, create_model=, update_model=, response_model=, to_response=, foreign_row=, decode_images=, require_utf8_text=, limiters=, now=)`, `feedback_router(deps, *, prefix="/feedback", tags=("feedback",))`, `app_state_limiters` |
 | Refusals | `FeedbackNotFoundError` (404 "Feedback not found"), `AttachmentNotFoundError` (404 "Attachment not found"), `FeedbackThrottledError` (429, `Retry-After`, `THROTTLED_DETAIL`, `COMMENTS_THROTTLED_DETAIL`, `VOTES_THROTTLED_DETAIL`), `FeedbackConflictError` (409) — answered by `install_contract_error_handlers` |
-| Testing (`feedback.testing`) | `InMemoryFeedbackRepository` (records each write in `writes`; `replies=` for the rework files in `urls_named_except`), `InMemoryAttachmentStorage`, `MemoryFeedbackRow`, `actor(**overrides)`, `fixed_clock(at)`; `check_repository`, `check_storage`, `check_round_trip`; `InMemoryReplyStore.notified` (reply-kind adds only) and `check_reply_store` covering both kinds and an explicit `created_at` (0.13) |
+| Testing (`feedback.testing`) | `InMemoryFeedbackRepository` (records each write in `writes`; `replies=` for the rework files in `urls_named_except`), `InMemoryAttachmentStorage`, `MemoryFeedbackRow`, `actor(**overrides)`, `fixed_clock(at)`; `check_repository`, `check_storage`, `check_round_trip`; `InMemoryReplyStore.notified` (reply-kind adds only) and `check_reply_store` covering both kinds and an explicit `created_at` (0.13); (0.15) `InMemoryFeedbackRepository.count_by_status` (`demo_authors=` left out), checked by `check_repository` |
+| Attention (0.15) | `FeedbackRepository.count_by_status()` → `{FeedbackStatus: int}` (one `GROUP BY status` in the request's scope, as `inbox`: crash reports in, demo authors out, an erased author's report in; **every app repository adds it**); `feedback_attention(counts)` → `FeedbackAttention(to_triage, awaiting_verdict, released_for_work)` — `to_triage` is `AdminAttention`'s `feedback_waiting`, the other two `extra` keys (`awaiting_verdict`, `released_for_work`) |
 | Public ports (0.11) | `FeedbackActor.role` (for the app's predicate); `NewFeedback.public` (True; False for a crash); `PublicFeedbackRow`; `FeedbackReplyRow`, `FeedbackCommentRow`; `NewFeedbackReply`, `NewFeedbackComment`; `PublicListEntry(row, votes, voted, comment_count)`; `PublicFeedbackRepository[RowT]` (`public_page(*, viewer_id, sort, status, category, q, limit, offset)` with the counts in SQL, `get_public(id)`); `FeedbackReplyStore` (`for_reports`, `add(new, *, actor)` fires `feedback_answered` for a reply only, `by_author`, `apply`); since 0.13 `FeedbackReplyRow` reads `kind` and `attachment_url`, `NewFeedbackReply` carries `kind`, `attachment_url` and an optional `created_at` (the migration's stamp), and `urls_named_except` names other reports' rework files too; `FeedbackCommentStore` (`for_report`, `counts(ids, *, include_hidden)`, `commenters`, `add(new, *, actor)` fires `feedback_comment`, `get`, `apply`, `delete`, `by_author`, `clear_hidden_by`); `FeedbackVoteStore` (`counts(ids, *, viewer_id)`, `put`, `delete`, `delete_by_author`); `PeopleLookup` (`names(ids)` → `(first, last)`, the one read of `users`). `AttachmentStorage.read` states the files predicate: the uploader, the author of a report naming the file, an admin |
 | Public service (0.11) | `FeedbackService(…, replies=None, comments=None, votes=None, people=None, public_viewer=None, public_search=True)`: `reply`, `list_public`, `get_public`, `comments`, `comment(…, limiter=)`, `hide_comment`, `delete_comment`, `vote(…, limiter=)`, `unvote(…, limiter=)`, `sees_public(actor)`; the page views `admin_view(actor, pairs)`, `author_view(actor, rows)`, `public_item(actor, entries)`, `public_view(actor, row)` (one call per store a page); `create` casts the author's vote; `erase_author` → `ErasedFeedback(…, comments, votes, replies)`; 0.13: `rework(actor, id, payload)`, `update` converts the legacy append, the views carry `kind` (and `attachment_url` for the admin and the author), `erase_author` un-names rework entries and purges their files |
 | Public testing (0.11) | `InMemoryReplyStore`, `InMemoryCommentStore`, `InMemoryVoteStore`, `InMemoryPeopleLookup` (each logs `calls`; the reply and comment stores record `added` with the actor), `MemoryReplyRow`, `MemoryCommentRow`; `check_reply_store`, `check_comment_store`, `check_vote_store`, `check_public_repository`; `assert_public_view(payload, *, policy=)` |
@@ -400,7 +405,7 @@ holds stay in the app.
 | Area | Names |
 |---|---|
 | Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` (`target_email=None` is a group: the tick alone, never `type_email`) |
-| Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, billing §6's `plan` at `acknowledge`, and §11's group words `group_create`, `group_rename`, `group_delete` (at `acknowledge`), `membership_add`, `membership_role`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
+| Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, billing §6's `plan` at `acknowledge`, and §11's group words `group_create`, `group_rename`, `group_delete` (at `acknowledge`), `membership_add`, `membership_role`, and (0.15) `group_deactivate`, `group_reactivate` (a whole company switched off and on); a team's `group_rename` detail is `{}`, a company's `{from, to}`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
 | User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, `RosterQueryError` (422), `LIKE_ESCAPE` |
 | Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, target_group_id=, target_group_name=, now=)` → the row's fields (`target_group_name` on a `group_delete` row only) (an `AdminAction`, or the app's own action kept as written); `audit_detail` (ids, roles, flags and counts only), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
 | Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
@@ -1073,6 +1078,33 @@ app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address
 domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` logs
 the mail with its link — development only; kastlan passes `logging.WARNING`.
 
+**The admin's test mail** (0.15, admin §9.2): `test_mail_message(locale, *, app_name,
+backend, sent_at)` → `MailMessage` in the admin's language (seven, through `pick_entry`'s
+fallback), naming the app, the transport and the time in UTC — never the recipient, so
+neither the mail nor the route's log line carries the address; `sent_at` must be aware.
+`MAIL_TEST_KIND` (`mail_test`) is its `kind` and metric label, `MAIL_TEST_LIMIT` (3 per 10
+minutes per account) the app's limiter's budget, `MailTestResult` `{sent, mail_backend}` the
+answer. No router: each app's `POST /admin/mail/test` (kastlan `/platform/mail/test`) is a
+few lines over its own transport. **Await the app's own send and return its bool — never an
+after-commit hook**, which would answer before anything was sent:
+
+```python
+from eifi1_server_kit.mail import MAIL_TEST_KIND, MailTestResult, test_mail_message
+
+
+@router.post("/admin/mail/test", response_model=MailTestResult, dependencies=[Depends(mail_test_limit)])
+async def send_test_mail(admin: User = Depends(require_admin)) -> MailTestResult:
+    backend = settings.mail_backend  # what GET /admin/users reports as mail_backend
+    message = test_mail_message(admin.locale, app_name="Kurvenschmiede", backend=backend, sent_at=utc_now())
+    sent = await mailer.send(admin.email, message, kind=MAIL_TEST_KIND)
+    return MailTestResult(sent=sent, mail_backend=backend)
+```
+
+**The card reads `mail_backend` before `sent`**: a console transport answers `True`
+although nothing left the server (`MAIL_BACKEND_CONSOLE`), so ui-kit's `MailTestCard` says
+"nothing was sent" there whatever `sent` is. A provider's error stays in the server log,
+never in the answer.
+
 **A notification mail** (notifications §3.6) is sent under its type's id as `kind`
 (`share_granted`) and carries RFC 8058's one-click unsubscribe. `MailUnsubscribe(label,
 page, one_click)` is its way out: `label` the footer line in the recipient's language,
@@ -1175,16 +1207,67 @@ existing signing secret, not stored, never expiring; it names one account and on
 and can only turn that e-mail off. A bad token is a 400; a GET never unsubscribes. The
 mail half is `mail.MailUnsubscribe`.
 
+### `eifi1_server_kit.tours`
+
+Tour progress on the account (0.15, tours contract §10): ui-kit's `useTourProgress` with an
+`account` loads and saves the record here, and the device's record becomes its cache. Layer 1
+and layer 2 in one package; the routes are `eifi1_server_kit.tours.router` (the `fastapi`
+extra), the fake `eifi1_server_kit.tours.testing`. The table (`tour_completions`: `user_id` FK
+ON DELETE CASCADE, `tour_id varchar(64)`, `completed_at timestamptz NULL`, primary key
+`(user_id, tour_id)`; no `company_id`) and its migration stay in the app.
+
+| Area | Names |
+|---|---|
+| Wire shapes | `TourProgressResponse` `{completed: {[id]: ISO \| ""}}` (UTC; `""` is a completion with no date), `TourProgressPatch` `{completed?: {[id]: ISO \| ""}, forget?: [id]}` (`extra="forbid"`; an instant without a zone is a 422), `TourId`, `TourInstant`, `TOUR_ID_PATTERN`, `TOUR_PROGRESS_LIMIT` (500 per body and per account) |
+| The merge | `merge_completions(stored, patch, *, now)` → `TourProgressMerge(upserts, deletes, answer)`: per tour the later completion wins, a future one is clamped to `now`, a dated one beats `""`, `forget` deletes ("Mark as not done"); `progress_response(rows)`; a naive stored value is read as UTC |
+| Refusals | `TourProgressError` (422, `code`: `TOUR_PROGRESS_CONFLICT` `tour_progress_conflict` for an id in both lists, `TOUR_PROGRESS_FULL` `tour_progress_full`), `TourProgressErrorCode` — answered by `install_contract_error_handlers` |
+| Port and service | `TourProgressStore` (`completions(user_id)` → `{tour_id: completed_at \| None}`, `write(user_id, upserts, deletes)`: flushes, never commits; a naive column writes `value.replace(tzinfo=None)`); `TourProgressService(store, *, now=utc_now)`: `progress`, `update` (one write, last, only when something changed), `export` → `[{tour_id, completed_at}]` under `TOUR_PROGRESS_EXPORT_KEY` (`tour_progress`) in the account export |
+| Routes (`tours.router`) | `TourProgressDeps(store=, current_user_id=, guards=(), now=)`, `tour_progress_router(deps, *, prefix="/tours", tags=("tours",))`: `GET /tours/progress`, `PATCH /tours/progress`, both the whole record; the guards (the demo refusal, the limiter, CSRF) run first; the account is the session's own, no route takes a user id |
+| Testing (`tours.testing`) | `InMemoryTourProgressStore(rows=None)` (`rows[user_id][tour_id]`; `reads`, and `writes` as `(user_id, upserts, deletes)`, so a test sees a refusal wrote nothing) |
+
+```python
+from eifi1_server_kit.tours.router import TourProgressDeps, tour_progress_router
+
+app.include_router(
+    tour_progress_router(TourProgressDeps(store=tour_progress_store, current_user_id=current_user_id, guards=(refuse_demo,))),
+    prefix="/api/v1",
+)
+install_contract_error_handlers(app)
+```
+
+### `eifi1_server_kit.sync`
+
+Local-first sync, the server half (0.15, local-first contract §1.5 D1, D2, D5 and §1.6):
+keksdose's `/sync` protocol, shared with kastlan. The routes, the entity registries, tenancy
+and RLS, E2EE, billing's refusals, unique-key merges and revival rules, and kastlan's scopes
+stay in the app. Everything but `sync.mixin` is pure; the mixin needs the **`sync` extra**
+(`eifi1-server-kit[sync]`, `sqlalchemy>=2.0`) and is imported lazily, so `eifi1_server_kit.sync`
+loads without it.
+
+| Area | Names |
+|---|---|
+| Wire shapes | `SyncChange` (`entity`, `id`: a UUID or text of 1–200 characters, `op`, `data`, the device's edit time `updated_at`, `knowledge`), `SyncRequest` (`scope`, `last_knowledge`, `changes`, `refusals`, `paged`, `page_cursor`), `SyncResponse` (`server_knowledge`, `changes`, `refused`, the per-change `rejections`, `page_cursor`), `SyncRefusal` (the WHOLE push; moved from billing, which re-exports it), `SyncRejection(change_id, code, detail)` with `SYNC_REJECTED` / `SYNC_PLAN_LIMIT`, `SyncPageCursor`; subclass them (no model forbids extra fields; `id` and `changes` narrow covariantly). A request without `refusals` or a change without `updated_at` still parses, for one release |
+| The merge | `merge_lww(existing_updated, incoming_updated, *, now)` (whole-row LWW on the device's edit time; equal keeps the incoming row; a row without a stamp loses), `merge_delete(…)` (always tombstones, stamped now), `clamp_stamp(stamp, *, now)` (none or a future stamp → now), `as_utc` (a naive value read as UTC) |
+| The counter | `KnowledgeCounter` (`bump(session, tenant_id)` → the next value under a row lock, synchronous, inside `before_flush`; `None`: unstamped), `TenantOf` |
+| The paged pull | `begin_page`, `PageStart` (`.resume_in(index)`), `cut_page`, `page_of` (the walk over rows in memory), `cursor_at_start`, `page_order`, `is_after`, `SYNC_PAGE_LIMIT` (2000): ordered `(knowledge, id)` per entity, entities in the app's order, the window pinned at `window_end` |
+| SQLAlchemy (`sync.mixin`, the `sync` extra) | `SyncColumns` (`knowledge`, `deleted_at`, a client-owned `updated_at`); `install_sync_stamping(session_cls, *, counter, tenant_of, is_synced, now=)` (one bump per tenant per flush; a model without `updated_at` gets its knowledge only; naive columns get naive UTC); `install_tombstone_filter(session_cls, *, synced)` and `INCLUDE_TOMBSTONED` (the pull's opt-out); `tombstone(obj, *, now=)`, `bulk_tombstone(model, *where, knowledge, now)`, `bulk_restamp(…)` |
+| Testing (`sync.testing`) | `InMemoryKnowledgeCounter(*, per_tenant=True, start=0)` (`calls` as `(tenant_id, autoflush)`, `current(tenant_id)`; `per_tenant=False` is kastlan's one database-wide row) |
+
+**The lock is load-bearing**: `bump` reads and writes one row, so an implementation takes it
+with `SELECT … FOR UPDATE` (keksdose mutates its `households.knowledge` row in memory) or one
+atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` (kastlan); two flushes that both read N
+would hide one device's rows from the other.
+
 ## Installing it in an app
 
 Apps depend on a **published** version — the wheel attached to a tagged GitHub Release, whose hash `uv.lock` pins —
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.14.0/eifi1_server_kit-0.14.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.15.0/eifi1_server_kit-0.15.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client, the Paddle client or the feedback router, name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
+With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
 
 The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
 binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each
