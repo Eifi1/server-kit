@@ -260,3 +260,49 @@ def test_the_detail_is_an_object() -> None:
         admin_action_record(
             "role", actor_id=1, target_user_id=2, target_email=None, detail={"note": "two words"}, now=NOW
         )
+
+
+def test_a_company_rename_logs_both_names() -> None:
+    # K8 (round 047): kastlan's company rename logs {from, to}, the names as written.
+    record = admin_action_record(
+        AdminAction.GROUP_RENAME,
+        actor_id=1,
+        target_user_id=None,
+        target_email=None,
+        detail={"from": " Test AG ", "to": "Müller & Söhne Zürich AG", "by_operator": True},
+        company_id=7,
+        now=NOW,
+    )
+    assert record["detail"] == {"from": "Test AG", "to": "Müller & Söhne Zürich AG", "by_operator": True}
+    row = AdminActionRow.model_validate({"id": 1, **record})
+    assert row.action == AdminAction.GROUP_RENAME and row.detail["to"] == "Müller & Söhne Zürich AG"
+    # The keyword is the seam; a team's rename keeps {} and a 200-character name fits.
+    assert audit_detail({}, action="group_rename") == {}
+    assert audit_detail({"to": "x" * 200}, action=AdminAction.GROUP_RENAME) == {"to": "x" * 200}
+
+
+@pytest.mark.parametrize(
+    ("action", "detail", "message"),
+    [
+        ("group_rename", {"from": "Test AG", "to": "x" * 201}, r"detail\.to: a group's name is 1 to 200"),
+        ("group_rename", {"from": "   ", "to": "Test AG"}, r"detail\.from: a group's name is 1 to 200"),
+        ("group_rename", {"from": "Test\nAG", "to": "Test AG"}, r"detail\.from: .*control characters"),
+        ("group_rename", {"from": "Test AG", "to": "Test​AG"}, r"detail\.to: .*control characters"),
+        ("group_rename", {"from": "Test\u2028AG", "to": "Test AG"}, r"detail\.from: .*control characters"),
+        ("group_rename", {"from": "Test AG", "to": 3}, r"detail\.to: a group's name is a string"),
+        ("group_rename", {"from": "Test AG", "to": "a" * 64}, "looks like a secret"),
+        # Only the names are free text: everything else in the detail is still a token.
+        ("group_rename", {"from": "A", "to": "B", "note": "two words"}, r"detail\.note: .*never content"),
+        ("group_rename", {"before": {"from": "Test AG"}}, r"detail\.before\.from: .*never content"),
+        # Any other action: a name is content.
+        ("membership_role", {"from": "Test AG", "to": "Test AG Bern"}, r"detail\.from: .*never content"),
+        ("group_delete", {"from": "Test AG"}, "never content"),
+        (None, {"from": "Test AG", "to": "Test AG Bern"}, "never content"),
+    ],
+)
+def test_only_a_renames_names_are_free_text(action: str | None, detail: dict[str, Any], message: str) -> None:
+    with pytest.raises(AuditDetailError, match=message):
+        audit_detail(detail, action=action)
+    if action is not None:
+        with pytest.raises(AuditDetailError, match=message):
+            admin_action_record(action, actor_id=1, target_user_id=None, target_email=None, detail=detail, now=NOW)

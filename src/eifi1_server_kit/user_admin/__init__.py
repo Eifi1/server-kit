@@ -38,6 +38,7 @@ from eifi1_server_kit.user_admin.attention import AdminAttention, AttentionCount
 from eifi1_server_kit.user_admin.audit import (
     DETAIL_MAX_BYTES,
     DETAIL_MAX_DEPTH,
+    DETAIL_NAME_MAX_LENGTH,
     DETAIL_TOKEN_MAX_LENGTH,
     AuditDetailError,
     admin_action_record,
@@ -137,6 +138,7 @@ __all__ = [
     "DEFAULT_ROSTER_SORT",
     "DETAIL_MAX_BYTES",
     "DETAIL_MAX_DEPTH",
+    "DETAIL_NAME_MAX_LENGTH",
     "DETAIL_TOKEN_MAX_LENGTH",
     "EXPORT_FORMAT",
     "EXPORT_PER_USER",
