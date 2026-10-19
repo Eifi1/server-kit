@@ -15,8 +15,11 @@ from eifi1_server_kit.notifications import (
     digest_due,
     digest_period,
     digest_tag,
+    effective_zone,
     in_quiet_hours,
     is_known_zone,
+    local_today,
+    quiet_hours_end,
     resolve_zone,
 )
 
@@ -227,3 +230,87 @@ def test_the_digest_tag_is_the_period_key() -> None:
     assert digest_tag(digest_period("monthly", date(2026, 10, 1))) == "digest:2026-10"
     with pytest.raises(ValueError, match="names its period"):
         digest_tag("")
+
+
+# ── the zone on the account (§10.3, 0.16) ────────────────────────────────────
+
+
+def test_the_effective_zone_is_the_pick_then_the_device_then_zurich() -> None:
+    assert effective_zone("America/New_York", "Asia/Tokyo") == ZoneInfo("America/New_York")
+    assert effective_zone(None, "Asia/Tokyo") == ZoneInfo("Asia/Tokyo")
+    assert effective_zone(None, None) == ZURICH
+    assert effective_zone(None, None, fallback="UTC") == ZoneInfo("UTC")
+
+
+def test_a_name_that_no_longer_resolves_counts_as_unset() -> None:
+    assert effective_zone("Mars/Olympus", "Asia/Tokyo") == ZoneInfo("Asia/Tokyo")
+    assert effective_zone("", "Mars/Olympus") == ZURICH
+
+
+@pytest.mark.parametrize(
+    ("now", "today"),
+    [
+        (_utc(2026, 6, 30, 21, 59), date(2026, 6, 30)),
+        (_utc(2026, 6, 30, 22, 30), date(2026, 7, 1)),
+        (_utc(2026, 12, 31, 22, 30), date(2026, 12, 31)),
+        (_utc(2026, 12, 31, 23, 30), date(2027, 1, 1)),
+    ],
+)
+def test_local_today_is_zurichs_day_not_the_servers(now: datetime, today: date) -> None:
+    """At 22:30 UTC in summer and 23:30 in winter it is already tomorrow in Zurich."""
+    assert local_today(ZURICH, now) == today
+
+
+def test_local_today_needs_an_aware_now() -> None:
+    with pytest.raises(ValueError, match="aware"):
+        local_today(ZURICH, datetime(2026, 6, 30, 22, 30))
+
+
+# ── when quiet hours end (§10.4, 0.16) ───────────────────────────────────────
+
+
+def test_quiet_hours_across_midnight_end_tomorrow_morning() -> None:
+    # 23:00 in Zurich (CEST) → 07:00 the next day = 05:00 UTC.
+    assert quiet_hours_end("22:00", "07:00", ZURICH, _utc(2026, 6, 1, 21)) == _utc(2026, 6, 2, 5)
+    # 03:00 local, after midnight → 07:00 the same day.
+    assert quiet_hours_end("22:00", "07:00", ZURICH, _utc(2026, 6, 2, 1)) == _utc(2026, 6, 2, 5)
+
+
+def test_a_window_within_one_day_ends_that_day() -> None:
+    assert quiet_hours_end("12:00", "14:00", ZURICH, _utc(2026, 1, 15, 11, 30)) == _utc(2026, 1, 15, 13)
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "now"),
+    [
+        ("22:00", "07:00", _utc(2026, 6, 1, 12)),
+        (None, "07:00", _utc(2026, 6, 1, 21)),
+        ("22:00", "22:00", _utc(2026, 6, 1, 21)),
+    ],
+)
+def test_outside_quiet_hours_the_end_is_now(start: str | None, end: str | None, now: datetime) -> None:
+    """Fails open, as :func:`in_quiet_hours`: nothing is held for a window that isn't there."""
+    assert quiet_hours_end(start, end, ZURICH, now) == now
+
+
+def test_an_end_the_spring_clocks_skip_is_the_moment_they_jump() -> None:
+    """2026-03-29: Zurich jumps from 02:00 CET to 03:00 CEST (01:00 UTC); 02:30 never happens."""
+    end = quiet_hours_end("22:00", "02:30", ZURICH, _utc(2026, 3, 28, 23))
+    assert end == _utc(2026, 3, 29, 1)
+    assert not in_quiet_hours("22:00", "02:30", ZURICH, end)
+    assert in_quiet_hours("22:00", "02:30", ZURICH, end - timedelta(minutes=1))
+
+
+def test_an_end_inside_the_autumn_hour_is_its_next_occurrence() -> None:
+    """2026-10-25: Zurich's 02:00–03:00 happens twice (CEST, then CET)."""
+    first_pass = _utc(2026, 10, 25, 0, 10)  # 02:10 CEST
+    assert quiet_hours_end("01:00", "02:30", ZURICH, first_pass) == _utc(2026, 10, 25, 0, 30)
+    second_pass = _utc(2026, 10, 25, 1, 10)  # 02:10 CET
+    assert quiet_hours_end("01:00", "02:30", ZURICH, second_pass) == _utc(2026, 10, 25, 1, 30)
+    # Across midnight on the autumn day: 07:00 CET is 06:00 UTC.
+    assert quiet_hours_end("22:00", "07:00", ZURICH, _utc(2026, 10, 24, 21)) == _utc(2026, 10, 25, 6)
+
+
+def test_quiet_hours_end_needs_an_aware_now() -> None:
+    with pytest.raises(ValueError, match="aware"):
+        quiet_hours_end("22:00", "07:00", ZURICH, datetime(2026, 6, 1, 21))

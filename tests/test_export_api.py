@@ -123,6 +123,7 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     # routes, behind the `fastapi` extra.
     public |= {
         "eifi1_server_kit.feedback.router",
+        "eifi1_server_kit.notifications.router",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.translation_review.router",
     }

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from eifi1_server_kit.mail import support_address
 from eifi1_server_kit.notifications import (
+    PUSH_GONE_GRACE,
     PUSH_MAX_FAILURES,
     PUSH_PAYLOAD_LIMIT,
     PUSH_TEST_TYPE,
@@ -20,6 +21,7 @@ from eifi1_server_kit.notifications import (
     PUSH_TTL,
     PushData,
     PushDeviceResponse,
+    PushDeviceUpdate,
     PushKeyResponse,
     PushOutcome,
     PushPayload,
@@ -30,6 +32,7 @@ from eifi1_server_kit.notifications import (
     PushUnregisterIn,
     digest_tag,
     push_auth_matches,
+    push_gone_expired,
     push_outcome,
     should_reap,
     vapid_subject,
@@ -174,7 +177,7 @@ def test_the_payload_is_compact_json_in_utf_8() -> None:
         encoded
         == (
             '{"title":"Keksdose","body":"Antwort von Zoë","tag":"support:1",'
-            '"data":{"url":"/support","type":"support_chat"}}'
+            '"data":{"url":"/support","type":"support_chat","inbox":true}}'
         ).encode()
     )
     assert json.loads(encoded)["data"]["type"] == "support_chat"
@@ -282,3 +285,46 @@ def test_the_vapid_subject_is_the_support_address() -> None:
 def test_the_vapid_subject_takes_a_bare_address(address: str) -> None:
     with pytest.raises(ValueError, match="bare address"):
         vapid_subject(address)
+
+
+# ── 0.16: the inbox flag, per-device mutes, the gone grace (§10.2, §10.6) ────
+
+
+def test_a_push_says_whether_the_inbox_holds_it() -> None:
+    """``data.inbox: false`` (push on, in-app off): the worker shows it even while focused."""
+    assert PushData(url="/", type="scan_done").inbox is True
+    payload = PushPayload(title="t", body="b", tag="x", data=PushData(url="/", type="scan_done", inbox=False))
+    assert json.loads(payload.encode())["data"] == {"url": "/", "type": "scan_done", "inbox": False}
+
+
+def test_a_device_lists_its_muted_types() -> None:
+    device = PushDeviceResponse(
+        id=1,
+        endpoint="https://push.example/x",
+        user_agent=None,
+        created_at=datetime(2026, 10, 19, tzinfo=UTC),
+        last_success_at=None,
+        failure_count=0,
+    )
+    assert device.muted_types == []
+    assert PushDeviceUpdate(muted_types=["digest"]).muted_types == ["digest"]
+    with pytest.raises(ValidationError):
+        PushDeviceUpdate.model_validate({"muted_types": ["digest"], "label": "x"})
+    with pytest.raises(ValidationError):
+        PushDeviceUpdate.model_validate({})
+
+
+def test_a_gone_row_is_claimable_for_seven_days() -> None:
+    gone = datetime(2026, 10, 1, tzinfo=UTC)
+    assert timedelta(days=7) == PUSH_GONE_GRACE
+    assert not push_gone_expired(None, gone + timedelta(days=30)), "not gone"
+    assert not push_gone_expired(gone, gone + timedelta(days=7)), "the replace may still claim it"
+    assert push_gone_expired(gone, gone + timedelta(days=7, seconds=1)), "the reap deletes it"
+    assert push_gone_expired(gone, gone + timedelta(hours=2), grace=timedelta(hours=1))
+
+
+def test_the_replace_routes_rules_are_in_its_docstring() -> None:
+    """§10.6: the app's route follows these; the adopt row points here."""
+    doc = PushReplaceIn.__doc__ or ""
+    for rule in ("PUSH_GONE_GRACE", "inactive", "demo", "sign out everywhere", "erasure", "No RLS", "Never log"):
+        assert rule in doc, rule

@@ -112,6 +112,7 @@ written once (server-services §2, §4.1). The ports and the service come with
 | Public ports (0.11) | `FeedbackActor.role` (for the app's predicate); `NewFeedback.public` (True; False for a crash); `PublicFeedbackRow`; `FeedbackReplyRow`, `FeedbackCommentRow`; `NewFeedbackReply`, `NewFeedbackComment`; `PublicListEntry(row, votes, voted, comment_count)`; `PublicFeedbackRepository[RowT]` (`public_page(*, viewer_id, sort, status, category, q, limit, offset)` with the counts in SQL, `get_public(id)`); `FeedbackReplyStore` (`for_reports`, `add(new, *, actor)` fires `feedback_answered` for a reply only, `by_author`, `apply`); since 0.13 `FeedbackReplyRow` reads `kind` and `attachment_url`, `NewFeedbackReply` carries `kind`, `attachment_url` and an optional `created_at` (the migration's stamp), and `urls_named_except` names other reports' rework files too; `FeedbackCommentStore` (`for_report`, `counts(ids, *, include_hidden)`, `commenters`, `add(new, *, actor)` fires `feedback_comment`, `get`, `apply`, `delete`, `by_author`, `clear_hidden_by`); `FeedbackVoteStore` (`counts(ids, *, viewer_id)`, `put`, `delete`, `delete_by_author`); `PeopleLookup` (`names(ids)` → `(first, last)`, the one read of `users`). `AttachmentStorage.read` states the files predicate: the uploader, the author of a report naming the file, an admin |
 | Public service (0.11) | `FeedbackService(…, replies=None, comments=None, votes=None, people=None, public_viewer=None, public_search=True)`: `reply`, `list_public`, `get_public`, `comments`, `comment(…, limiter=)`, `hide_comment`, `delete_comment`, `vote(…, limiter=)`, `unvote(…, limiter=)`, `sees_public(actor)`; the page views `admin_view(actor, pairs)`, `author_view(actor, rows)`, `public_item(actor, entries)`, `public_view(actor, row)` (one call per store a page); `create` casts the author's vote; `erase_author` → `ErasedFeedback(…, comments, votes, replies)`; 0.13: `rework(actor, id, payload)`, `update` converts the legacy append, the views carry `kind` (and `attachment_url` for the admin and the author), `erase_author` un-names rework entries and purges their files |
 | Public testing (0.11) | `InMemoryReplyStore`, `InMemoryCommentStore`, `InMemoryVoteStore`, `InMemoryPeopleLookup` (each logs `calls`; the reply and comment stores record `added` with the actor), `MemoryReplyRow`, `MemoryCommentRow`; `check_reply_store`, `check_comment_store`, `check_vote_store`, `check_public_repository`; `assert_public_view(payload, *, policy=)` |
+| Admin alerts (0.16, feedback §11) | `FEEDBACK_RECEIVED` (the type every app declares, on by default, `quiet`); `FeedbackAlert(kind, feedback_id, category, actor_id, company_id=None)`, `FeedbackAlertKind` (`report`, `rework`, `crash`); the port `FeedbackAlerts` (`async filed(alert, row)`); `FeedbackService(…, alerts=None)` tells it after `create`, after a NEW crash row (never a fold) and after a rework's `apply` when it lands OPEN — `None` (a loop's service) tells nobody; `FeedbackDeps(alerts=)`; `admin_alert_recipients(admin_ids, *, actor_id)` (the actor never told), `mails_at_once(alert)` (False for a crash: mailed only in the queue's bundle); testing `RecordingAlerts` |
 
 | Route | Endpoint | Guard (the app's) | Answer |
 |---|---|---|---|
@@ -325,7 +326,7 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
-| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3) the zone on the account: `UserResponse.timezone` / `.device_timezone`, `ProfileUpdate.timezone` (`null` = Automatic) and `.device_timezone` (never `null`), each a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
 | Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
@@ -1154,19 +1155,22 @@ off the event loop, its mailer). keksdose is the source
 
 | Area | Names |
 |---|---|
-| The types | `NotificationType(id, app, email=None, quiet=True)`, `NotificationTypes(*types)` (`in`, `[id]`, `.ids`, `.receivable(keep)`), `TYPE_ID_PATTERN` |
-| The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate`, `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
-| Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE` |
-| Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
+| The types | `NotificationType(id, app, email=None, quiet=True, push=None, bundle=None)`, `NotificationTypes(*types, push_channel=True)` (`in`, `[id]`, `.ids`, `.push_channel`, `.receivable(keep)`), `TYPE_ID_PATTERN` |
+| The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches(app, email, push=None)`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate`, `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches(app, email, push)`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch, *, couple_push_to_app=False)`, `migrate_enabled_to_channels(enabled)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
+| Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE`; per device (0.16) `device_receives(muted_types, type_id)`, `read_muted_types(types, stored)`, `apply_muted_types(types, muted)` |
+| Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `quiet_hours_end(start, end, zone, now)`, `effective_zone(timezone, device_timezone, fallback=DEFAULT_ZONE)`, `local_today(zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
 | A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day)`), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
-| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE` |
+| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse` (`muted_types`), `PushDeviceUpdate(muted_types)`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type, inbox=True)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `push_gone_expired(gone_at, now, *, grace=PUSH_GONE_GRACE)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE`, `PUSH_GONE_GRACE` (7 days) |
 | Unsubscribe | `unsubscribe_token(secret, user_id, type_id)`, `read_unsubscribe_token(secret, token)` → `UnsubscribeClaim(user_id, type_id)`, `unsubscribe_key(secret)` |
-| The inbox | `InboxItem`, `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days) |
-| Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `PushEndpointTakenError` (409, `push_endpoint_taken`), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
+| The inbox | `InboxItem` (`company`, 0.16), `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days); layer 2 (0.16): `InboxStore` (`add`, `page`, `mark_read`, `clear`, `prune`), `NewInboxItem`, `INBOX_PAGE_DEFAULT`, `INBOX_PAGE_MAX` |
+| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted`, `send_push`, `send_mail`), `QueueService(queue, port)` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
+| Routes (`notifications.router`, the `fastapi` extra) | `InboxDeps(store=, current_user_id=, guards=())`, `inbox_router(deps, *, prefix="/notifications/inbox")`; `notifications_jobs_router(service, require_jobs_token, *, now=utc_now, prefix="/ops/notifications")` → `POST /flush` |
+| Testing (`notifications.testing`) | `InMemoryInboxStore`, `InMemoryNotificationQueue` (`commit`, `rollback`, `commits`), `RecordingFlushPort` |
+| Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `NotificationChannelError` (422, `notification_channel_not_offered`, `types`, `channel`; 0.16), `PushEndpointTakenError` (409, `push_endpoint_taken`), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
 
 **The types are the app's**: a registry built once, the one list — the `GET` answers every
 type the account receives, in its order, and the card draws what it answers. A type
-offers `app` (the inbox and push, one switch) and `email`, each with its default; off
+offers `app` (in the app), `push` (0.16; `app`'s default unless set) and `email`, each with its default; off
 unless it can only fire in answer to the person's own action. `receivable(keep)` is the
 account's narrowing (kastlan: staff in any company).
 
@@ -1194,12 +1198,12 @@ async def update_settings(body: SettingsUpdate, …) -> SettingsOut:
     return SettingsOut(types=kit.resolve_switches(types, {**stored, **changed}), …)
 ```
 
-**Delivery** (§3.3): nothing for an inactive account, a demo or the event's actor; `app`
-on is an inbox row and a push, the push dropped for a `quiet` type inside quiet hours;
-`email` on is the mail, only to a verified address; `service=True` skips the switch on
-the app channel (keksdose's guest deadline). **Quiet hours** fail open (half set, start =
-end); the zone is the settings' `timezone`, and an unset or no longer resolvable one is
-`Europe/Zurich`, never UTC. **The digest** is due from its period's first local day until
+**Delivery** (§3.3, §10.2): nothing for an inactive account, a demo or the event's actor;
+`app` on is an inbox row; `push` on (0.16: its own switch) a push, held for a `quiet` type
+inside quiet hours; `email` on is the mail, only to a verified address; `service=True`
+skips the switches in the app and by push (keksdose's guest deadline). **Quiet hours** fail
+open (half set, start = end); the zone is the account's (`effective_zone`), and an unset
+or no longer resolvable one is `Europe/Zurich`, never UTC. **The digest** is due from its period's first local day until
 3 days after, once per period: store `digest_due`'s key as `digest_sent` in the
 transaction that writes its inbox row (an app with no inbox: once the send answered
 `True`); its push's tag is `digest:2026-W42`.
@@ -1218,9 +1222,10 @@ written. The event key is the app's, built by `mail_event` (kastlan:
 `mail_event(company_id, day)` → `"42:2026-10-13"`): ids and days, no personal data, no
 sealed content. The same job deletes markers older than `MAIL_MARKER_RETENTION`.
 
-**Push**: the payload is `{title, body, tag, data: {url, type}}` — `url` a path in the
-app, never `//` or a scheme — encoded under 3 KB with the body cut by "…". A 404 or 410
-deletes the device, anything else counts a failure, and 10 in a row reap it
+**Push**: the payload is `{title, body, tag, data: {url, type, inbox}}` — `url` a path in
+the app, never `//` or a scheme — encoded under 3 KB with the body cut by "…". A 404 or
+410 marks the device gone (`gone_at`, deleted after `PUSH_GONE_GRACE`; 0.16), anything
+else counts a failure, and 10 in a row reap it
 (`should_reap(count, limit=…)` takes the app's own limit). TTL 24 h and
 timeout 10 s, passed explicitly. The VAPID subject is `mailto:` the support address.
 
@@ -1228,6 +1233,36 @@ timeout 10 s, passed explicitly. The VAPID subject is `mailto:` the support addr
 existing signing secret, not stored, never expiring; it names one account and one type
 and can only turn that e-mail off. A bad token is a 400; a GET never unsubscribes. The
 mail half is `mail.MailUnsubscribe`.
+
+**Round 0.46** (server-kit 0.16, notifications §10). **Three channels**, each its own
+switch: `app` (in the app), `push` and `email`; push no longer needs the inbox, and a push
+with no inbox row carries `data.inbox: false`. An app with no push builds its registry
+with `push_channel=False` (kastlan, Kurvenschmiede): every `push` is `null`, and a PATCH
+sending one is a 422. keksdose migrates `enabled` with `migrate_enabled_to_channels` and
+passes `couple_push_to_app=True` while old bundles send `{app}` alone. A device mutes
+types (`muted_types`), never adds them. **The zone is the account's**:
+`effective_zone(user.timezone, user.device_timezone)` (the pick, else the last device's,
+else Zurich) for everything written for one person, `local_today(zone, now)` for "today".
+**The inbox** has a port and three routes; **the queue** is opt-in — an app that runs it
+holds a quiet type's push instead of dropping it, and calls the tick every 15 minutes:
+
+```python
+from eifi1_server_kit import notifications as kit
+
+zone = kit.effective_zone(user.timezone, user.device_timezone)
+if switches.push and kind.quiet and kit.in_quiet_hours(start, end, zone, now):
+    until = kit.quiet_hours_end(start, end, zone, now)
+    await queue_service.hold_push(user.id, kind.id, event, payload, not_before=until, now=now)
+
+result = await kit.notifications_tick(queue_service, now)  # the 15-minute job
+```
+
+**The rotation route** (`POST /notifications/devices/replace`, §10.6): `PushReplaceIn`'s
+docstring holds its rules — the old row proven before the 409, an inactive or demo
+account the same 404 (and its row deleted), a row marked gone claimable for
+`PUSH_GONE_GRACE` (`push_gone_expired`), no RLS on device rows, the body never logged;
+and the app deletes an account's push rows on "sign out everywhere", deactivation and
+erasure.
 
 ### `eifi1_server_kit.tours`
 

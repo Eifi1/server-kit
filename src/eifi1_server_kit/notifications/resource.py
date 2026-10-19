@@ -3,7 +3,7 @@
 One resource per account replaces keksdose's two PUTs (``/push/preferences``,
 ``/push/settings``; ``adapters/api/push_router.py:133-172``)::
 
-    {"types": {"recurring_posted": {"app": true, "email": null}, …},
+    {"types": {"recurring_posted": {"app": true, "push": true, "email": null}, …},
      "quiet_hours_start": "22:00", "quiet_hours_end": "07:00",
      "timezone": "Europe/Zurich", "digest_cadence": "weekly"}
 
@@ -19,7 +19,7 @@ One resource per account replaces keksdose's two PUTs (``/push/preferences``,
 **The PATCH** follows settings §6.1: :func:`~eifi1_server_kit.settings.apply_patch` writes
 the plain fields and refuses a ``null`` on ``types`` and ``digest_cadence``; ``types``
 itself is skipped there and goes through :func:`apply_switches_patch`, which reads its own
-rules — a type's ``null`` resets both its switches, a switch's ``null`` that one::
+rules — a type's ``null`` resets all its switches, a switch's ``null`` that one::
 
     patch = apply_switches_patch(types, stored, body.types)  # 422 before anything is written
     apply_patch(row, body, not_nullable=SETTINGS_NOT_NULLABLE, skip=SETTINGS_SKIP)
@@ -31,6 +31,18 @@ one whose body is ``types`` alone (no push, no digest) has no row to write and p
 ``None``: ``apply_patch(None, body, not_nullable=SETTINGS_SKIP, skip=SETTINGS_SKIP)``.
 The storage is the app's; keksdose's rows (one per touched type) fit, as an unset switch
 is a missing row or a null column (:class:`StoredSwitches`).
+
+**A switch per channel** (§10.2, 0.16): ``app`` (in the app), ``push`` and ``email``.
+``push`` is ``null`` where the app or the type has no push (kastlan, Kurvenschmiede:
+``NotificationTypes(..., push_channel=False)``), and a PATCH sending it there is a 422.
+keksdose's stored ``enabled`` becomes both in-app switches
+(:func:`migrate_enabled_to_channels`); while an old bundle can still send ``{app}`` alone,
+its PATCH passes ``couple_push_to_app=True`` (it goes with the ``/push/*`` aliases).
+
+**The zone moved to the account** (§10.3, 0.16): :class:`QuietHoursFields`' and
+:class:`QuietHoursUpdate`'s ``timezone`` stay for one release as an ALIAS that reads and
+writes the account's ``timezone`` (``users.timezone``; keksdose's old bundles), and go
+with the ``/push/*`` aliases.
 """
 
 from __future__ import annotations
@@ -41,7 +53,7 @@ from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from eifi1_server_kit.notifications.errors import NotificationTypeError
+from eifi1_server_kit.notifications.errors import NotificationChannelError, NotificationTypeError
 from eifi1_server_kit.notifications.registry import NotificationTypes
 from eifi1_server_kit.notifications.timing import QUIET_HOURS_PATTERN, DigestCadence, is_known_zone
 
@@ -58,6 +70,7 @@ __all__ = [
     "TypeSwitches",
     "TypeSwitchesPatch",
     "apply_switches_patch",
+    "migrate_enabled_to_channels",
     "resolve_switches",
 ]
 
@@ -75,12 +88,14 @@ _ZONE_MAX_LENGTH = 64
 
 class TypeSwitches(BaseModel):
     """One type in the ``GET``: each switch as it applies, ``null`` where the type doesn't
-    offer the channel (Kurvenschmiede: ``{"app": null, "email": true}``)."""
+    offer the channel (Kurvenschmiede: ``{"app": null, "push": null, "email": true}``)."""
 
-    #: The "in the app" switch (inbox and push); ``None``: the app has no such channel.
+    #: The "in the app" switch (the inbox; kastlan's poller); ``None``: the app has no such channel.
     app: bool | None
     #: The e-mail switch; ``None``: the type sends no mail.
     email: bool | None
+    #: The push switch (0.16), independent of ``app``; ``None``: no push for this type or app.
+    push: bool | None = None
 
 
 class TypeSwitchesPatch(BaseModel):
@@ -91,6 +106,8 @@ class TypeSwitchesPatch(BaseModel):
 
     app: bool | None = None
     email: bool | None = None
+    #: 0.16; a 422 where the type or the app has no push.
+    push: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +118,8 @@ class StoredSwitches:
 
     app: bool | None = None
     email: bool | None = None
+    #: 0.16. kastlan's ``StoredSwitches(app, email)`` keeps working: it has no push.
+    push: bool | None = None
 
 
 class NotificationSettingsResponse(BaseModel):
@@ -117,7 +136,8 @@ class QuietHoursFields(BaseModel):
     #: Local ``HH:MM``; with ``quiet_hours_end``, the window — which may cross midnight.
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
-    #: An IANA name; ``null`` is the app's zone, ``Europe/Zurich`` (decision 6).
+    #: The ACCOUNT's pick (``users.timezone``, §10.3), answered here for one release as an
+    #: alias for keksdose's old bundles; ``null`` is Automatic.
     timezone: str | None = None
 
 
@@ -132,8 +152,9 @@ class NotificationSettingsUpdate(BaseModel):
 
     Set :attr:`registry` in the subclass, as ``ProfileUpdate.offered_locales`` is set
     (settings §7.2); a class without it is a :class:`TypeError` on its first validation.
-    A type the registry doesn't know, or an ``app`` / ``email`` switch on a type that
-    doesn't offer it, is a validation error (422). A type the registry knows but this
+    A type the registry doesn't know, or an ``app`` / ``push`` / ``email`` switch on a
+    type that doesn't offer it (``push`` in an app with no push), is a validation error
+    (422). A type the registry knows but this
     account doesn't receive is :func:`apply_switches_patch`'s
     :class:`~.errors.NotificationTypeError`. Unknown fields are a 422.
     """
@@ -143,8 +164,8 @@ class NotificationSettingsUpdate(BaseModel):
     #: The app's whole registry; the account's narrowing is :func:`apply_switches_patch`'s.
     registry: ClassVar[NotificationTypes | None] = None
 
-    #: ``{type id: {"app"?, "email"?} | null}``; a type left out keeps, a type's ``null``
-    #: resets both switches. ``"types": null`` is refused through ``apply_patch``.
+    #: ``{type id: {"app"?, "push"?, "email"?} | null}``; a type left out keeps, a type's
+    #: ``null`` resets all its switches. ``"types": null`` is refused through ``apply_patch``.
     types: dict[str, TypeSwitchesPatch | None] | None = None
 
     @model_validator(mode="after")
@@ -168,7 +189,8 @@ class NotificationSettingsUpdate(BaseModel):
 
 class QuietHoursUpdate(BaseModel):
     """The quiet hours and the zone in the ``PATCH``: ``HH:MM`` bounds, an IANA zone
-    ``zoneinfo`` knows; ``null`` clears each."""
+    ``zoneinfo`` knows; ``null`` clears each. ``timezone`` is the one-release alias of the
+    account's pick (§10.3): the app writes it to ``users.timezone``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -206,7 +228,11 @@ def resolve_switches(types: NotificationTypes, stored: Mapping[str, StoredSwitch
     resolved: dict[str, TypeSwitches] = {}
     for item in types:
         row = stored.get(item.id, unset)
-        resolved[item.id] = TypeSwitches(app=_applied(item.app, row.app), email=_applied(item.email, row.email))
+        resolved[item.id] = TypeSwitches(
+            app=_applied(item.app, row.app),
+            email=_applied(item.email, row.email),
+            push=_applied(item.push, row.push),
+        )
     return resolved
 
 
@@ -214,20 +240,37 @@ def apply_switches_patch(
     types: NotificationTypes,
     stored: Mapping[str, StoredSwitches],
     patch: Mapping[str, TypeSwitchesPatch | None] | None,
+    *,
+    couple_push_to_app: bool = False,
 ) -> dict[str, StoredSwitches]:
     """The new stored value of each type the body names, in the registry's order (§3.2
-    rules 1–2): a type's ``null`` unsets both switches, a switch's ``null`` that one, a
+    rules 1–2): a type's ``null`` unsets all its switches, a switch's ``null`` that one, a
     switch left out keeps its stored value. The app writes what this answers.
+
+    ``couple_push_to_app`` (§10.2 rule 4, keksdose while old bundles send ``{app}``
+    alone): an ``app`` sent without ``push`` writes ``push`` too, on a type that offers
+    it. It goes with the ``/push/*`` aliases.
 
     ``types`` is the account's registry (:meth:`~.registry.NotificationTypes.receivable`);
     a type it doesn't hold is a :class:`~.errors.NotificationTypeError` (422,
-    ``notification_type_not_received``), raised before anything is answered. ``patch`` is
+    ``notification_type_not_received``), and a switch for a channel the type doesn't
+    offer (``push`` in an app with no push) a :class:`~.errors.NotificationChannelError`
+    (422, ``notification_channel_not_offered``), both raised before anything is answered. ``patch`` is
     the body's ``types``; ``None`` (left out) names nothing.
     """
     if not patch:
         return {}
     if refused := [type_id for type_id in patch if type_id not in types]:
         raise NotificationTypeError(refused)
+    for channel in ("app", "push", "email"):
+        if offless := [
+            type_id
+            for type_id, switches in patch.items()
+            if switches is not None
+            and channel in switches.model_fields_set
+            and getattr(types[type_id], channel) is None
+        ]:
+            raise NotificationChannelError(offless, channel)
     unset = StoredSwitches()
     changed: dict[str, StoredSwitches] = {}
     for item in types:
@@ -239,8 +282,21 @@ def apply_switches_patch(
             continue
         current = stored.get(item.id, unset)
         sent = switches.model_fields_set
+        push = current.push
+        if "push" in sent:
+            push = switches.push
+        elif couple_push_to_app and "app" in sent and item.push is not None:
+            push = switches.app
         changed[item.id] = StoredSwitches(
             app=switches.app if "app" in sent else current.app,
             email=switches.email if "email" in sent else current.email,
+            push=push,
         )
     return changed
+
+
+def migrate_enabled_to_channels(enabled: bool | None) -> StoredSwitches:
+    """keksdose's one stored ``enabled`` per type as the switches of three channels
+    (§10.2 rule 4): ``app = push = enabled``, e-mail unset. ``None`` — no row — stays
+    unset, so both channels keep the type's default."""
+    return StoredSwitches(app=enabled, push=enabled)

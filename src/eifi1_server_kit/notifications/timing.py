@@ -5,11 +5,14 @@
   ``HH:MM``, or start = end is no quiet hours at all, never a silently muted account
   (keksdose ``domain/services/notification_preferences_service.py:154-181``,
   ``should_push_now``, which answers the opposite question).
-* **The zone** is the notification settings' ``timezone``, an IANA name. Unset, or a name
-  ``zoneinfo`` no longer knows (tzdata dropped it), counts as unset: the app's zone,
-  ``Europe/Zurich`` in all three (decision 6). keksdose fell back to UTC
-  (``notification_preferences_service.py:169-174``, ``push_notifications.py:1097-1102``);
-  the contract's fallback replaces it.
+* **The zone** is the account's (§10.3, 0.16, reversing decision 6): the person's pick,
+  else the zone the last device reported, else the app's, ``Europe/Zurich`` in all three
+  (:func:`effective_zone`). A name ``zoneinfo`` no longer knows (tzdata dropped it)
+  counts as unset. keksdose fell back to UTC (``notification_preferences_service.py:169-174``,
+  ``push_notifications.py:1097-1102``); the contract's fallback replaces it. A person's
+  or a company's "today" is :func:`local_today`, never the server's ``date.today()``.
+* **A held push** waits until :func:`quiet_hours_end` where the app runs the queue
+  (§10.4, :mod:`~.queue`).
 * **The digest** goes once a period — the ISO week (``2026-W42``, on the ISO year) or the
   month (``2026-10``) of the local date — from the period's first local day until
   :data:`DIGEST_LATE_DAYS` days after it, so a missed run doesn't skip it and a doubled
@@ -23,8 +26,8 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, tzinfo
-from typing import Literal
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 __all__ = [
@@ -36,8 +39,11 @@ __all__ = [
     "digest_due",
     "digest_period",
     "digest_tag",
+    "effective_zone",
     "in_quiet_hours",
     "is_known_zone",
+    "local_today",
+    "quiet_hours_end",
     "resolve_zone",
 ]
 
@@ -84,6 +90,34 @@ def resolve_zone(name: str | None, fallback: str = DEFAULT_ZONE) -> ZoneInfo:
     return ZoneInfo(name) if name and is_known_zone(name) else ZoneInfo(fallback)
 
 
+def effective_zone(timezone: str | None, device_timezone: str | None, fallback: str = DEFAULT_ZONE) -> ZoneInfo:
+    """The account's zone (§10.3, 0.16): the person's pick (``timezone``), else the zone
+    the last device reported (``device_timezone``), else ``fallback`` — the app's zone,
+    ``Europe/Zurich``. A name ``zoneinfo`` no longer knows counts as unset, so a stale pick
+    falls through to the device's.
+
+    It is the zone of everything the server writes for ONE person: quiet hours, the digest
+    day, the dates in a push, a notification or account mail, a billing notice to a
+    person, and "today" of a person's own reminders. A company's documents and the jobs'
+    run times keep the app's zone (:func:`local_today` with it)::
+
+        zone = effective_zone(user.timezone, user.device_timezone)
+    """
+    for name in (timezone, device_timezone):
+        if is_known_zone(name):
+            return ZoneInfo(cast(str, name))
+    return ZoneInfo(fallback)
+
+
+def local_today(zone: tzinfo, now: datetime) -> date:
+    """The local date of ``now`` in ``zone`` (§10.3, 0.16): a person's "today" with
+    :func:`effective_zone`, a company's with the app's zone (``resolve_zone(None)``). At
+    22:30 UTC in summer it is already tomorrow in Zurich, where ``date.today()`` on a UTC
+    server still answers today. ``now`` is aware."""
+    _require_aware(now)
+    return now.astimezone(zone).date()
+
+
 def _minutes(value: str | None) -> int | None:
     """``"HH:MM"`` → minutes since local midnight; ``None`` for anything else."""
     if value is None or not _HHMM.fullmatch(value):
@@ -107,8 +141,10 @@ def in_quiet_hours(start: str | None, end: str | None, zone: tzinfo, now: dateti
     read off the local wall clock: a window inside the skipped hour never happens that
     night, and one inside the repeated hour holds both times round.
 
-    Only a ``quiet`` type's push is held, and a held push is dropped, not delayed: the
-    inbox row is written and e-mail goes as usual (:func:`~.delivery.plan_delivery`).
+    Only a ``quiet`` type's push is held: the inbox row is written and e-mail goes as
+    usual (:func:`~.delivery.plan_delivery`). Where the app runs the queue (0.16), the
+    push waits until :func:`quiet_hours_end` (:meth:`~.queue.QueueService.hold_push`);
+    elsewhere it is dropped.
     """
     _require_aware(now)
     first, last = _minutes(start), _minutes(end)
@@ -119,6 +155,56 @@ def in_quiet_hours(start: str | None, end: str | None, zone: tzinfo, now: dateti
     if first < last:
         return first <= minute < last
     return minute >= first or minute < last
+
+
+def _wall(instant: datetime, zone: tzinfo) -> datetime:
+    """``instant``'s local wall clock in ``zone``, naive."""
+    return instant.astimezone(zone).replace(tzinfo=None)
+
+
+def _first_reaching(wall: datetime, zone: tzinfo, now: datetime) -> datetime:
+    """The first instant after ``now``, in UTC, whose wall clock in ``zone`` is ``wall``
+    or later.
+
+    An existing time is itself: on the day the clocks go back, its first occurrence, or
+    its second when ``now`` is already past the first. A time the clocks skip (02:30 on
+    the spring day) is the moment they jump, found to the minute between its two readings.
+    """
+    for fold in (0, 1):
+        candidate = wall.replace(tzinfo=zone, fold=fold).astimezone(UTC)
+        if _wall(candidate, zone) == wall and candidate > now:
+            return candidate
+    # In a gap fold=0 reads the wall clock with the offset before the jump (later in UTC)
+    # and fold=1 with the one after (earlier): the jump lies between them.
+    low = wall.replace(tzinfo=zone, fold=1).astimezone(UTC)
+    high = wall.replace(tzinfo=zone, fold=0).astimezone(UTC)
+    while high - low > timedelta(minutes=1):
+        middle = low + (high - low) / 2
+        if _wall(middle, zone) >= wall:
+            high = middle
+        else:
+            low = middle
+    return high
+
+
+def quiet_hours_end(start: str | None, end: str | None, zone: tzinfo, now: datetime) -> datetime:
+    """When the quiet hours ``now`` falls in end, in UTC (§10.4, 0.16): a held push's
+    ``not_before``. ``now`` itself when it falls in none (:func:`in_quiet_hours`, which
+    fails open), so a push is never held for a window that isn't there.
+
+    The end is the next local ``end`` on the wall clock — tomorrow's for a window that
+    crosses midnight and started tonight. On the day the clocks skip an hour, an ``end``
+    inside it is the moment they jump (03:00 for 02:30 in Zurich); on the day they go
+    back, an ``end`` inside the repeated hour is its next occurrence, and a window quiet
+    again the second time round is held again at the flush, which re-runs the plan.
+    ``now`` is aware; ``zone`` is :func:`effective_zone`'s answer.
+    """
+    if not in_quiet_hours(start, end, zone, now):
+        return now
+    last = cast(int, _minutes(end))
+    local = now.astimezone(zone)
+    day = local.date() if local.hour * 60 + local.minute < last else local.date() + timedelta(days=1)
+    return _first_reaching(datetime.combine(day, time(last // 60, last % 60)), zone, now)
 
 
 def _check_cadence(cadence: str) -> None:

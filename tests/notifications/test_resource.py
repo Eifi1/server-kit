@@ -13,6 +13,7 @@ from eifi1_server_kit.notifications import (
     SETTINGS_SKIP,
     DigestFields,
     DigestUpdate,
+    NotificationChannelError,
     NotificationSettingsResponse,
     NotificationSettingsUpdate,
     NotificationTypeError,
@@ -22,6 +23,7 @@ from eifi1_server_kit.notifications import (
     TypeSwitches,
     TypeSwitchesPatch,
     apply_switches_patch,
+    migrate_enabled_to_channels,
     resolve_switches,
 )
 from eifi1_server_kit.settings import PatchNullError, apply_patch
@@ -63,9 +65,9 @@ def _row() -> dict[str, Any]:
 def test_unset_switches_read_as_their_defaults_in_the_registrys_order() -> None:
     resolved = resolve_switches(KEKSDOSE, {})
     assert list(resolved) == list(KEKSDOSE.ids)
-    assert resolved["recurring_posted"] == TypeSwitches(app=True, email=None)
-    assert resolved["digest"] == TypeSwitches(app=False, email=None)
-    assert resolved["support_chat"] == TypeSwitches(app=True, email=None)
+    assert resolved["recurring_posted"] == TypeSwitches(app=True, email=None, push=True)
+    assert resolved["digest"] == TypeSwitches(app=False, email=None, push=False)
+    assert resolved["support_chat"] == TypeSwitches(app=True, email=None, push=True)
 
 
 def test_a_stored_switch_wins_and_an_unset_one_reads_as_its_default() -> None:
@@ -107,7 +109,7 @@ def test_the_response_is_the_contracts_shape() -> None:
         "digest_cadence",
         "low_balance_threshold",
     ]
-    assert dumped["types"]["recurring_posted"] == {"app": True, "email": None}
+    assert dumped["types"]["recurring_posted"] == {"app": True, "email": None, "push": True}
     assert dumped["digest_cadence"] == "weekly", "the default"
     assert QuietHoursFields().model_dump() == {"quiet_hours_start": None, "quiet_hours_end": None, "timezone": None}
 
@@ -146,7 +148,9 @@ def test_the_body_leads_with_types_and_takes_the_apps_knobs() -> None:
         (KeksdoseUpdate, {"types": {"digest": {"email": None}}}, "has no email switch"),
         (KurvenschmiedeUpdate, {"types": {"feedback_answered": {"app": False}}}, "has no app switch"),
         (KastlanUpdate, {"types": {"dunnings_pending": {"app": True, "email": True}}}, "has no email switch"),
-        (KeksdoseUpdate, {"types": {"digest": {"push": True}}}, "Extra inputs"),
+        (KastlanUpdate, {"types": {"invoices_overdue": {"push": True}}}, "has no push switch"),
+        (KurvenschmiedeUpdate, {"types": {"feedback_answered": {"push": None}}}, "has no push switch"),
+        (KeksdoseUpdate, {"types": {"digest": {"sms": True}}}, "Extra inputs"),
         (KeksdoseUpdate, {"colour": "teal"}, "Extra inputs"),
         (KeksdoseUpdate, {"quiet_hours_start": "24:00"}, "String should match pattern"),
         (KeksdoseUpdate, {"quiet_hours_end": "7:00"}, "String should match pattern"),
@@ -284,6 +288,72 @@ def test_the_whole_patch_writes_the_plain_fields_and_leaves_types_to_the_switche
     assert "types" not in row
     stored = {**stored, **changed}
     answer = KeksdoseResponse(types=resolve_switches(KEKSDOSE, stored), **row)
-    assert answer.types["digest"] == TypeSwitches(app=False, email=None), "reset to its default"
-    assert answer.types["scan_done"] == TypeSwitches(app=True, email=None)
+    assert answer.types["digest"] == TypeSwitches(app=False, email=None, push=False), "reset to its default"
+    assert answer.types["scan_done"] == TypeSwitches(app=True, email=None, push=False), "push is its own switch"
     assert answer.digest_cadence == "monthly"
+
+
+# ── a switch per channel (§10.2, 0.16) ───────────────────────────────────────
+
+
+def test_an_app_without_push_answers_push_null_on_every_type() -> None:
+    """kastlan's ``app=False`` types would read ``push: false``; ``push_channel=False``
+    makes it ``null``: not offered."""
+    resolved = resolve_switches(KASTLAN, {"invoices_overdue": StoredSwitches(app=True, push=True)})
+    assert {switches.push for switches in resolved.values()} == {None}
+    assert resolve_switches(KURVENSCHMIEDE, {})["feedback_answered"].model_dump() == {
+        "app": None,
+        "email": True,
+        "push": None,
+    }
+
+
+def test_push_sent_where_the_app_has_none_is_refused_before_anything_is_written() -> None:
+    with pytest.raises(NotificationChannelError) as refused:
+        apply_switches_patch(KASTLAN, {}, {"invoices_overdue": TypeSwitchesPatch(app=True, push=True)})
+    assert refused.value.status_code == 422 and refused.value.code == "notification_channel_not_offered"
+    assert refused.value.extra == {"types": ["invoices_overdue"], "channel": "push"}
+    with pytest.raises(NotificationChannelError, match=r"\(email\): digest"):
+        apply_switches_patch(KEKSDOSE, {}, {"digest": TypeSwitchesPatch(email=True)})
+
+
+def test_push_is_written_on_its_own() -> None:
+    stored = {"scan_done": StoredSwitches(app=True)}
+    changed = apply_switches_patch(KEKSDOSE, stored, {"scan_done": TypeSwitchesPatch(push=True)})
+    assert changed == {"scan_done": StoredSwitches(app=True, push=True)}
+    reset = apply_switches_patch(KEKSDOSE, changed, {"scan_done": None})
+    assert reset == {"scan_done": StoredSwitches()}, "a type's null resets all three"
+
+
+def test_an_old_bundles_app_alone_writes_push_too_with_the_shim() -> None:
+    """keksdose's ``couple_push_to_app=True`` while ``/push/*`` requests still arrive."""
+    body = {"scan_done": TypeSwitchesPatch(app=True), "support_chat": TypeSwitchesPatch(app=False, push=True)}
+    coupled = apply_switches_patch(KEKSDOSE, {}, body, couple_push_to_app=True)
+    assert coupled["scan_done"] == StoredSwitches(app=True, push=True)
+    assert coupled["support_chat"] == StoredSwitches(app=False, push=True), "a push sent wins"
+    assert apply_switches_patch(KEKSDOSE, {}, body)["scan_done"] == StoredSwitches(app=True), "off by default"
+    kastlan = apply_switches_patch(
+        KASTLAN, {}, {"invoices_overdue": TypeSwitchesPatch(app=True)}, couple_push_to_app=True
+    )
+    assert kastlan["invoices_overdue"] == StoredSwitches(app=True), "no push to couple"
+
+
+def test_a_type_the_account_doesnt_receive_is_refused_on_patch_and_absent_on_read() -> None:
+    """Kurvenschmiede's ``feedback_received`` is an ADMIN's: a MEMBER is neither offered
+    nor allowed it."""
+    member = KURVENSCHMIEDE.receivable(lambda item: item.id != "team_added")
+    assert "team_added" not in resolve_switches(member, {"team_added": StoredSwitches(email=True)})
+    with pytest.raises(NotificationTypeError):
+        apply_switches_patch(member, {}, {"team_added": TypeSwitchesPatch(email=True)})
+
+
+@pytest.mark.parametrize(
+    ("enabled", "stored"),
+    [
+        (True, StoredSwitches(app=True, push=True)),
+        (False, StoredSwitches(app=False, push=False)),
+        (None, StoredSwitches()),
+    ],
+)
+def test_keksdoses_enabled_becomes_both_in_app_switches(enabled: bool | None, stored: StoredSwitches) -> None:
+    assert migrate_enabled_to_channels(enabled) == stored

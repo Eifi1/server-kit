@@ -15,8 +15,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
 server-kit 0.16.0: the backend half of round 0.46 (ui-kit 0.46), from the 0.45 build reviews
 (kastlan, keksdose, Kurvenschmiede) and the D2 amendment of local-first sync
 (`docs/local-first-harmonization.md`). A **minor**, not the 0.15.1 it was prepared as: it adds
-public names, and a patch never changes the surface. One legacy path is removed (under
-**⚠ BREAKING CHANGES**); the other behaviour change an app may notice is under **Changed**.
+public names, and a patch never changes the surface. One legacy path is removed and push
+becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other behaviour change an app may notice is under **Changed**.
 
 ### ⚠ BREAKING CHANGES
 
@@ -30,8 +30,50 @@ public names, and a patch never changes the surface. One legacy path is removed 
   still sends it. Removed: `legacy_rework_block`, `UpdatePlan.rework`, `UpdatePlan.reopened`,
   `plan_update(prefix=)` and the `feedback.legacy_rework_append` log line. An app test that
   PATCHes an append to an answered report expects the 422 now.
+* **notifications:** push is a channel of its own (notifications §10.2). `plan_delivery`
+  sends the push on `switches.push`, no longer on `app`; `resolve_switches` answers `push`
+  (a type's `push=None` takes its `app` default in a registry with push, `null` in one built
+  with `push_channel=False`). A `TypeSwitches` built by hand without `push` sends no push.
+  **keksdose migrates first** (`app = push = enabled`, `migrate_enabled_to_channels`), or a
+  type switched off would push again by its default. kastlan and Kurvenschmiede build their
+  registry with `push_channel=False` (else kastlan's `app=False` types read `push: false`).
+  `NotificationType`'s repr and the settings' JSON carry `push` (and `bundle`).
 
 ### Added
+
+* **notifications (round 0.46, §10):** `NotificationType(push=, bundle=)`,
+  `NotificationTypes(push_channel=)` and `.push_channel`; `TypeSwitches.push`,
+  `TypeSwitchesPatch.push`, `StoredSwitches.push`; `apply_switches_patch(couple_push_to_app=)`
+  (keksdose's `{app}`-only bundles, with the `/push/*` aliases); `migrate_enabled_to_channels`;
+  `NotificationChannelError` (422 `notification_channel_not_offered`, also on `{push}` where
+  the app has none); per device `PushDeviceUpdate(muted_types)`,
+  `PushDeviceResponse.muted_types`, `device_receives`, `read_muted_types`, `apply_muted_types`;
+  `PushData.inbox` (`false`: no inbox row, the worker shows it even while focused); the zone on
+  the account: `effective_zone(timezone, device_timezone)`, `local_today(zone, now)`,
+  `quiet_hours_end(start, end, zone, now)` (across midnight, both DST days); the inbox's port
+  `InboxStore`, `NewInboxItem`, `InboxItem.company`, `INBOX_PAGE_DEFAULT` / `INBOX_PAGE_MAX`;
+  the opt-in queue `NotificationQueue`, `NewQueueItem`, `QueueItem`, `QueueChannel`,
+  `FlushPort`, `QueueService` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult`,
+  `notifications_tick`, `QUEUE_*`; layer 2 `notifications.router` (the `fastapi` extra:
+  `InboxDeps`, `inbox_router`, `notifications_jobs_router`) and `notifications.testing`
+  (`InMemoryInboxStore`, `InMemoryNotificationQueue`, `RecordingFlushPort`).
+* **notifications (§10.6, the rotation route's rules):** `PUSH_GONE_GRACE` (7 days) and
+  `push_gone_expired(gone_at, now)`; `PushReplaceIn`'s docstring holds the settled rules (an
+  inactive or demo account the same 404 and its row deleted, the proof before the 409, a gone
+  row claimable within the grace, no RLS on device rows, the body never logged, push rows
+  deleted on sign-out-everywhere, deactivation and erasure).
+* **auth (notifications §10.3):** `UserResponse.timezone` / `.device_timezone`,
+  `ProfileUpdate.timezone` (`null` = Automatic) / `.device_timezone` (never `null`, in
+  `PROFILE_NOT_NULLABLE`), `RegisterRequest.device_timezone` (an unknown zone dropped),
+  `ZoneName`, `MAX_ZONE_LENGTH`, `PROFILE_ZONE_FIELDS`, `apply_zone_update(user, patch, *,
+  is_demo)` (a demo's zone ignored). The settings resource's `timezone` stays one release as
+  the account's alias.
+* **feedback (§11, the admins' alert):** `FEEDBACK_RECEIVED`, `FeedbackAlert`,
+  `FeedbackAlertKind`, the `FeedbackAlerts` port, `admin_alert_recipients(admin_ids, *,
+  actor_id)`, `mails_at_once(alert)`; `FeedbackService(alerts=None)` tells it after `create`,
+  after a NEW crash row (never a fold) and after a rework's `apply` that lands OPEN (an
+  admin's rework, a reply, a status change, a comment, a vote and `alerts=None` tell nobody);
+  `FeedbackDeps(alerts=)`; testing `RecordingAlerts`.
 
 * **sync:** each push's device clock skew is corrected (D2 amended): `SyncRequest.client_now`
   (the device's clock when it sends, spelt as `updated_at`), `clock_skew(client_now, *, now)`
@@ -62,6 +104,10 @@ public names, and a patch never changes the surface. One legacy path is removed 
 * **tours:** the export spells `completed_at` with `Z`, as the wire does (was `isoformat()`'s
   `+00:00`; Kurvenschmiede). **A test that pins the export's value must be re-pinned.**
 * **mail:** `test_mail_message` returns `HtmlMailMessage` (still a `MailMessage`).
+* **notifications:** a push service's 404/410 marks the device gone (`gone_at`) instead of
+  deleting it at once (§10.6 rule 4; the app's reaper); the daily reap deletes it after
+  `PUSH_GONE_GRACE`. `in_quiet_hours`' held push waits for `quiet_hours_end` where the app
+  runs the queue.
 * **ci:** the shared commit check (`Eifi1/shared-workflows` v1.3.0) over the PR or push range.
 
 ### Fixed — from the 0.45 build reviews

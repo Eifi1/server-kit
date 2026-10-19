@@ -49,6 +49,7 @@ def test_a_page_of_the_inbox() -> None:
                 "url": "/support",
                 "created_at": "2026-10-13T08:00:00Z",
                 "read_at": None,
+                "company": None,
             }
         ],
         "unread_count": 7,

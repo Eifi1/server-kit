@@ -79,8 +79,11 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("eifi1_server_kit.billing", "docs/billing-harmonization.md", "§10, §14"),
     ("eifi1_server_kit.jobs", "docs/billing-harmonization.md", "§14.7"),
     ("eifi1_server_kit.mail", "docs/auth-harmonization.md", "§8"),
-    ("eifi1_server_kit.notifications", "docs/notifications-harmonization.md", "§3, §4.1, §9"),
-    ("eifi1_server_kit.feedback", "docs/feedback-harmonization.md", "§3"),
+    ("eifi1_server_kit.notifications", "docs/notifications-harmonization.md", "§3, §4.1, §9, §10"),
+    # The inbox's routes and the queue's jobs route (0.16), behind the `fastapi` extra; the
+    # inbox's port, the queue and its service come with `eifi1_server_kit.notifications`.
+    ("eifi1_server_kit.notifications.router", "docs/notifications-harmonization.md", "§10.1, §10.4"),
+    ("eifi1_server_kit.feedback", "docs/feedback-harmonization.md", "§3, §11"),
     # Layer 2's routes, behind the `fastapi` extra; its ports and service come with
     # `eifi1_server_kit.feedback`.
     ("eifi1_server_kit.feedback.router", "docs/server-services-harmonization.md", "§2.9"),

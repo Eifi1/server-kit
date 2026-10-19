@@ -9,10 +9,12 @@ the kit answers the parts every app must get the same:
   to ``ttl=0`` — "discard unless the device is connected now" — and to no timeout at all
   (``push_service.py:1-16``, :212-228).
 * **The outcome** (:func:`push_outcome`): a 404 or 410 means the browser dropped the
-  subscription, so the row is deleted at once; anything else counts a failure, and the
-  daily job deletes a row at :data:`PUSH_MAX_FAILURES` in a row (:func:`should_reap`;
-  ``push_service.py:180-206``, :252-262).
-* **The payload** (:class:`PushPayload`): ``{title, body, tag, data: {url, type}}``,
+  subscription, so the row is marked gone (``gone_at``, 0.16, §10.6 rule 4) and gets no
+  more sends; a replace may still claim it for :data:`PUSH_GONE_GRACE`, and the daily job
+  deletes it after that. Anything else counts a failure, and the daily job deletes a row
+  at :data:`PUSH_MAX_FAILURES` in a row (:func:`should_reap`; ``push_service.py:180-206``,
+  :252-262).
+* **The payload** (:class:`PushPayload`): ``{title, body, tag, data: {url, type, inbox}}``,
   under 3 KB, the body cut to fit. ``data.type`` is new, so the page can refresh its inbox
   and pick an icon; it sits under the service worker's own message type (keksdose nests
   the payload as ``{type: "PUSH_RECEIVED", data}``), so nothing collides.
@@ -31,7 +33,7 @@ import enum
 import hmac
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -39,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from eifi1_server_kit.notifications.registry import TYPE_ID_PATTERN
 
 __all__ = [
+    "PUSH_GONE_GRACE",
     "PUSH_MAX_FAILURES",
     "PUSH_PAYLOAD_LIMIT",
     "PUSH_TEST_TYPE",
@@ -46,6 +49,7 @@ __all__ = [
     "PUSH_TTL",
     "PushData",
     "PushDeviceResponse",
+    "PushDeviceUpdate",
     "PushKeyResponse",
     "PushOutcome",
     "PushPayload",
@@ -55,6 +59,7 @@ __all__ = [
     "PushTestResponse",
     "PushUnregisterIn",
     "push_auth_matches",
+    "push_gone_expired",
     "push_outcome",
     "should_reap",
     "vapid_subject",
@@ -71,6 +76,12 @@ PUSH_TIMEOUT = 10.0
 #: Failures in a row after which the daily job deletes a device (keksdose
 #: ``push_max_failures``). Every success resets the count.
 PUSH_MAX_FAILURES = 10
+#: How long a device row a push service answered 404/410 for stays claimable by
+#: ``POST /notifications/devices/replace`` (§10.6 rule 4): the browser may rotate the
+#: subscription, a push hit the old endpoint, and the worker's replace comes after. The
+#: reaper marks the row ``gone_at`` and stops sending to it; the daily reap deletes rows
+#: gone longer than this.
+PUSH_GONE_GRACE = timedelta(days=7)
 #: The payload's ``data.type`` for a test push, the account's own and an admin's alike.
 PUSH_TEST_TYPE = "test"
 
@@ -122,18 +133,37 @@ class PushReplaceIn(BaseModel):
 
     No session: a worker has no ``Authorization`` header to send. The proof is the OLD
     subscription — its endpoint and its ``keys.auth`` secret, which only that browser and
-    this server hold (:func:`push_auth_matches` against the stored row). The route:
+    this server hold (:func:`push_auth_matches` against the stored row). The route, in
+    this order (§10.6, settled 2026-10-19):
 
-    * no device row has ``old_endpoint``, or its stored ``auth`` does not match → 404,
-      the same answer for both (nothing to tell apart); the page then shows push as off;
-    * ``subscription.endpoint`` is held by ANOTHER account's row → 409
-      (:class:`~.errors.PushEndpointTakenError`), as on registering;
-    * else the row moves in place: the new endpoint and keys, the same account, the user
-      agent if sent, ``failure_count`` reset → 200 :class:`PushDeviceResponse`. The new
-      endpoint already on the SAME account (a register raced the worker) deletes the old
-      row instead and answers the existing one.
+    1. no device row has ``old_endpoint`` — a row marked gone (``gone_at``) within
+       :data:`PUSH_GONE_GRACE` still counts, an older one does not
+       (:func:`push_gone_expired`) —, or its stored
+       ``auth`` does not match → 404, the same answer for both (nothing to tell apart);
+       the page then shows push as off;
+    2. the row's account is inactive (deactivated, a deletion request) or a demo → the
+       same 404, and the row is deleted: a signed-out or closed account keeps no pushes;
+    3. only now, with the device proven, ``subscription.endpoint`` held by ANOTHER
+       account's row → 409 (:class:`~.errors.PushEndpointTakenError`), as on
+       registering — an unproven caller never learns that an endpoint is taken;
+    4. else the row moves in place: the new endpoint and keys, the same account, the user
+       agent if sent, ``failure_count`` reset, ``gone_at`` cleared → 200
+       :class:`PushDeviceResponse`. The new endpoint already on the SAME account (a
+       register raced the worker) deletes the old row instead and answers the existing one.
 
-    Rate-limit it as the other unauthenticated routes.
+    And around it:
+
+    * **The app deletes an account's push rows** on "sign out everywhere", on
+      deactivation (kastlan's deletion request deactivates) and on erasure, or a
+      device's worker could rotate its subscription forever.
+    * **No RLS on device rows**: a device row is the account's, never a company's (the
+      role is checked per company at send time); a sessionless route under forced RLS
+      answers 404. An app whose table is FORCE RLS (keksdose) runs the lookup and the
+      update under its bypass with an explicit endpoint filter — this route only.
+    * **Never log or echo the body**: its 422 answers a plain detail, never the input (a
+      validation echo would hand ``old_auth`` back). A leaked row's ``keys.auth`` is
+      enough to redirect that person's future pushes.
+    * Rate-limit it as the other unauthenticated routes.
     """
 
     #: The rotated-away subscription's endpoint, as registered.
@@ -149,6 +179,14 @@ def push_auth_matches(stored: str, given: str) -> bool:
     in constant time (a timing difference would leak the secret byte by byte). Base64url
     padding is ignored on both sides: browsers send none, a stored one may carry it."""
     return hmac.compare_digest(stored.rstrip("=").encode(), given.rstrip("=").encode())
+
+
+def push_gone_expired(gone_at: datetime | None, now: datetime, *, grace: timedelta = PUSH_GONE_GRACE) -> bool:
+    """Whether a device row marked gone (``gone_at``, a push service's 404/410) is past its
+    grace (§10.6 rule 4): the daily reap deletes it, and the replace route treats it as
+    absent (404). ``False`` for a row that is not gone (``None``); within the grace a
+    replace may still claim it. Aware datetimes."""
+    return gone_at is not None and now - gone_at > grace
 
 
 class PushKeyResponse(BaseModel):
@@ -175,16 +213,36 @@ class PushDeviceResponse(BaseModel):
     created_at: datetime
     last_success_at: datetime | None
     failure_count: int
+    #: The types this device mutes (§10.2 rule 3, 0.16), in the registry's order: the
+    #: stored list through :func:`~.delivery.read_muted_types`, so an id the registry
+    #: dropped is left out.
+    muted_types: list[str] = Field(default_factory=list)
+
+
+class PushDeviceUpdate(BaseModel):
+    """``PATCH /notifications/devices/{id} {"muted_types": [...]}`` (§10.2 rule 3, 0.16):
+    the WHOLE list of types this device mutes; ``[]`` mutes none. Checked against the
+    account's registry by :func:`~.delivery.apply_muted_types` (422 for an id the account
+    doesn't receive, or one without push); another account's device is a 404."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    muted_types: list[str] = Field(max_length=100)
 
 
 class PushData(BaseModel):
-    """The payload's ``data``: where a click goes, and the notification's type."""
+    """The payload's ``data``: where a click goes, the notification's type, and whether
+    the inbox holds it."""
 
     #: A path in the app (``/support``), opened by the service worker on the app's origin;
     #: never ``//``, a backslash or a scheme.
     url: str
     #: The type id, or :data:`PUSH_TEST_TYPE` for a test push.
     type: str = Field(pattern=TYPE_ID_PATTERN)
+    #: An inbox row was written for it (§10.2, 0.16). ``False`` (push on, in-app off): the
+    #: service worker shows the notification even while a window has focus, as nothing
+    #: else would show it.
+    inbox: bool = True
 
     @field_validator("url")
     @classmethod
@@ -195,7 +253,7 @@ class PushData(BaseModel):
 
 
 class PushPayload(BaseModel):
-    """What the service worker receives: ``{title, body, tag, data: {url, type}}``.
+    """What the service worker receives: ``{title, body, tag, data: {url, type, inbox}}``.
 
     ``tag`` is one per event: a repeat of the same event replaces the earlier notification
     (``digest:2026-W42``), distinct events don't (``support:<uuid>``). Send
@@ -242,7 +300,8 @@ class PushOutcome(enum.StrEnum):
 
     #: 2xx: delivered. Reset the failure count and stamp ``last_success_at``.
     DELIVERED = "delivered"
-    #: 404 or 410: the browser dropped the subscription. Delete the row now.
+    #: 404 or 410: the browser dropped the subscription. Mark the row gone (``gone_at``)
+    #: and send to it no more; delete it after :data:`PUSH_GONE_GRACE` (§10.6 rule 4).
     GONE = "gone"
     #: Anything else, a timeout included: count it; :func:`should_reap` says when to stop.
     FAILED = "failed"
