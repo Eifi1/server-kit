@@ -137,6 +137,12 @@ class FeedbackRepository[RowT: FeedbackRow](Protocol):
         """Every row the request may see, in list_mine's order, each with its author's
         current address: an outer join, None once the author is erased."""
 
+    async def count_by_status(self) -> Mapping[FeedbackStatus, int]:
+        """Every status's count in one GROUP BY status (0.15, admin §9.5), in the request's
+        scope (as inbox): crash reports in, demo authors out, an erased author's report
+        (user_id NULL) in. A status with no row may be missing. On a bypass session
+        (kastlan's app.bypass_rls) it counts every group: never on a platform route."""
+
     async def open_crash(self, fingerprint: str) -> RowT | None:
         """The newest row with this fingerprint whose status is not in TERMINAL_STATUSES,
         the higher id first on a tie."""

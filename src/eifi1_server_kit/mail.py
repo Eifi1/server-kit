@@ -42,6 +42,11 @@ here; kastlan built its own on the same shape.
   :attr:`MailMessage.idempotency_key` from
   :meth:`~eifi1_server_kit.notifications.MailMarker.idempotency_key`, so two runs on one
   day send it once.
+* **The admin's test mail** (``docs/admin-harmonization.md`` §9.2, 0.15):
+  :func:`test_mail_message` in seven languages, sent under :data:`MAIL_TEST_KIND`
+  through the app's own send, awaited inline (never an after-commit hook), and answered
+  as :class:`MailTestResult`; :data:`MAIL_TEST_LIMIT` for the app's limiter. No router:
+  each app's route is a few lines over its own transport.
 """
 
 from __future__ import annotations
@@ -53,20 +58,28 @@ import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from html import escape
 from typing import TYPE_CHECKING, Protocol
+
+from pydantic import BaseModel, ConfigDict
+
+from eifi1_server_kit.auth.limits import Budget
 
 if TYPE_CHECKING:
     import httpx
 
 __all__ = [
     "FALLBACK_LOCALES",
+    "MAIL_TEST_KIND",
+    "MAIL_TEST_LIMIT",
     "RESEND_ENDPOINT",
     "SUPPORT_LOCAL_PART",
     "TIMEOUT_SECONDS",
     "AccountNoticeKind",
     "ConsoleMailer",
     "MailMessage",
+    "MailTestResult",
     "MailText",
     "MailUnsubscribe",
     "Mailer",
@@ -77,6 +90,7 @@ __all__ = [
     "render_mail",
     "render_message",
     "support_address",
+    "test_mail_message",
 ]
 
 logger = logging.getLogger("eifi1_server_kit.mail")
@@ -412,6 +426,121 @@ class AccountNoticeKind(enum.StrEnum):
     #: Once per person, through the app's once-marker (``feedback_published:<user_id>``).
     #: About the person's own data, so no switch and no unsubscribe link (kk, KS).
     FEEDBACK_PUBLISHED = "feedback_published"
+
+
+# --- the test mail (admin-harmonization §9.2, 0.15) --------------------------------------
+
+#: The ``kind`` the admin's test mail is sent and logged under, and its metric label
+#: (keksdose ``record_email``; kastlan's kinds at ``email.py:65``).
+MAIL_TEST_KIND = "mail_test"
+
+#: ``POST /admin/mail/test`` (kastlan: ``/platform/mail/test``): 3 per 10 minutes per
+#: account, beside the app's other limiters (§9.2.1, §9.2.6).
+MAIL_TEST_LIMIT = Budget(3, 600)
+
+
+class MailTestResult(BaseModel):
+    """The test route's answer, ``{sent, mail_backend}`` (§9.2.1). ``sent`` is the app's
+    own ``send``'s bool; a console transport answers ``True`` although nothing left the
+    server, so the page reads ``mail_backend`` first (§9.2.4). The provider's error stays in
+    the server log (§9.2.7)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    sent: bool
+    #: The app's transport as its admin page already reports it: ``console``, ``resend``,
+    #: ``smtp``.
+    mail_backend: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TestMailText:
+    subject: str
+    intro: str
+    body: str
+    outro: str
+
+
+#: The test mail's words (§9.2.3): the app, the transport and the time; never the
+#: recipient. ``{app}``, ``{backend}`` and ``{time}`` are filled in.
+_TEST_MAIL_TEXTS: Mapping[str, _TestMailText] = {
+    "de-CH": _TestMailText(
+        subject="Testmail von {app}",
+        intro="Dies ist eine Testmail.",
+        body="{app} hat sie am {time} über den Mailversand «{backend}» verschickt.",
+        outro="Wenn sie bei Ihnen angekommen ist, funktioniert der Mailversand. Sie müssen nicht antworten.",
+    ),
+    "en": _TestMailText(
+        subject="Test mail from {app}",
+        intro="This is a test mail.",
+        body="{app} sent it through the mail transport “{backend}” on {time}.",
+        outro="If it reached you, the app's mail works. There is no need to reply.",
+    ),
+    "es": _TestMailText(
+        subject="Correo de prueba de {app}",
+        intro="Este es un correo de prueba.",
+        body="{app} lo envió el {time} a través del transporte de correo «{backend}».",
+        outro="Si le ha llegado, el envío de correo funciona. No hace falta responder.",
+    ),
+    "fr": _TestMailText(
+        subject="E-mail de test de {app}",
+        intro="Ceci est un e-mail de test.",
+        body="{app} l’a envoyé le {time} par le transport d’e-mail «\u00a0{backend}\u00a0».",
+        outro="S’il vous est parvenu, l’envoi d’e-mails fonctionne. Inutile d’y répondre.",
+    ),
+    "hu": _TestMailText(
+        subject="Tesztlevél – {app}",
+        intro="Ez egy tesztlevél.",
+        body="A(z) {app} ekkor küldte el a(z) „{backend}” levélküldőn keresztül: {time}.",
+        outro="Ha megérkezett Önhöz, a levélküldés működik. Nem kell válaszolnia.",
+    ),
+    "it": _TestMailText(
+        subject="E-mail di prova da {app}",
+        intro="Questa è un’e-mail di prova.",
+        body="{app} l’ha inviata il {time} tramite il servizio di posta «{backend}».",
+        outro="Se l’ha ricevuta, l’invio delle e-mail funziona. Non serve rispondere.",
+    ),
+    "zh": _TestMailText(
+        subject="来自 {app} 的测试邮件",
+        intro="这是一封测试邮件。",
+        body="{app} 于 {time} 通过邮件通道“{backend}”发送了此邮件。",
+        outro="如果您收到了这封邮件，说明邮件发送正常。无需回复。",
+    ),
+}
+
+
+def test_mail_message(locale: str | None, *, app_name: str, backend: str, sent_at: datetime) -> MailMessage:
+    """The admin's test mail (§9.2.3) in the admin's language, through :func:`pick_entry`'s
+    fallback: subject "Test mail from {app}", a body naming the transport and the time
+    (UTC, ``2026-10-19 14:05 UTC``). It names no recipient, so the route's log line and
+    the mail never carry the address. No link: a whole escaped document as
+    :func:`render_message` lays one out, the plain text beside it.
+
+    The route awaits the app's own send and returns its bool — never an after-commit hook::
+
+        message = test_mail_message(admin.locale, app_name="Kurvenschmiede", backend=backend, sent_at=now)
+        sent = await mailer.send(admin.email, message, kind=MAIL_TEST_KIND)
+        return MailTestResult(sent=sent, mail_backend=backend)
+
+    ``sent_at`` must be aware; a naive one is a :class:`ValueError`.
+    """
+    if sent_at.tzinfo is None or sent_at.utcoffset() is None:
+        raise ValueError("sent_at must carry a time zone")
+    lang, row = pick_entry(locale, _TEST_MAIL_TEXTS)
+    values = {"app": app_name, "backend": backend, "time": sent_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")}
+    subject, intro, body, outro = (part.format_map(values) for part in (row.subject, row.intro, row.body, row.outro))
+    tag = _lang_attribute(lang)
+    html = (
+        f'<!doctype html><html lang="{escape(tag, quote=True)}">'
+        f'<head><meta charset="utf-8"><title>{escape(subject)}</title></head>'
+        f"<body><p>{escape(intro)}</p><p>{escape(body)}</p>"
+        f'<p style="color:#64748b;font-size:12px">{escape(outro)}</p></body></html>'
+    )
+    return MailMessage(subject=subject, text=f"{intro}\n\n{body}\n\n{outro}", html=html)
+
+
+# pytest collects a ``test_*`` function an app's test module imports; this one is not a test.
+test_mail_message.__test__ = False  # type: ignore[attr-defined]
 
 
 class Mailer(Protocol):

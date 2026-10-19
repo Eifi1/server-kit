@@ -33,6 +33,7 @@ import dataclasses
 import secrets
 import struct
 import zlib
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -160,7 +161,8 @@ class InMemoryFeedbackRepository:
 
     ``emails`` are the authors' current addresses (the inbox's join); ``hidden(row,
     viewer)`` hides a row from :meth:`get` as Kurvenschmiede's ``visible_to`` or kastlan's
-    RLS would; ``now`` stamps ``created_at`` and ``updated_at``. ``policy`` is the app's,
+    RLS would; ``demo_authors`` are the demo accounts, whose reports :meth:`count_by_status`
+    leaves out (0.15); ``now`` stamps ``created_at`` and ``updated_at``. ``policy`` is the app's,
     whose prefix finds a body's rework lines in :meth:`urls_named_except`; with ``replies``
     (0.13) it reads the rework entries' files there too, as an app's query joins them.
 
@@ -178,6 +180,7 @@ class InMemoryFeedbackRepository:
         votes: InMemoryVoteStore | None = None,
         comments: InMemoryCommentStore | None = None,
         replies: InMemoryReplyStore | None = None,
+        demo_authors: Collection[int] = (),
     ) -> None:
         #: Every row, by id.
         self.rows: dict[int, MemoryFeedbackRow] = {}
@@ -190,6 +193,8 @@ class InMemoryFeedbackRepository:
         self.votes = votes
         self.comments = comments
         self.replies = replies
+        #: The demo accounts' ids: :meth:`count_by_status` leaves their reports out.
+        self.demo_authors = frozenset(demo_authors)
 
     async def get(self, feedback_id: int, *, viewer: FeedbackActor) -> MemoryFeedbackRow | None:
         row = self.rows.get(feedback_id)
@@ -206,6 +211,17 @@ class InMemoryFeedbackRepository:
     async def inbox(self, status: FeedbackStatus | None) -> Sequence[tuple[MemoryFeedbackRow, str | None]]:
         rows = [row for row in self.rows.values() if status is None or row.status == status]
         return [(row, self.emails.get(row.user_id) if row.user_id is not None else None) for row in _newest_first(rows)]
+
+    async def count_by_status(self) -> Mapping[FeedbackStatus, int]:
+        """The inbox's rows by status (admin §9.5): crash reports in, ``demo_authors``'
+        reports out, an erased author's (``user_id`` None) in. Only the statuses with a
+        row, as a GROUP BY answers."""
+        counted = Counter(
+            FeedbackStatus(row.status)
+            for row in self.rows.values()
+            if row.user_id is None or row.user_id not in self.demo_authors
+        )
+        return dict(counted)
 
     async def open_crash(self, fingerprint: str) -> MemoryFeedbackRow | None:
         rows = [

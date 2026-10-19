@@ -84,6 +84,8 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     # Layer 2's routes, behind the `fastapi` extra; its ports and service come with
     # `eifi1_server_kit.feedback`.
     ("eifi1_server_kit.feedback.router", "docs/server-services-harmonization.md", "§2.9"),
+    ("eifi1_server_kit.tours", "docs/tours-harmonization.md", "§10.2, §10.3"),
+    ("eifi1_server_kit.tours.router", "docs/tours-harmonization.md", "§10.3"),
     ("eifi1_server_kit.uploads", "docs/feedback-harmonization.md", "§3.5"),
     ("eifi1_server_kit.limiter", "docs/feedback-harmonization.md", "§3.5, §3.6"),
     ("eifi1_server_kit.errors", "docs/feedback-harmonization.md", "§3.7"),

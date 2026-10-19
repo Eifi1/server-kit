@@ -398,3 +398,27 @@ def test_assert_public_view_walks_every_object() -> None:
     ):
         with pytest.raises(AssertionError, match=message):
             assert_public_view(bad)
+
+
+async def test_the_fakes_count_by_status_is_the_attention_rule() -> None:
+    """Admin §9.5: crash reports in, demo authors out, an erased author's report in."""
+    demo_id = 99
+    repository = InMemoryFeedbackRepository(emails=EMAILS, demo_authors=[demo_id], now=fixed_clock(NOW))
+
+    def report(user_id: int, status: FeedbackStatus, category: FeedbackCategory = FeedbackCategory.BUG) -> NewFeedback:
+        return NewFeedback(user_id=user_id, title="t", body="b", category=category, status=status, context=None)
+
+    await repository.add(report(AUTHOR.id, FeedbackStatus.OPEN))
+    await repository.add(report(AUTHOR.id, FeedbackStatus.OPEN, FeedbackCategory.CRASH))
+    await repository.add(report(STRANGER.id, FeedbackStatus.READY))
+    await repository.add(report(demo_id, FeedbackStatus.OPEN))
+    await repository.add(report(demo_id, FeedbackStatus.IN_EVALUATION, FeedbackCategory.CRASH))
+    erased = await repository.add(report(STRANGER.id, FeedbackStatus.IN_EVALUATION))
+    erased.user_id = None
+
+    assert await repository.count_by_status() == {
+        FeedbackStatus.OPEN: 2,
+        FeedbackStatus.READY: 1,
+        FeedbackStatus.IN_EVALUATION: 1,
+    }
+    assert await InMemoryFeedbackRepository().count_by_status() == {}

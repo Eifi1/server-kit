@@ -8,8 +8,10 @@ level is decided by (:func:`confirmation_level`).
 **Groups** (§11, round 0.34): Kurvenschmiede's teams, kastlan's companies and keksdose's
 budgets are groups of accounts. Five words record what is done to one and to who is in it
 — ``group_create``, ``group_rename``, ``group_delete``, ``membership_add``,
-``membership_role`` — beside ``membership_remove``. The words say "group"; each app's own
-noun is only in its labels (ui-kit's ``groupNoun``).
+``membership_role`` — beside ``membership_remove``; two more (0.15, admin §9.1.3) record a
+group switched off and on, ``group_deactivate`` and ``group_reactivate`` (kastlan's
+operator on a company). The words say "group"; each app's own noun is only in its labels
+(ui-kit's ``groupNoun``).
 
 **The level is decided on the server** (keksdose ``admin_user_actions_service``). The page
 is not a control: a hand-written POST skips its dialog, so the server states each
@@ -78,6 +80,12 @@ class AdminAction(enum.StrEnum):
     #: A member's role IN THE GROUP changed (Kurvenschmiede's team manager and member;
     #: :attr:`ROLE` is the account's own). ``detail`` is ``{from, to}``.
     MEMBERSHIP_ROLE = "membership_role"
+    #: A whole group was switched off, so nobody in it can sign in to it (kastlan's
+    #: operator deactivating a company, admin §9.1.3); its target is the group. Not the
+    #: person's :attr:`DEACTIVATE`, so the log words it for the group.
+    GROUP_DEACTIVATE = "group_deactivate"
+    #: The group was switched on again (admin §9.1.3).
+    GROUP_REACTIVATE = "group_reactivate"
 
 
 class ConfirmationLevel(enum.StrEnum):
@@ -131,6 +139,8 @@ CONFIRMATION_LEVELS: Mapping[AdminAction, ConfirmationLevel] = {
     AdminAction.GROUP_DELETE: ConfirmationLevel.ACKNOWLEDGE,
     AdminAction.MEMBERSHIP_ADD: ConfirmationLevel.NONE,
     AdminAction.MEMBERSHIP_ROLE: ConfirmationLevel.NONE,
+    AdminAction.GROUP_DEACTIVATE: ConfirmationLevel.NONE,
+    AdminAction.GROUP_REACTIVATE: ConfirmationLevel.NONE,
 }
 
 
