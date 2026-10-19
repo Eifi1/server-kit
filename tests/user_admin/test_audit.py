@@ -11,6 +11,7 @@ import pytest
 
 from eifi1_server_kit.user_admin import (
     DETAIL_MAX_BYTES,
+    DETAIL_NAME_MAX_LENGTH,
     DETAIL_TOKEN_MAX_LENGTH,
     AdminAction,
     AdminActionRow,
@@ -18,6 +19,7 @@ from eifi1_server_kit.user_admin import (
     GroupRef,
     admin_action_record,
     audit_detail,
+    group_name_problem,
 )
 
 NOW = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)
@@ -284,13 +286,7 @@ def test_a_company_rename_logs_both_names() -> None:
 @pytest.mark.parametrize(
     ("action", "detail", "message"),
     [
-        ("group_rename", {"from": "Test AG", "to": "x" * 201}, r"detail\.to: a group's name is 1 to 200"),
-        ("group_rename", {"from": "   ", "to": "Test AG"}, r"detail\.from: a group's name is 1 to 200"),
-        ("group_rename", {"from": "Test\nAG", "to": "Test AG"}, r"detail\.from: .*control characters"),
-        ("group_rename", {"from": "Test AG", "to": "Test​AG"}, r"detail\.to: .*control characters"),
-        ("group_rename", {"from": "Test\u2028AG", "to": "Test AG"}, r"detail\.from: .*control characters"),
         ("group_rename", {"from": "Test AG", "to": 3}, r"detail\.to: a group's name is a string"),
-        ("group_rename", {"from": "Test AG", "to": "a" * 64}, "looks like a secret"),
         # Only the names are free text: everything else in the detail is still a token.
         ("group_rename", {"from": "A", "to": "B", "note": "two words"}, r"detail\.note: .*never content"),
         ("group_rename", {"before": {"from": "Test AG"}}, r"detail\.before\.from: .*never content"),
@@ -306,3 +302,70 @@ def test_only_a_renames_names_are_free_text(action: str | None, detail: dict[str
     if action is not None:
         with pytest.raises(AuditDetailError, match=message):
             admin_action_record(action, actor_id=1, target_user_id=None, target_email=None, detail=detail, now=NOW)
+
+
+# S1 (round-047 build review, kastlan): a rename's names are CLEANED, never refused, so a
+# stored legacy name or a tab in a new one can never turn the admin's rename into a 500.
+@pytest.mark.parametrize(
+    ("given", "logged"),
+    [
+        ("Test\tAG", "Test AG"),
+        ("Test\u00adAG", "TestAG"),  # a soft hyphen (Cf) goes
+        ("Test\u200bAG", "TestAG"),  # a zero-width space (Cf) goes
+        ("Test\nAG\r\n", "Test AG"),
+        ("Test\u2028AG\u2029", "Test AG"),
+        ("Alt\x00AG", "AltAG"),  # a legacy stored name with a NUL
+        ("  Test   \u00a0 AG  ", "Test AG"),
+        ("x" * 300, "x" * (DETAIL_NAME_MAX_LENGTH - 1) + "…"),
+        ("x" * 198 + " yz", "x" * 198 + "…"),  # no space before the ellipsis
+    ],
+)
+def test_a_renames_names_are_cleaned(given: str, logged: str) -> None:
+    detail = audit_detail({"from": given, "to": "Test AG Bern", "by_operator": True}, action="group_rename")
+    assert detail == {"from": logged, "to": "Test AG Bern", "by_operator": True}
+    assert len(detail["from"]) <= DETAIL_NAME_MAX_LENGTH
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n", "\u00ad", "\u200b\u2028", None])
+def test_a_blank_name_is_left_out(blank: str | None) -> None:
+    record = admin_action_record(
+        "group_rename", actor_id=1, target_user_id=None, target_email=None,
+        detail={"from": blank, "to": "Test AG"}, company_id=7, now=NOW,
+    )  # fmt: skip
+    assert record["detail"] == {"to": "Test AG"}
+    assert audit_detail({"from": "Test AG", "to": blank}, action="group_rename") == {"from": "Test AG"}
+
+
+def test_a_secret_shaped_name_is_left_out() -> None:
+    assert audit_detail({"from": "a" * 64, "to": "Test AG"}, action="group_rename") == {"to": "Test AG"}
+
+
+def test_two_long_names_in_any_script_fit() -> None:
+    # The size limit counts UTF-8 bytes: 200 CJK characters are 600, not ensure_ascii's 1200.
+    names = {"from": "株" * 300, "to": "式" * DETAIL_NAME_MAX_LENGTH, "via": "platform"}
+    detail = audit_detail(names, action="group_rename")
+    assert detail["from"] == "株" * (DETAIL_NAME_MAX_LENGTH - 1) + "…" and detail["to"] == names["to"]
+
+
+@pytest.mark.parametrize(
+    ("name", "problem"),
+    [
+        ("Test AG", None),
+        ("  Müller & Söhne Zürich AG ", None),
+        ("株式会社", None),
+        ("x" * DETAIL_NAME_MAX_LENGTH, None),
+        ("", "blank"),
+        ("   ", "blank"),
+        ("x" * (DETAIL_NAME_MAX_LENGTH + 1), "too_long"),
+        ("Test\tAG", "control_character"),
+        ("Test\u00adAG", "control_character"),
+        ("Test\u200bAG", "control_character"),
+        ("Test\nAG", "control_character"),
+        ("Test\u2029AG", "control_character"),
+        ("a" * 64, "secret_shaped"),
+    ],
+)
+def test_group_name_problem_refuses_a_new_name_at_the_edge(name: str, problem: str | None) -> None:
+    assert group_name_problem(name) == problem
+    if problem is None:  # a name the rule accepts is logged as written, stripped
+        assert audit_detail({"to": name}, action="group_rename") == {"to": " ".join(name.split())}

@@ -41,8 +41,10 @@ from eifi1_server_kit.user_admin.audit import (
     DETAIL_NAME_MAX_LENGTH,
     DETAIL_TOKEN_MAX_LENGTH,
     AuditDetailError,
+    GroupNameProblem,
     admin_action_record,
     audit_detail,
+    group_name_problem,
 )
 from eifi1_server_kit.user_admin.deletion import (
     BACKUP_RETENTION_DAYS,
@@ -175,6 +177,7 @@ __all__ = [
     "EmailChangeConfirm",
     "EmailChangeRequest",
     "ExportSecretError",
+    "GroupNameProblem",
     "GroupRef",
     "InvitationCreate",
     "InvitationRow",
@@ -201,6 +204,7 @@ __all__ = [
     "deletion_schedule",
     "export_envelope",
     "export_filename",
+    "group_name_problem",
     "invitation_status",
     "looks_secret",
     "looks_secret_key",

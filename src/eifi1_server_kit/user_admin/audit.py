@@ -38,14 +38,31 @@ JSON column.
 
 **One exception: a company's rename names both names** (0.16, round-047 K8; admin
 §9.1.3, Marcel 2026-10-19 — a company's name is business data, not content). For a
-``group_rename`` row only, the top-level ``from`` and ``to`` of the detail are free text:
-a string, stripped, 1 to :data:`DETAIL_NAME_MAX_LENGTH` characters, no control or format
-characters (no line break, no zero-width space), and never
-:func:`~eifi1_server_kit.user_admin.looks_secret`. Everything else in that detail, and a
-``from``/``to`` nested deeper, is still a token, and every other action still refuses a
-name. The seam is ``audit_detail(detail, action=)``, which :func:`admin_action_record`
-fills from its own ``action``, so an app recording through it needs no change. A team's
-rename (Kurvenschmiede) keeps ``{}``: a team's name is the team's own, never logged.
+``group_rename`` row only, the top-level ``from`` and ``to`` of the detail are free text,
+and they are CLEANED, never refused (round-047 build review S1): the log must never turn
+the admin's rename into a 500, and a ``from`` is a stored name the app may not control. So
+a name loses its control and format characters (``Cc``, ``Cf`` — a soft hyphen, a
+zero-width space — ``Cs``, ``Zl``, ``Zp``; a tab or a line break becomes a space first),
+its whitespace runs collapse to one space, it is stripped, and one longer than
+:data:`DETAIL_NAME_MAX_LENGTH` is cut to that length, ending in ``…``. A name that is
+blank after that, or ``None``, or :func:`~eifi1_server_kit.user_admin.looks_secret`, is
+left out with its key. A name that is not a string is still a programming error.
+Everything else in that detail, and a ``from``/``to`` nested deeper, is still a token, and
+every other action still refuses a name. The seam is ``audit_detail(detail, action=)``,
+which :func:`admin_action_record` fills from its own ``action``, so an app recording
+through it needs no change. A team's rename (Kurvenschmiede) keeps ``{}``: a team's name
+is the team's own, never logged.
+
+**A NEW name is the app's to refuse, at the edge**: :func:`group_name_problem` is the same
+rule as a check, for the app's request schema, so a bad name is a 422 before the rename
+and the log never has to clean it::
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, name: str) -> str:
+        if problem := kit.group_name_problem(name):
+            raise ValueError(f"name: {problem}")  # pydantic answers 422
+        return name.strip()
 
 **A group** (§11, round 0.34) is a column, ``target_group_id``, not a key in ``detail``:
 the group a ``group_*`` row is about, or that a ``membership_*`` or invitation row
@@ -68,11 +85,11 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from datetime import date, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from eifi1_server_kit.auth.accounts import normalise_email
 from eifi1_server_kit.user_admin.actions import AdminAction
-from eifi1_server_kit.user_admin.sensitive import looks_secret
+from eifi1_server_kit.user_admin.sensitive import looks_secret, looks_secret_value
 
 __all__ = [
     "DETAIL_MAX_BYTES",
@@ -80,8 +97,10 @@ __all__ = [
     "DETAIL_NAME_MAX_LENGTH",
     "DETAIL_TOKEN_MAX_LENGTH",
     "AuditDetailError",
+    "GroupNameProblem",
     "admin_action_record",
     "audit_detail",
+    "group_name_problem",
 ]
 
 #: The longest string a detail holds: a role, a locale, an ISO timestamp (32), a kind.
@@ -98,6 +117,12 @@ DETAIL_NAME_MAX_LENGTH = 200
 _NAME_KEYS: dict[str, frozenset[str]] = {AdminAction.GROUP_RENAME.value: frozenset({"from", "to"})}
 
 _TOKEN = re.compile(r"^[A-Za-z0-9_.:+\-]*$")
+#: The characters a name never holds: control, format (a soft hyphen, a zero-width space),
+#: lone surrogates, and the line and paragraph separators.
+_INVISIBLE = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})
+
+#: Why :func:`group_name_problem` refuses a name.
+type GroupNameProblem = Literal["blank", "too_long", "control_character", "secret_shaped"]
 
 type _Json = bool | int | float | str | list[_Json] | dict[str, _Json] | None
 
@@ -116,16 +141,42 @@ def _token(value: str, path: str) -> str:
     return value
 
 
-def _name(value: object, path: str, key: str) -> str:
+def group_name_problem(name: str) -> GroupNameProblem | None:
+    """Why a NEW group name is refused, or ``None`` (0.16, round-047 build review S1): the
+    rule an app's request schema checks a company's new name by, so the edge answers 422
+    and :func:`audit_detail` never has to clean it.
+
+    The name is judged stripped: ``"blank"`` (nothing left), ``"too_long"`` (more than
+    :data:`DETAIL_NAME_MAX_LENGTH` characters), ``"control_character"`` (a tab, a line
+    break, a soft hyphen, a zero-width space — any ``Cc``, ``Cf``, ``Cs``, ``Zl`` or
+    ``Zp`` character), ``"secret_shaped"``
+    (:func:`~eifi1_server_kit.user_admin.looks_secret_value`). Store ``name.strip()``.
+    """
+    stripped = name.strip()
+    if not stripped:
+        return "blank"
+    if len(stripped) > DETAIL_NAME_MAX_LENGTH:
+        return "too_long"
+    if any(unicodedata.category(char) in _INVISIBLE for char in stripped):
+        return "control_character"
+    if looks_secret_value(stripped):
+        return "secret_shaped"
+    return None
+
+
+def _name(value: object, path: str, key: str) -> str | None:
+    """A rename's name, cleaned (see the module docstring), or ``None``: leave the key out."""
+    if value is None:
+        return None
     if not isinstance(value, str):
         raise AuditDetailError(f"{path}: a group's name is a string, not {type(value).__name__}")
-    name = value.strip()
-    if not 1 <= len(name) <= DETAIL_NAME_MAX_LENGTH:
-        raise AuditDetailError(f"{path}: a group's name is 1 to {DETAIL_NAME_MAX_LENGTH} characters")
-    if any(unicodedata.category(char)[0] == "C" or unicodedata.category(char) in ("Zl", "Zp") for char in name):
-        raise AuditDetailError(f"{path}: a group's name holds no control characters: {name[:24]!r}")
-    if looks_secret(key, name):
-        raise AuditDetailError(f"{path}: looks like a secret, which a detail never holds")
+    spaced = "".join(" " if char.isspace() else char for char in value)
+    visible = "".join(char for char in spaced if unicodedata.category(char) not in _INVISIBLE)
+    name = " ".join(visible.split())
+    if len(name) > DETAIL_NAME_MAX_LENGTH:
+        name = name[: DETAIL_NAME_MAX_LENGTH - 1].rstrip() + "…"
+    if not name or looks_secret(key, name):
+        return None
     return name
 
 
@@ -161,9 +212,10 @@ def audit_detail(detail: Mapping[str, object] | None, *, action: AdminAction | s
     :class:`AuditDetailError`. ``None`` is ``{}``.
 
     ``action`` (0.16, K8) is the row's action: for ``group_rename`` the top-level
-    ``from`` and ``to`` are names, free text (stripped, 1 to
-    :data:`DETAIL_NAME_MAX_LENGTH` characters, no control characters, never secret-shaped);
-    without it, or for any other action, every string is a token.
+    ``from`` and ``to`` are names, free text, cleaned rather than refused (no control or
+    format characters, whitespace collapsed, at most :data:`DETAIL_NAME_MAX_LENGTH`
+    characters ending in ``…`` when cut; a blank or secret-shaped name is left out with
+    its key); without it, or for any other action, every string is a token.
     :func:`admin_action_record` passes its own."""
     if detail is None:
         return {}
@@ -172,8 +224,9 @@ def audit_detail(detail: Mapping[str, object] | None, *, action: AdminAction | s
     names = _NAME_KEYS.get(str(action), frozenset())  # an AdminAction is a StrEnum
     named = {key: _name(value, f"detail.{key}", key) for key, value in detail.items() if key in names}
     tokens = cast(dict[str, Any], _clean({k: v for k, v in detail.items() if k not in names}, "detail", "detail", 0))
-    cleaned = {key: named[key] if key in named else tokens[key] for key in detail}
-    if len(json.dumps(cleaned, separators=(",", ":")).encode()) > DETAIL_MAX_BYTES:
+    cleaned = {key: named[key] if key in named else tokens[key] for key in detail if named.get(key, "") is not None}
+    # UTF-8 bytes, as the column stores them: two long names in any script fit (N5).
+    if len(json.dumps(cleaned, separators=(",", ":"), ensure_ascii=False).encode()) > DETAIL_MAX_BYTES:
         raise AuditDetailError(f"detail is larger than {DETAIL_MAX_BYTES} bytes as JSON")
     return cleaned
 
