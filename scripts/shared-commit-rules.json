@@ -1,0 +1,15 @@
+{
+  "repo": "Eifi1/shared-workflows",
+  "tag": "v1.3.0 (pending tag)",
+  "commit": "TODO: the v1.3.0 commit, once tagged: uv run python -I scripts/sync_commit_rules.py v1.3.0",
+  "files": [
+    {
+      "path": "actions/commit-check/check-commit-msg.cjs",
+      "vendoredAs": "scripts/check-commit-msg.cjs"
+    },
+    {
+      "path": "actions/commit-check/check-pushed-commits.cjs",
+      "vendoredAs": "scripts/check-pushed-commits.cjs"
+    }
+  ]
+}
