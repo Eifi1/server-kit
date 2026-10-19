@@ -1268,8 +1268,8 @@ port: baseline it, as the feedback and translation-review store methods already 
 
 Local-first sync, the server half (0.15, local-first contract §1.5 D1, D2, D5 and §1.6):
 keksdose's `/sync` protocol, shared with kastlan. The routes, the entity registries, tenancy
-and RLS, E2EE, billing's refusals, unique-key merges and revival rules, and kastlan's scopes
-stay in the app. Everything but `sync.mixin` is pure; the mixin needs the **`sync` extra**
+and RLS, E2EE, billing's refusals, unique-key merges and revival rules, and each scope's own
+rules (its guards) stay in the app. Everything but `sync.mixin` is pure; the mixin needs the **`sync` extra**
 (`eifi1-server-kit[sync]`, `sqlalchemy>=2.0`) and is imported lazily, so `eifi1_server_kit.sync`
 loads without it.
 
@@ -1280,12 +1280,43 @@ loads without it.
 | The counter | `KnowledgeCounter` (`bump(session, tenant_id)` → the next value under a row lock, synchronous, inside `before_flush`; `None`: unstamped), `TenantOf` |
 | The paged pull | `begin_page`, `PageStart` (`.resume_in(index)`), `cut_page`, `page_of` (the walk over rows in memory), `cursor_at_start`, `page_order`, `is_after`, `SYNC_PAGE_LIMIT` (2000): ordered `(knowledge, id)` per entity, entities in the app's order, the window pinned at `window_end` |
 | SQLAlchemy (`sync.mixin`, the `sync` extra) | `SyncColumns` (`knowledge`, `deleted_at`, a client-owned `updated_at`); `install_sync_stamping(session_cls, *, counter, tenant_of, is_synced, now=)` (one bump per tenant per flush, so rows of one flush share a knowledge: a pull orders within it itself, entities in the app's order; a model without `updated_at` gets its knowledge only; naive columns get naive UTC); `install_tombstone_filter(session_cls, *, synced)` and `INCLUDE_TOMBSTONED` (the pull's opt-out); `tombstone(obj, *, now=)`, `bulk_tombstone(model, *where, knowledge, now)`, `bulk_restamp(…)` |
+| Scopes (0.16.0, §2.4) | `SyncScope(name, roles, readable, writable={}, withheld=frozenset(), after_apply=None)` (`withheld` holds `"<entity>.<field>"`, never pulled and never written, D14; `.withheld_fields(entity)`; `.pull_order(walk)`: the readable entities in the app's walk order, for the paged pull's `entities`, a `ValueError` when the walk leaves one out); `EntityRule(model, create, update, deletable=False, fixed_parents=(), fixed_fields=(), guard=None)` (`create=None`: not created through sync; a fixed parent or field may be re-sent unchanged; `guard(RuleContext)` → a reason refuses); the port `ScopeRows` (`find(entity, row_id)` in the request's company, tombstones included; `parent_id(row, wire_key)`; `references`: wire key → entity); `async sort_changes(scope, changes, rows)` → `SortedChanges(allowed, rejections, context)` (per change: writable, deletable, no withheld field, the create/update schema, references in the company or new in the push, fixed parents and fields, the guard; a child of a refused NEW row is refused with it, "its parent was refused"; `.refuse_whole()` raises the first as `SyncScopeError(change_id, detail)` for a client without `refusals`); `AfterApplyContext(scope, rows, changes, found)` for `after_apply`; `withhold(scope, change)` strips the withheld fields from a pulled `SyncChange` or dict |
 | Testing (`sync.testing`) | `InMemoryKnowledgeCounter(*, per_tenant=True, start=0)` (`calls` as `(tenant_id, autoflush)`, `current(tenant_id)`; `per_tenant=False` is kastlan's one database-wide row) |
 
 **The lock is load-bearing**: `bump` reads and writes one row, so an implementation takes it
 with `SELECT … FOR UPDATE` (keksdose mutates its `households.knowledge` row in memory) or one
 atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` (kastlan); two flushes that both read N
 would hide one device's rows from the other.
+
+**A scope in the app's router** (0.16.0): the app's `ScopeRows` holds its session, so a guard
+or `after_apply` reads it from the context's `rows`. The router stays the app's (roles,
+billing, the demo, the company pin):
+
+```python
+scope = SCOPES[payload.scope]
+rows = CompanyRows(session, company_id)  # the app's ScopeRows
+changes = [change.model_dump() for change in payload.changes]
+sorted_changes = await sort_changes(scope, changes, rows)
+if not payload.refusals:
+    sorted_changes.refuse_whole()  # an older client: the first refusal, a 422, nothing written
+await apply_incoming(session, sorted_changes.allowed)
+if scope.after_apply is not None:
+    await scope.after_apply(sorted_changes.context)
+page, cursor = page_of(
+    rows_by_entity,
+    entities=scope.pull_order(ENTITY_ORDER),
+    cursor=payload.page_cursor,
+    last_knowledge=payload.last_knowledge,
+    server_knowledge=server_knowledge,
+)
+pulled = [withhold(scope, serialize(entity, row)) for entity, row in page]
+return SyncResponse(
+    server_knowledge=server_knowledge,
+    changes=pulled,
+    rejections=sorted_changes.rejections,
+    page_cursor=cursor,
+)
+```
 
 ## Installing it in an app
 

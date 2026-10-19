@@ -9,13 +9,16 @@
   always tombstone;
 * :mod:`~eifi1_server_kit.sync.counter` — the knowledge counter as a port;
 * :mod:`~eifi1_server_kit.sync.paging` — the ``(entity, knowledge, id)`` page cursor;
+* :mod:`~eifi1_server_kit.sync.scopes` — named scopes (0.16.0, §2.4): what a device reads
+  and writes, per entity rule, the fields withheld from it, and :func:`sort_changes`, which
+  refuses a push's changes one by one behind the app's :class:`ScopeRows` port;
 * :mod:`~eifi1_server_kit.sync.mixin` — the columns, the ``before_flush`` stamping, the
   tombstones and their filter, in SQLAlchemy: only with the ``sync`` extra
   (``eifi1-server-kit[sync]``), and imported lazily, so this package loads without it.
 
 ``eifi1_server_kit.sync.testing`` has :class:`InMemoryKnowledgeCounter`; it is not
 re-exported. Stays in the apps: the routes, the entity registries, tenancy and RLS, E2EE,
-billing's refusals, unique-key merges and revival rules, and kastlan's scopes.
+billing's refusals, unique-key merges and revival rules, and each scope's own rules (guards).
 """
 
 from __future__ import annotations
@@ -53,6 +56,17 @@ from eifi1_server_kit.sync.schemas import (
     SyncRequest,
     SyncResponse,
 )
+from eifi1_server_kit.sync.scopes import (
+    AfterApplyContext,
+    EntityRule,
+    RuleContext,
+    ScopeRows,
+    SortedChanges,
+    SyncScope,
+    SyncScopeError,
+    sort_changes,
+    withhold,
+)
 
 if TYPE_CHECKING:
     from eifi1_server_kit.sync.mixin import (
@@ -72,8 +86,13 @@ __all__ = [
     "SYNC_PAGE_LIMIT",
     "SYNC_PLAN_LIMIT",
     "SYNC_REJECTED",
+    "AfterApplyContext",
+    "EntityRule",
     "KnowledgeCounter",
     "PageStart",
+    "RuleContext",
+    "ScopeRows",
+    "SortedChanges",
     "SyncChange",
     "SyncColumns",
     "SyncPageCursor",
@@ -81,6 +100,8 @@ __all__ = [
     "SyncRejection",
     "SyncRequest",
     "SyncResponse",
+    "SyncScope",
+    "SyncScopeError",
     "TenantOf",
     "as_utc",
     "begin_page",
@@ -98,7 +119,9 @@ __all__ = [
     "merge_lww",
     "page_of",
     "page_order",
+    "sort_changes",
     "tombstone",
+    "withhold",
 ]
 
 #: The names :mod:`~eifi1_server_kit.sync.mixin` provides, loaded on first use.

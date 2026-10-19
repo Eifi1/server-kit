@@ -40,6 +40,17 @@ public names, and a patch never changes the surface. One legacy path is removed 
   skew)`, and an optional `skew=` on `merge_lww` and `clamp_stamp`. A SLOW clock's edits no
   longer lose to a colleague's later-arriving older edit; without `client_now`, 0.15.0's
   behaviour.
+* **sync:** named scopes, `sync.scopes` (local-first §2.4; lifted from kastlan's
+  `sync_scopes.py`, its handover rules left to the app as guards): `SyncScope` (`name`, `roles`,
+  `readable`, `writable`, `withheld`, `after_apply`; `pull_order(walk)` for the paged pull's
+  `entities`), `EntityRule` (`create`/`update` schemas, `deletable`, `fixed_parents`,
+  `fixed_fields`, `guard`), the `ScopeRows` port (`find`, `parent_id`, `references`),
+  `RuleContext`, `AfterApplyContext`, `async sort_changes(scope, changes, rows)` →
+  `SortedChanges(allowed, rejections, context)` (one rejection per refused change; a child of a
+  refused new row is refused with it; `refuse_whole()` for a client without `refusals`),
+  `SyncScopeError`, and `withhold(scope, change)`: a scope's `withheld` `"<entity>.<field>"`
+  never reaches a device and a push that writes one is rejected (D14; kastlan:
+  `estates.qr_iban`). Layer 1, no extra.
 * **mail:** `HtmlMailMessage`, a `MailMessage` whose `html` is a `str` (keksdose N2).
 * **user_admin:** `group_name_problem(name)` → `GroupNameProblem` (`blank` / `too_long` /
   `control_character` / `secret_shaped`) or `None`, for the app's 422 on a new bad name;
