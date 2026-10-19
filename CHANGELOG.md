@@ -15,8 +15,21 @@ entry in the Conventional Commit; this file is assembled from them at release.
 server-kit 0.16.0: the backend half of round 0.46 (ui-kit 0.46), from the 0.45 build reviews
 (kastlan, keksdose, Kurvenschmiede) and the D2 amendment of local-first sync
 (`docs/local-first-harmonization.md`). A **minor**, not the 0.15.1 it was prepared as: it adds
-public names, and a patch never changes the surface. Nothing is removed or renamed; the one
-behaviour change an app may notice is under **Changed**.
+public names, and a patch never changes the surface. One legacy path is removed (under
+**⚠ BREAKING CHANGES**); the other behaviour change an app may notice is under **Changed**.
+
+### ⚠ BREAKING CHANGES
+
+* **feedback:** the legacy rework append is a coded 422 (feedback contract §10.3; Marcel
+  2026-10-19, kastlan and Kurvenschmiede agreed). A body-only PATCH that appends to a report
+  outside OPEN / READY / IN_PROGRESS — the rework of a client from before ui-kit 0.40, which
+  0.13–0.15 converted into an entry — is refused before anything is written:
+  `LegacyReworkAppendError` (a `FeedbackValidationError`), answered `{"detail": "This page is
+  out of date: reload it, then send the report back again.", "code": "legacy_rework_append"}`
+  (`LEGACY_REWORK_APPEND`, `LEGACY_REWORK_APPEND_DETAIL`). Only a tab open across the deploy
+  still sends it. Removed: `legacy_rework_block`, `UpdatePlan.rework`, `UpdatePlan.reopened`,
+  `plan_update(prefix=)` and the `feedback.legacy_rework_append` log line. An app test that
+  PATCHes an append to an answered report expects the 422 now.
 
 ### Added
 
