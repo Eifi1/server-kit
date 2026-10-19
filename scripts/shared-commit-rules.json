@@ -1,0 +1,15 @@
+{
+  "repo": "Eifi1/shared-workflows",
+  "tag": "v1.3.0",
+  "commit": "63f04f830933b8bf1fa92d854344c256f13a500c",
+  "files": [
+    {
+      "path": "actions/commit-check/check-commit-msg.cjs",
+      "vendoredAs": "scripts/check-commit-msg.cjs"
+    },
+    {
+      "path": "actions/commit-check/check-pushed-commits.cjs",
+      "vendoredAs": "scripts/check-pushed-commits.cjs"
+    }
+  ]
+}

@@ -6,18 +6,22 @@ import json
 import logging
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
 
 import httpx
 import pytest
 
-from eifi1_server_kit.auth import OneTimeTokenKind
+from eifi1_server_kit.auth import Budget, OneTimeTokenKind
 from eifi1_server_kit.mail import (
     FALLBACK_LOCALES,
+    MAIL_TEST_KIND,
+    MAIL_TEST_LIMIT,
     RESEND_ENDPOINT,
     AccountNoticeKind,
     ConsoleMailer,
     Mailer,
     MailMessage,
+    MailTestResult,
     MailText,
     MailUnsubscribe,
     ResendClient,
@@ -27,6 +31,7 @@ from eifi1_server_kit.mail import (
     render_mail,
     render_message,
     support_address,
+    test_mail_message,
 )
 
 LINK = "https://app.example/reset-password?token=abc&lang=en"
@@ -491,3 +496,60 @@ async def test_the_console_mailer_ignores_the_key(caplog: pytest.LogCaptureFixtu
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
         assert await ConsoleMailer().send("ada@example.com", replace(MESSAGE, idempotency_key=KEY), kind="x_y")
     assert "[email:console] x_y to=ada@example.com" in caplog.text and KEY not in caplog.text
+
+
+# --- the admin's test mail (admin-harmonization §9.2) --------------------------------------
+
+SENT_AT = datetime(2026, 10, 19, 16, 5, tzinfo=timezone(timedelta(hours=2)))
+SEVEN = ("de-CH", "en", "es", "fr", "hu", "it", "zh")
+
+
+@pytest.mark.parametrize("locale", SEVEN)
+def test_the_test_mail_renders_in_each_language(locale: str) -> None:
+    """Subject, the transport and the time (in UTC) in every language; a whole document."""
+    message = test_mail_message(locale, app_name="Kurvenschmiede", backend="resend", sent_at=SENT_AT)
+    assert "Kurvenschmiede" in message.subject
+    for part in (message.text, message.html or ""):
+        assert "Kurvenschmiede" in part and "resend" in part and "2026-10-19 14:05 UTC" in part
+    assert message.html is not None and message.html.startswith(f'<!doctype html><html lang="{locale}">')
+    assert f"<title>{message.subject}</title>" in message.html
+    assert "{" not in message.text and "{" not in message.html, "every placeholder filled"
+    assert message.headers is None and message.idempotency_key is None
+
+
+def test_the_test_mail_says_what_it_is_and_falls_back() -> None:
+    english = test_mail_message("en", app_name="kastlan", backend="smtp", sent_at=SENT_AT)
+    assert english.subject == "Test mail from kastlan"
+    assert english.text == (
+        "This is a test mail.\n\n"
+        "kastlan sent it through the mail transport “smtp” on 2026-10-19 14:05 UTC.\n\n"
+        "If it reached you, the app's mail works. There is no need to reply."
+    )
+    # The language chain of every mail: a region finds its language, an unknown one German.
+    assert test_mail_message("fr-CH", app_name="a", backend="b", sent_at=SENT_AT).subject == "E-mail de test de a"
+    for unknown in (None, "", "xx"):
+        assert test_mail_message(unknown, app_name="a", backend="b", sent_at=SENT_AT).subject == "Testmail von a"
+
+
+def test_the_test_mail_names_no_recipient_and_escapes_its_values() -> None:
+    """The route's log and the mail never carry the address; an app's name is text."""
+    message = test_mail_message("en", app_name="<b>A&B</b>", backend="console", sent_at=SENT_AT.astimezone(UTC))
+    assert "@" not in message.text and "@" not in (message.html or "")
+    assert "&lt;b&gt;A&amp;B&lt;/b&gt;" in (message.html or "") and "<b>" not in (message.html or "")
+    assert message.subject == "Test mail from <b>A&B</b>", "the subject header is plain text"
+    braces = test_mail_message("en", app_name="{backend}", backend="smtp", sent_at=SENT_AT)
+    assert braces.subject == "Test mail from {backend}", "a value is never a format field"
+
+
+def test_the_test_mail_needs_an_aware_time() -> None:
+    with pytest.raises(ValueError, match="time zone"):
+        test_mail_message("en", app_name="a", backend="b", sent_at=datetime(2026, 10, 19, 14, 5))
+
+
+def test_the_test_mail_kind_limit_and_answer() -> None:
+    assert MAIL_TEST_KIND == "mail_test"
+    assert Budget(3, 600) == MAIL_TEST_LIMIT
+    assert MailTestResult(sent=True, mail_backend="console").model_dump() == {"sent": True, "mail_backend": "console"}
+    with pytest.raises(ValueError):
+        MailTestResult.model_validate({"sent": True, "mail_backend": "resend", "to": "a@example.com"})
+    assert test_mail_message.__test__ is False  # type: ignore[attr-defined]

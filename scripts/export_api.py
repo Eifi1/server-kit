@@ -84,6 +84,8 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     # Layer 2's routes, behind the `fastapi` extra; its ports and service come with
     # `eifi1_server_kit.feedback`.
     ("eifi1_server_kit.feedback.router", "docs/server-services-harmonization.md", "§2.9"),
+    ("eifi1_server_kit.tours", "docs/tours-harmonization.md", "§10.2, §10.3"),
+    ("eifi1_server_kit.tours.router", "docs/tours-harmonization.md", "§10.3"),
     ("eifi1_server_kit.uploads", "docs/feedback-harmonization.md", "§3.5"),
     ("eifi1_server_kit.limiter", "docs/feedback-harmonization.md", "§3.5, §3.6"),
     ("eifi1_server_kit.errors", "docs/feedback-harmonization.md", "§3.7"),
@@ -94,6 +96,8 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     ("eifi1_server_kit.translation_review.router", "docs/server-services-harmonization.md", "§6.2"),
     # The showcase reviews translations across origins: the review contract's routes.
     ("eifi1_server_kit.cors", "docs/i18n-harmonization.md", "§2"),
+    # Local-first sync, the server half (0.15): keksdose's /sync protocol, shared with kastlan.
+    ("eifi1_server_kit.sync", "docs/local-first-harmonization.md", "§1.5, §1.6"),
 )
 
 Json = dict[str, Any]

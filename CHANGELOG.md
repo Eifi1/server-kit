@@ -10,6 +10,70 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.15.0] (2026-10-19)
+
+server-kit 0.15.0: the backend half of round 0.45 (ui-kit 0.45), settled on 2026-10-19 after
+the three app reviews — the admin area's §9 (the test mail, the attention counts, a
+company's switch and rename; `docs/admin-harmonization.md`), tour progress on the account
+(`docs/tours-harmonization.md` §10) and the server half of local-first sync
+(`docs/local-first-harmonization.md` §1).
+
+### ⚠ BREAKING CHANGES
+
+* **feedback:** `FeedbackRepository` gains `async count_by_status()`: every app repository must
+  add it (one `GROUP BY status` in the request's scope, as `inbox`), and `check_repository`
+  checks it.
+
+### Added
+
+* **tours:** tour progress on the account (§10). Layer 1: `TourProgressResponse`
+  `{completed: {[id]: ISO | ""}}`, `TourProgressPatch` `{completed?, forget?}`,
+  `TOUR_ID_PATTERN`, `TOUR_PROGRESS_LIMIT` (500), `merge_completions` (per tour the later
+  completion wins; a future one is clamped to now) → `TourProgressMerge`, `progress_response`,
+  and `TourProgressError` (422 `tour_progress_conflict`, `tour_progress_full`, answered by
+  `install_contract_error_handlers`). Layer 2: the `TourProgressStore` port over the app's
+  `tour_completions` table, `TourProgressService` (`progress`, `update`, `export` under
+  `TOUR_PROGRESS_EXPORT_KEY`), `tours.router.tour_progress_router(TourProgressDeps(store=,
+  current_user_id=, guards=, now=))` for `GET` / `PATCH /tours/progress` (the `fastapi`
+  extra), and the fake `tours.testing.InMemoryTourProgressStore`.
+* **feedback:** `feedback_attention(counts)` → `FeedbackAttention(to_triage, awaiting_verdict,
+  released_for_work)`, the admin's three feedback tiles from `count_by_status()` and the
+  kit's own status sets (§9.5); `InMemoryFeedbackRepository.count_by_status`.
+* **mail:** the admin's test mail (§9.2): `test_mail_message(locale, *, app_name, backend,
+  sent_at)` in seven languages, naming the app, the transport and the time, never the
+  recipient; `MAIL_TEST_KIND` (`mail_test`), `MAIL_TEST_LIMIT` (3 per 10 minutes),
+  `MailTestResult` `{sent, mail_backend}`. No router: the app's route awaits its own send.
+* **user_admin:** `AdminAction.GROUP_DEACTIVATE` and `GROUP_REACTIVATE` (kastlan's operator
+  switching a company off and on, §9.1.3), both at `none`; a company's `group_rename` logs
+  `{from, to}` (its name is business data), a team's still logs `{}`.
+* **sync:** local-first sync, the server half (§1.5, §1.6): keksdose's `/sync` shapes
+  (`SyncChange` with the device's `updated_at`, `SyncRequest` with `refusals` and `paged`,
+  `SyncResponse` with the new per-change `rejections: [SyncRejection]`, `SyncPageCursor`,
+  `SYNC_REJECTED`, `SYNC_PLAN_LIMIT`); the merge rule (`merge_lww`: the latest edit time wins,
+  `clamp_stamp` clamps a future stamp; `merge_delete`: a delete always tombstones; `as_utc`);
+  the `KnowledgeCounter` port and `TenantOf`; the paged pull (`begin_page`, `PageStart`,
+  `cut_page`, `page_of`, `cursor_at_start`, `page_order`, `is_after`, `SYNC_PAGE_LIMIT`); and,
+  behind the new **`sync` extra** (`sqlalchemy>=2.0`, imported lazily), `SyncColumns`,
+  `install_sync_stamping`, `install_tombstone_filter`, `INCLUDE_TOMBSTONED`, `tombstone`,
+  `bulk_tombstone`, `bulk_restamp`. `sync.testing.InMemoryKnowledgeCounter` for the apps'
+  tests.
+
+### Changed
+
+* **billing:** `SyncRefusal` moved to `eifi1_server_kit.sync`; `billing` re-exports the same
+  class, so nothing changes for an app.
+* **ci:** the pre-push hook checks every pushed commit's message against the shared rules
+  (`Eifi1/shared-workflows` commit-check v1.3.0, vendored as `scripts/check-commit-msg.cjs` and
+  kept in step by `scripts/sync-commit-rules.py`); without node it says so and skips.
+
+### Fixed — from the 0.45 build reviews
+
+* **sync:** the stamping hook stamps a synced model without `updated_at` with its knowledge
+  only, and writes naive UTC into a naive timestamp column (asyncpg refuses an aware value
+  there); `SyncChange.id`'s text arm is 1–200 characters (kastlan, Kurvenschmiede, keksdose).
+* **tours:** a naive stored `completed_at` is read as UTC (a store over `timestamp without time
+  zone`).
+
 ## [0.14.0] (2026-10-17)
 
 Three contracts settled on 2026-10-17 after the three app reviews, released with ui-kit 0.42:

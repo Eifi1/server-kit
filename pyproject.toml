@@ -1,6 +1,6 @@
 [project]
 name = "eifi1-server-kit"
-version = "0.14.0"
+version = "0.15.0"
 description = "The backend sibling of @eifi1/ui-kit: the cross-app contracts (feedback, uploads, limiter, CORS, translation review, sign-in and the account, user administration, settings, the demo, billing, mail) as pure, framework-light code."
 readme = "README.md"
 license = "MIT"
@@ -38,6 +38,10 @@ billing = ["httpx>=0.28.0"]
 # itself (server-services-harmonization §2.1). `translation_review.router` (0.10) needs
 # FastAPI only; its ports, service and testing module need neither.
 fastapi = ["fastapi>=0.115.0", "python-multipart>=0.0.18"]
+# `sync.mixin` (the columns, the before_flush stamping, tombstones, the tombstone filter)
+# is SQLAlchemy ORM code; `sync`'s schemas, merge rule, paging and counter port need nothing,
+# and the mixin is imported lazily. Both apps' floor, no ceiling (local-first §1.6).
+sync = ["sqlalchemy>=2.0.0"]
 
 [project.urls]
 Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"
@@ -65,6 +69,9 @@ dev = [
     # FastAPI's `UploadFile`, which needs it.
     "python-multipart>=0.0.18",
     "ruff>=0.9.0",
+    # The `sync` extra, so the stamping hook and the tombstone filter are tested on SQLite
+    # in memory.
+    "sqlalchemy>=2.0.0",
 ]
 
 [build-system]

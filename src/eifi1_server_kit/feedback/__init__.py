@@ -19,6 +19,10 @@ four stores' ports and the service's public flows.
 Rework as an entry (0.13, contract §10): ``FeedbackStatus.REWORK``, :data:`QUEUE_STATUSES`,
 :class:`FeedbackEntryKind`, :func:`plan_rework`, :class:`FeedbackReworkCreate`,
 :meth:`FeedbackService.rework`, and :func:`split_rework_blocks` for the migrations.
+
+The admin's counts (0.15, ``docs/admin-harmonization.md`` §9.5):
+:meth:`FeedbackRepository.count_by_status` and :func:`feedback_attention`, which folds it
+into :class:`FeedbackAttention`'s three tiles from the kit's own status sets.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from eifi1_server_kit.feedback.attachments import (
     UUID32_SHA12_KEY_PATTERN,
     AttachmentUrlPolicy,
 )
+from eifi1_server_kit.feedback.attention import FeedbackAttention, feedback_attention
 from eifi1_server_kit.feedback.body import (
     ATTACHMENT_MARKER,
     BLOCK_RULE_RE,
@@ -251,6 +256,7 @@ __all__ = [
     "ErasedFeedback",
     "FeedbackActor",
     "FeedbackAttachmentResponse",
+    "FeedbackAttention",
     "FeedbackCategory",
     "FeedbackCommentCreate",
     "FeedbackCommentHide",
@@ -312,6 +318,7 @@ __all__ = [
     "decide_crash",
     "download_attachment",
     "feedback_attachment_urls",
+    "feedback_attention",
     "feedback_recipients",
     "fold_crash_context",
     "initial_status",

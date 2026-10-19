@@ -1,15 +1,34 @@
 #!/bin/sh
-# Dependabot's half, locally (scripts/check-dependencies.py; Marcel, 2026-10-16, as
-# keksdose's): an open Dependabot alert blocks the push; newer minor/patch versions are
-# listed, never blocking. It replaces Dependabot's uv version-update PRs.
-# Enabled per clone: git config core.hooksPath .githooks. SKIP_DEPENDENCY_CHECK=1 skips it.
-# A push of tags or deletes only needs nothing.
+# Enabled per clone: git config core.hooksPath .githooks.
+#
+# Git hands this hook one line per pushed ref on stdin: "<local ref> <local sha> <remote
+# ref> <remote sha>"; $1 is the remote's name. Stdin is read ONCE, into $input, so both
+# checks below get it.
+input=$(cat)
+
+# 1. The commit messages a push sends: every non-merge commit must pass Conventional
+#    Commits (a header of at most 100 characters) — scripts/check-pushed-commits.cjs, the
+#    shared copy from Eifi1/shared-workflows (scripts/shared-commit-rules.json). The
+#    commit-msg rule is skipped by `git commit --no-verify` and by rewrites; this is the
+#    last local moment. Needs node; without it the check says so and is skipped.
+if command -v node >/dev/null 2>&1; then
+  printf '%s\n' "$input" | node scripts/check-pushed-commits.cjs "${1:-origin}" || exit 1
+else
+  echo "pre-push: node is not installed; the commit-message check is skipped."
+fi
+
+# 2. Dependabot's half, locally (scripts/check-dependencies.py; Marcel, 2026-10-16, as
+#    keksdose's): an open Dependabot alert blocks the push; newer minor/patch versions
+#    are listed, never blocking. It replaces Dependabot's uv version-update PRs.
+#    SKIP_DEPENDENCY_CHECK=1 skips it. A push of tags or deletes only needs nothing.
 tips=""
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "$local_ref" ] || continue
   case "$local_sha" in *[!0]*) ;; *) continue ;; esac
   case "$local_ref" in refs/tags/*) continue ;; esac
   tips="$tips $local_sha"
-done
+done <<EOF
+$input
+EOF
 [ -n "$tips" ] || exit 0
 uv run --quiet --no-sync python -I scripts/check-dependencies.py </dev/null || exit 1

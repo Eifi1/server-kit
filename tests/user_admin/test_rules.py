@@ -76,6 +76,11 @@ def test_the_levels_are_the_contracts_table() -> None:
     # §11.3: the other four group words are none; no group's action is type_email.
     for word in ("group_create", "group_rename", "membership_add", "membership_role", "membership_remove"):
         assert confirmation_level(word) is NONE, word
+    # Admin §9.1.3 (0.15): a group switched off and on, one click as group_rename, and
+    # words of their own, not the person's deactivate.
+    for word in ("group_deactivate", "group_reactivate"):
+        assert confirmation_level(word) is NONE, word
+        assert str(AdminAction(word)) == word
     assert confirmation_level("mail_reset") is NONE
     # keksdose's own word since 0.30, so its stored rows read as the kit's action.
     assert AdminAction("plan") is AdminAction.PLAN and confirmation_level("plan") is ACKNOWLEDGE

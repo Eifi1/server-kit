@@ -57,6 +57,8 @@ def test_the_actions_are_the_contracts() -> None:
         "group_delete",
         "membership_add",
         "membership_role",
+        "group_deactivate",
+        "group_reactivate",
     ]
 
 

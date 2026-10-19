@@ -121,7 +121,11 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     }
     # A submodule an app imports by its own path, not re-exported by its package: layer 2's
     # routes, behind the `fastapi` extra.
-    public |= {"eifi1_server_kit.feedback.router", "eifi1_server_kit.translation_review.router"}
+    public |= {
+        "eifi1_server_kit.feedback.router",
+        "eifi1_server_kit.tours.router",
+        "eifi1_server_kit.translation_review.router",
+    }
     names = [module["name"] for module in data["modules"]]
     assert len(names) == len(set(names)) and set(names) == public, "a new module joins MODULES in the exporter"
     contracts = {module["name"]: module["contract"] for module in data["modules"]}

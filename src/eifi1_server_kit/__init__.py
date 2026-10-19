@@ -41,6 +41,14 @@ models, sessions or commits. Import from the submodules:
   and layer 2 (0.10.0): the review service behind a store port each app implements, its
   routes as ``translation_review.router.translation_review_router`` (the ``fastapi``
   extra) and the fake and conformance checks in ``translation_review.testing``;
+* :mod:`eifi1_server_kit.tours` — tour progress on the account (0.15): the wire shapes,
+  the merge rule (the later completion wins) and its two coded 422s, and layer 2: the
+  service behind a store port each app implements, its routes as
+  ``tours.router.tour_progress_router`` (the ``fastapi`` extra) and the fake in
+  ``tours.testing``;
+* :mod:`eifi1_server_kit.sync` — local-first sync (0.15): keksdose's ``/sync`` shapes with
+  per-change ``rejections``, the latest edit time wins, a knowledge-counter port, paging, and
+  the SQLAlchemy stamping in ``sync.mixin`` (the ``sync`` extra); the fake in ``sync.testing``;
 * :mod:`eifi1_server_kit.clock` — layer 2's clock, an aware UTC ``datetime``;
 * :mod:`eifi1_server_kit.errors` — every kit refusal answered at its contract status.
 
@@ -55,4 +63,4 @@ lifted with a citation on each.
 
 from __future__ import annotations
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
