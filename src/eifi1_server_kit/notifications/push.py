@@ -19,11 +19,16 @@ the kit answers the parts every app must get the same:
 * **The endpoint never goes in a URL**: it is a capability. Unregistering takes it in a
   body (:class:`PushUnregisterIn`); another account's endpoint is a 409
   (:class:`~.errors.PushEndpointTakenError`), never moved.
+* **A rotated subscription is replaced in place** (0.16, :class:`PushReplaceIn`): the
+  browser's service worker re-registers on ``pushsubscriptionchange`` (ui-kit
+  ``handlePushSubscriptionChange``), proving the device by the old endpoint and its
+  ``auth`` secret (:func:`push_auth_matches`), not by a session a worker cannot send.
 """
 
 from __future__ import annotations
 
 import enum
+import hmac
 import json
 import re
 from datetime import datetime
@@ -44,10 +49,12 @@ __all__ = [
     "PushKeyResponse",
     "PushOutcome",
     "PushPayload",
+    "PushReplaceIn",
     "PushSubscriptionIn",
     "PushSubscriptionKeys",
     "PushTestResponse",
     "PushUnregisterIn",
+    "push_auth_matches",
     "push_outcome",
     "should_reap",
     "vapid_subject",
@@ -107,6 +114,41 @@ class PushUnregisterIn(BaseModel):
     its endpoint in the body — never in a URL. Silent when there is none."""
 
     endpoint: str = Field(min_length=1, max_length=_ENDPOINT_MAX_LENGTH)
+
+
+class PushReplaceIn(BaseModel):
+    """``POST /notifications/devices/replace``: the browser rotated a subscription
+    (``pushsubscriptionchange``) and its service worker re-registers it (0.16, NT:1028).
+
+    No session: a worker has no ``Authorization`` header to send. The proof is the OLD
+    subscription — its endpoint and its ``keys.auth`` secret, which only that browser and
+    this server hold (:func:`push_auth_matches` against the stored row). The route:
+
+    * no device row has ``old_endpoint``, or its stored ``auth`` does not match → 404,
+      the same answer for both (nothing to tell apart); the page then shows push as off;
+    * ``subscription.endpoint`` is held by ANOTHER account's row → 409
+      (:class:`~.errors.PushEndpointTakenError`), as on registering;
+    * else the row moves in place: the new endpoint and keys, the same account, the user
+      agent if sent, ``failure_count`` reset → 200 :class:`PushDeviceResponse`. The new
+      endpoint already on the SAME account (a register raced the worker) deletes the old
+      row instead and answers the existing one.
+
+    Rate-limit it as the other unauthenticated routes.
+    """
+
+    #: The rotated-away subscription's endpoint, as registered.
+    old_endpoint: str = Field(min_length=1, max_length=_ENDPOINT_MAX_LENGTH)
+    #: Its ``keys.auth``, as registered (base64url): the proof.
+    old_auth: str = Field(min_length=1, max_length=256)
+    #: The browser's new subscription, as on registering.
+    subscription: PushSubscriptionIn
+
+
+def push_auth_matches(stored: str, given: str) -> bool:
+    """Whether a :class:`PushReplaceIn`'s ``old_auth`` is the stored row's ``keys.auth``,
+    in constant time (a timing difference would leak the secret byte by byte). Base64url
+    padding is ignored on both sides: browsers send none, a stored one may carry it."""
+    return hmac.compare_digest(stored.rstrip("=").encode(), given.rstrip("=").encode())
 
 
 class PushKeyResponse(BaseModel):

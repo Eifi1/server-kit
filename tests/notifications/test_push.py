@@ -23,11 +23,13 @@ from eifi1_server_kit.notifications import (
     PushKeyResponse,
     PushOutcome,
     PushPayload,
+    PushReplaceIn,
     PushSubscriptionIn,
     PushSubscriptionKeys,
     PushTestResponse,
     PushUnregisterIn,
     digest_tag,
+    push_auth_matches,
     push_outcome,
     should_reap,
     vapid_subject,
@@ -78,6 +80,31 @@ def test_unregistering_takes_the_endpoint_in_a_body() -> None:
     assert PushUnregisterIn(endpoint=ENDPOINT).endpoint == ENDPOINT
     with pytest.raises(ValidationError):
         PushUnregisterIn(endpoint="")
+
+
+def test_a_rotated_subscription_is_replaced_by_the_old_endpoint_and_its_auth() -> None:
+    body = PushReplaceIn.model_validate(
+        {
+            "old_endpoint": ENDPOINT,
+            "old_auth": KEYS["auth"],
+            "subscription": {"endpoint": ENDPOINT + "-new", "keys": KEYS, "user_agent": "Firefox"},
+        }
+    )
+    assert body.subscription.endpoint == ENDPOINT + "-new"
+    for bad in (
+        {"old_endpoint": "", "old_auth": "a"},
+        {"old_endpoint": ENDPOINT, "old_auth": ""},
+        {"old_endpoint": ENDPOINT, "old_auth": "a", "subscription": {"endpoint": "http://plain", "keys": KEYS}},
+    ):
+        with pytest.raises(ValidationError):
+            PushReplaceIn.model_validate({"subscription": {"endpoint": ENDPOINT, "keys": KEYS}, **bad})
+
+
+def test_the_old_auth_is_compared_without_padding() -> None:
+    assert push_auth_matches(KEYS["auth"], KEYS["auth"])
+    assert push_auth_matches(KEYS["auth"] + "==", KEYS["auth"]), "a stored padding"
+    assert not push_auth_matches(KEYS["auth"], KEYS["auth"][:-1])
+    assert not push_auth_matches(KEYS["auth"], "")
 
 
 def test_the_small_answers() -> None:
