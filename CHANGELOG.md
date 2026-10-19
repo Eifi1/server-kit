@@ -10,6 +10,49 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.16.0] (2026-10-19)
+
+server-kit 0.16.0: the backend half of round 0.46 (ui-kit 0.46), from the 0.45 build reviews
+(kastlan, keksdose, Kurvenschmiede) and the D2 amendment of local-first sync
+(`docs/local-first-harmonization.md`). A **minor**, not the 0.15.1 it was prepared as: it adds
+public names, and a patch never changes the surface. Nothing is removed or renamed; the one
+behaviour change an app may notice is under **Changed**.
+
+### Added
+
+* **sync:** each push's device clock skew is corrected (D2 amended): `SyncRequest.client_now`
+  (the device's clock when it sends, spelt as `updated_at`), `clock_skew(client_now, *, now)`
+  once per push (`now - client_now`; `timedelta(0)` without `client_now` or within
+  `CLOCK_SKEW_TOLERANCE`, 2 s; capped at `MAX_CLOCK_SKEW`, 24 h), `correct_stamp(stamp, *,
+  skew)`, and an optional `skew=` on `merge_lww` and `clamp_stamp`. A SLOW clock's edits no
+  longer lose to a colleague's later-arriving older edit; without `client_now`, 0.15.0's
+  behaviour.
+* **mail:** `HtmlMailMessage`, a `MailMessage` whose `html` is a `str` (keksdose N2).
+* **user_admin:** `group_name_problem(name)` → `GroupNameProblem` (`blank` / `too_long` /
+  `control_character` / `secret_shaped`) or `None`, for the app's 422 on a new bad name;
+  `DETAIL_NAME_MAX_LENGTH` (200); `audit_detail(detail, *, action=)`, which
+  `admin_action_record` passes its action.
+
+### Changed
+
+* **tours:** the export spells `completed_at` with `Z`, as the wire does (was `isoformat()`'s
+  `+00:00`; Kurvenschmiede). **A test that pins the export's value must be re-pinned.**
+* **mail:** `test_mail_message` returns `HtmlMailMessage` (still a `MailMessage`).
+* **ci:** the shared commit check (`Eifi1/shared-workflows` v1.3.0) over the PR or push range.
+
+### Fixed — from the 0.45 build reviews
+
+* **user_admin:** a company's `group_rename` records its `{from, to}` names, which 0.15.0
+  documented but `audit_detail` refused (a 500; kastlan K8). The names are cleaned, never
+  refused: control and format characters out, whitespace collapsed, cut at 200 with an
+  ellipsis, a blank or secret-shaped name dropped (kastlan S1). Every other detail stays tokens.
+
+### Docs
+
+* **sync:** the rows of one flush share a knowledge — take it with `SELECT … FOR UPDATE` or one
+  atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` (kastlan K5); **tours:** the export's
+  spelling and the vulture note (Kurvenschmiede).
+
 ## [0.15.0] (2026-10-19)
 
 server-kit 0.15.0: the backend half of round 0.45 (ui-kit 0.45), settled on 2026-10-19 after
