@@ -30,7 +30,6 @@ adds the author's vote after the report, which it needs the id of).
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
@@ -38,7 +37,6 @@ from typing import Any, Literal, cast
 from eifi1_server_kit.auth.accounts import first_name_of, full_name
 from eifi1_server_kit.demo import refuse_demo
 from eifi1_server_kit.feedback.attachments import AttachmentUrlPolicy
-from eifi1_server_kit.feedback.body import ReworkBlock
 from eifi1_server_kit.feedback.context import stamp_identity
 from eifi1_server_kit.feedback.crash import (
     CrashDecision,
@@ -138,8 +136,6 @@ __all__ = [
     "throttle_upload",
     "upload_attachment",
 ]
-
-logger = logging.getLogger("eifi1_server_kit.feedback")
 
 #: What a file is served as when its bytes name nothing the policy accepts.
 _UNKNOWN_MEDIA_TYPE = "application/octet-stream"
@@ -394,11 +390,9 @@ class FeedbackService[RowT: FeedbackRow]:
         the row's ``filed_private``; then the one write. ``public`` is a 422 where the app
         has no public parts (no ``public_viewer``).
 
-        **The legacy append** (0.13 only, §10.3): an old client's rework append is written
-        as an entry (one write per store, the report last; ``body`` untouched) — the
-        actor's ``rework`` entry when the actor is the author, else (an admin on another's
-        report) a reply with status REWORK — and logged ``feedback.legacy_rework_append``.
-        Without a reply store the body is appended as before 0.13."""
+        **The legacy append** (§10.3): an old client's rework append on an answered report
+        is a :class:`~eifi1_server_kit.feedback.LegacyReworkAppendError` (coded 422, since
+        0.16; 0.13–0.15 wrote it as an entry), raised by ``plan_update`` before any write."""
         refuse_demo(actor.is_demo, "feedback")
         reject_manual_crash(payload.category)
         changes = payload.model_dump(exclude_unset=True)
@@ -418,41 +412,8 @@ class FeedbackService[RowT: FeedbackRow]:
             is_author=is_author,
             now=self.now(),
             filed_private=bool(getattr(row, "filed_private", False)),
-            prefix=self.policy.prefix,
         )
-        if plan.rework is not None:
-            return await self._legacy_rework(
-                actor, row, plan.changes, plan.rework, body=changes["body"], is_author=is_author
-            )
         return await self.repository.apply(row, plan.changes, actor=actor)
-
-    async def _legacy_rework(
-        self,
-        actor: FeedbackActor,
-        row: RowT,
-        changes: dict[str, Any],
-        block: ReworkBlock,
-        *,
-        body: str,
-        is_author: bool,
-    ) -> RowT:
-        if self.reply_store is None:
-            return await self.repository.apply(row, {**changes, "body": body}, actor=actor)
-        kind = FeedbackEntryKind.REWORK if is_author else FeedbackEntryKind.REPLY
-        logger.info("feedback.legacy_rework_append feedback_id=%s actor_id=%s kind=%s", row.id, actor.id, kind.value)
-        await self.reply_store.add(
-            NewFeedbackReply(
-                feedback_id=row.id,
-                author_id=actor.id,
-                body=block.note,
-                status_from=FeedbackStatus(row.status),
-                status_to=changes["status"],
-                kind=kind,
-                attachment_url=block.url,
-            ),
-            actor=actor,
-        )
-        return await self.repository.apply(row, changes, actor=actor)
 
     async def erase_author(self, user_id: int, identifiers: Iterable[str | None]) -> ErasedFeedback:
         """Take an erased account out of its reports, and answer the files to delete (§2.15).

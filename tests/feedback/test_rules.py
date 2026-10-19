@@ -14,6 +14,8 @@ import pytest
 from eifi1_server_kit.feedback import (
     AUTHOR_EDITABLE_STATUSES,
     AWAITING_STATUSES,
+    LEGACY_REWORK_APPEND,
+    LEGACY_REWORK_APPEND_DETAIL,
     REWORKABLE_STATUSES,
     TERMINAL_STATUSES,
     CrashCategoryNotAssignableError,
@@ -21,6 +23,8 @@ from eifi1_server_kit.feedback import (
     FeedbackForbiddenError,
     FeedbackStatus,
     FeedbackUpdate,
+    FeedbackValidationError,
+    LegacyReworkAppendError,
     UpdatePlan,
     check_author_edit,
     initial_status,
@@ -30,7 +34,6 @@ from eifi1_server_kit.feedback import (
     resolved_at_change,
     rework_status,
 )
-from eifi1_server_kit.feedback.body import ReworkBlock
 
 NOW = datetime(2026, 10, 4, 9, 12, tzinfo=UTC)
 S = FeedbackStatus
@@ -101,7 +104,7 @@ def test_the_author_edits_title_body_and_category_while_open_ready_or_in_progres
     changes = {"title": "reworded", "body": "clarified", "category": FeedbackCategory.BUG}
     for status in AUTHOR_EDITABLE_STATUSES:
         plan = _author(status, changes)
-        assert plan.changes == changes and not plan.reopened
+        assert plan.changes == changes and not plan.reworking
 
 
 def test_the_author_cannot_edit_after_in_evaluation() -> None:
@@ -140,31 +143,31 @@ def test_check_author_edit_alone() -> None:
 # ── rework (keksdose P-F9-2, live #331) ─────────────────────────────────────
 
 
-def test_the_author_reworks_a_settled_entry_by_appending_to_it() -> None:
-    """keksdose ``test_feedback.py:165``: back in the queue, and the terminal stamp cleared.
-    Since 0.13 (§10.3) the append is no body edit: the block comes back split."""
+def test_an_old_clients_rework_append_is_a_coded_422() -> None:
+    """Since 0.16 (§10.3, Marcel 2026-10-19): the PATCH append a client from before ui-kit
+    0.40 sent as its rework is refused — no entry, no status, nothing written. The coded 422
+    tells a tab left open across the deploy to reload; ``POST …/rework`` is the way now."""
     appended = "original\n\n--- REWORK 2026-08-19 12:00 ---\nactually, still broken"
-    plan = _author(S.DONE, {"body": appended}, body="original")
-    assert plan.reworking and plan.reopened
-    assert plan.changes == {"status": S.OPEN, "resolved_at": None}
-    assert plan.rework == ReworkBlock(datetime(2026, 8, 19, 12, 0, tzinfo=UTC), "actually, still broken")
+    with pytest.raises(LegacyReworkAppendError, match="reload") as refused:
+        _author(S.DONE, {"body": appended}, body="original")
+    assert isinstance(refused.value, FeedbackValidationError)
+    assert (
+        (refused.value.status_code, refused.value.code) == (422, LEGACY_REWORK_APPEND) == (422, "legacy_rework_append")
+    )
+    assert str(refused.value) == LEGACY_REWORK_APPEND_DETAIL
 
 
-def test_every_answered_status_reopens_on_a_rework() -> None:
+def test_every_answered_status_refuses_the_append() -> None:
     assert {S.IN_EVALUATION, S.NEEDS_LIVE_TEST, S.POSTPONED, S.DONE, S.WONT_DO, S.REWORK} == REWORKABLE_STATUSES, (
         "the five answered ones and REWORK itself (§10.2 decision 4)"
     )
     for status in REWORKABLE_STATUSES:
-        plan = _author(status, {"body": "b + more"})
-        assert plan.changes["status"] is S.OPEN, status
-        assert ("resolved_at" in plan.changes) == (status in TERMINAL_STATUSES)
-        # Not the legacy client's shape: the whole appended text is one round sent now.
-        assert plan.rework == ReworkBlock(NOW, "+ more") and "body" not in plan.changes
-    # In the author's lane an append is an ordinary edit: nothing to reopen.
+        with pytest.raises(LegacyReworkAppendError):
+            _author(status, {"body": "b + more"})
+    # In the author's lane an append is an ordinary edit: nothing to refuse.
     for status in AUTHOR_EDITABLE_STATUSES:
         plan = _author(status, {"body": "b + more"})
-        assert plan.reworking and not plan.reopened and "status" not in plan.changes
-        assert plan.rework is None and plan.changes["body"] == "b + more"
+        assert plan.reworking and plan.changes == {"body": "b + more"}
 
 
 def test_a_settled_entry_still_cannot_be_rewritten_by_its_author() -> None:
@@ -175,14 +178,14 @@ def test_a_settled_entry_still_cannot_be_rewritten_by_its_author() -> None:
             _author(S.DONE, changes, body="original")
 
 
-def test_an_admins_rework_goes_back_to_rework_without_being_told_to() -> None:
-    """keksdose ``test_feedback.py:310`` (live #331): body alone, from an admin, on a parked
-    entry. An admin's rework is already triaged, so it is REWORK, not OPEN (§10.2 decision 5;
-    READY before 0.13)."""
-    plan = _admin(S.NEEDS_LIVE_TEST, {"body": "original\n\n--- REWORK 2026-09-16 03:57 ---\nstill"}, body="original")
-    assert plan.changes == {"status": S.REWORK} and plan.reopened
-    done = _admin(S.DONE, {"body": "original + more"}, body="original")
-    assert done.changes == {"status": S.REWORK, "resolved_at": None}
+def test_an_admins_append_is_refused_too() -> None:
+    """keksdose ``test_feedback.py:310`` (live #331) was an admin's rework by body alone; since
+    0.16 an admin's append outside the author's lane is the same coded 422 (an admin sends a
+    REWORK reply)."""
+    with pytest.raises(LegacyReworkAppendError):
+        _admin(S.NEEDS_LIVE_TEST, {"body": "original\n\n--- REWORK 2026-09-16 03:57 ---\nstill"}, body="original")
+    with pytest.raises(LegacyReworkAppendError):
+        _admin(S.DONE, {"body": "original + more"}, body="original")
 
 
 def test_an_admin_can_still_annotate_without_re_queueing() -> None:
@@ -190,7 +193,7 @@ def test_an_admin_can_still_annotate_without_re_queueing() -> None:
     and the terminal stamp is not disturbed."""
     plan = _admin(S.DONE, {"body": "original\n\n--- REWORK x ---\nfor the record", "status": S.DONE}, body="original")
     assert plan.changes["status"] is S.DONE and "resolved_at" not in plan.changes
-    assert not plan.reworking and not plan.reopened
+    assert not plan.reworking
 
 
 def test_reopens_alone() -> None:
@@ -226,13 +229,13 @@ def test_a_rework_goes_back_to_rework_from_an_admin_and_to_open_otherwise() -> N
 
 def test_the_author_may_edit_a_ready_row() -> None:
     plan = _author(S.READY, {"title": "reworded", "body": "b + more"})
-    assert plan.changes == {"title": "reworded", "body": "b + more"} and not plan.reopened
+    assert plan.changes == {"title": "reworded", "body": "b + more"} and not plan.reworking
 
 
 def test_the_sent_changes_are_not_mutated() -> None:
-    sent: dict[str, Any] = {"body": "b + more"}
-    plan = _author(S.DONE, sent)
-    assert sent == {"body": "b + more"} and plan.changes is not sent
+    sent: dict[str, Any] = {"status": S.DONE}
+    plan = _admin(S.OPEN, sent)
+    assert sent == {"status": S.DONE} and plan.changes is not sent and plan.changes["resolved_at"] == NOW
 
 
 def test_an_admin_may_do_anything_else() -> None:
@@ -287,8 +290,10 @@ def test_an_apps_own_enum_classes_work_unchanged() -> None:
         CRASH = "CRASH"
         BUG = "BUG"
 
-    plan = plan_update(status=AppStatus.DONE, body="a", changes={"body": "a b"}, is_admin=False, is_author=True)
-    assert plan.changes == {"status": S.OPEN, "resolved_at": None}
+    plan = plan_update(status=AppStatus.OPEN, body="a", changes={"body": "a b"}, is_admin=False, is_author=True)
+    assert plan.changes == {"body": "a b"} and plan.reworking
+    with pytest.raises(LegacyReworkAppendError):
+        plan_update(status=AppStatus.DONE, body="a", changes={"body": "a b"}, is_admin=False, is_author=True)
     with pytest.raises(CrashCategoryNotAssignableError):
         reject_manual_crash(AppCategory.CRASH)
     reject_manual_crash(AppCategory.BUG)
@@ -380,28 +385,3 @@ def test_plan_rework_is_the_authors_on_an_answered_report() -> None:
     for status in AUTHOR_EDITABLE_STATUSES:
         with pytest.raises(FeedbackForbiddenError, match=f"Entry is in {status.value}; only answered entries"):
             plan_rework(status=status, is_author=True, actor_is_admin=False)
-
-
-def test_the_legacy_append_is_split_or_taken_whole() -> None:
-    from eifi1_server_kit.feedback import ReworkBlock, legacy_rework_block
-
-    url = "/files/aaaaaaaaaaaa.png"
-    shaped = f"orig\n\n--- REWORK 2026-10-04 09:12 ---\nagain\n[screenshot] {url}"
-    assert legacy_rework_block("orig", shaped, now=NOW, prefix="/files/") == ReworkBlock(
-        datetime(2026, 10, 4, 9, 12, tzinfo=UTC), "again", url
-    )
-    two = "orig\n\n--- REWORK 2026-10-04 09:12 ---\na\n\n--- REWORK 2026-10-04 09:13 ---\nb"
-    assert legacy_rework_block("orig", two, now=NOW).note.startswith("--- REWORK 2026-10-04 09:12 ---")
-    odd = "orig\n\n--- REWORK ANSWERED 2026-10-04 ---\nx"
-    assert legacy_rework_block("orig", odd, now=NOW) == ReworkBlock(NOW, "--- REWORK ANSWERED 2026-10-04 ---\nx")
-    prefixed = "orig\n\nbefore\n--- REWORK 2026-10-04 09:12 ---\nx"
-    assert legacy_rework_block("orig", prefixed, now=NOW).stamp == NOW, "text before the block: taken whole"
-
-
-def test_plan_update_finds_the_file_under_the_apps_prefix() -> None:
-    appended = "o\n\n--- REWORK 2026-10-04 09:12 ---\nn\n[screenshot] /files/aaaaaaaaaaaa.png"
-    plan = plan_update(
-        status=S.WONT_DO, body="o", changes={"body": appended}, is_admin=False, is_author=True, prefix="/files/"
-    )
-    assert plan.rework is not None and plan.rework.url == "/files/aaaaaaaaaaaa.png"
-    assert plan.changes["status"] is S.OPEN and "body" not in plan.changes

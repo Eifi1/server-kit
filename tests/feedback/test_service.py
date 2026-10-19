@@ -29,6 +29,7 @@ from eifi1_server_kit.feedback import (
     FeedbackStatus,
     FeedbackThrottledError,
     FeedbackUpdate,
+    LegacyReworkAppendError,
     NewFeedback,
     StoredAttachment,
     attachment_line,
@@ -307,13 +308,14 @@ async def test_a_row_the_adapter_hides_is_a_404_whatever_the_setting() -> None:
         await service.update(STRANGER, row.id, FeedbackUpdate(title="x"))
 
 
-async def test_resolved_at_and_the_rework_use_the_rules_and_the_clock() -> None:
+async def test_resolved_at_uses_the_rules_and_the_clock() -> None:
     service = _service()
     row = await _filed(service)
     done = await service.update(ADMIN, row.id, FeedbackUpdate(status=FeedbackStatus.DONE))
     assert done.resolved_at == NOW and done.outcome is None
-    reworked = await service.update(AUTHOR, row.id, FeedbackUpdate(body=row.body + "\n\n--- REWORK ---\nStill slow"))
-    assert reworked.status is FeedbackStatus.OPEN and reworked.resolved_at is None
+    # Since 0.16 an old client's append is a coded 422, with a reply store or without.
+    with pytest.raises(LegacyReworkAppendError):
+        await service.update(AUTHOR, row.id, FeedbackUpdate(body=row.body + "\n\n--- REWORK ---\nStill slow"))
 
 
 # --- erase_author ------------------------------------------------------------------------

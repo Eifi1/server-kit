@@ -95,6 +95,8 @@ from eifi1_server_kit.feedback.erasure import (
 )
 from eifi1_server_kit.feedback.errors import (
     COMMENTS_THROTTLED_DETAIL,
+    LEGACY_REWORK_APPEND,
+    LEGACY_REWORK_APPEND_DETAIL,
     THROTTLED_DETAIL,
     VOTES_THROTTLED_DETAIL,
     AttachmentNotFoundError,
@@ -105,6 +107,7 @@ from eifi1_server_kit.feedback.errors import (
     FeedbackNotFoundError,
     FeedbackThrottledError,
     FeedbackValidationError,
+    LegacyReworkAppendError,
     UnknownAttachmentUrlError,
 )
 from eifi1_server_kit.feedback.ports import (
@@ -151,7 +154,6 @@ from eifi1_server_kit.feedback.rules import (
     UpdatePlan,
     check_author_edit,
     initial_status,
-    legacy_rework_block,
     plan_reply,
     plan_rework,
     plan_update,
@@ -213,6 +215,8 @@ __all__ = [
     "FEEDBACK_ANSWERED",
     "FEEDBACK_COMMENT",
     "FEEDBACK_CONTEXT_KEEP",
+    "LEGACY_REWORK_APPEND",
+    "LEGACY_REWORK_APPEND_DETAIL",
     "MAX_ATTACHMENT_BYTES",
     "MAX_ATTACHMENT_URLS",
     "MAX_BODY_LENGTH",
@@ -287,6 +291,7 @@ __all__ = [
     "FeedbackValidationError",
     "FeedbackVoteResponse",
     "FeedbackVoteStore",
+    "LegacyReworkAppendError",
     "NewFeedback",
     "NewFeedbackComment",
     "NewFeedbackReply",
@@ -324,7 +329,6 @@ __all__ = [
     "initial_status",
     "is_public",
     "is_rework_append",
-    "legacy_rework_block",
     "normalise_crash_text",
     "opens_with_rework_rule",
     "plan_reply",

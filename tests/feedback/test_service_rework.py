@@ -1,19 +1,18 @@
 """Rework as a conversation entry (feedback-harmonization §10.2, §10.3; server-kit 0.13).
 
 The author's ``rework`` flow, who may send a report back and where it lands, an admin's
-REWORK reply, the one-release PATCH conversion both ways, no notification, the views'
+REWORK reply, the old PATCH append's coded 422 (since 0.16) both ways, no notification, the views'
 ``kind`` and ``attachment_url``, the ``outcome`` shim, and the erasure of an entry's file.
 """
 
 from __future__ import annotations
-
-import logging
 
 import pytest
 
 from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.feedback import (
     ERASED_MARK,
+    LEGACY_REWORK_APPEND,
     REWORK_AUTHOR_ONLY,
     FeedbackActor,
     FeedbackEntryKind,
@@ -24,6 +23,7 @@ from eifi1_server_kit.feedback import (
     FeedbackService,
     FeedbackStatus,
     FeedbackUpdate,
+    LegacyReworkAppendError,
     UnknownAttachmentUrlError,
     append_rework,
 )
@@ -126,51 +126,27 @@ async def test_an_admins_rework_reply_is_a_reply_and_notifies(world: World) -> N
     assert (entry.kind, entry.status_to, entry.attachment_url) == (FeedbackEntryKind.REPLY, S.REWORK, None)
 
 
-# --- the legacy PATCH append (0.13 only) ------------------------------------------------------
+# --- the legacy PATCH append (0.13 and 0.14-0.15; a 422 since 0.16) ---------------------------
 
 
-async def test_an_old_clients_append_is_written_as_the_authors_entry(
-    world: World, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_an_old_clients_append_is_a_coded_422_and_writes_nothing(world: World) -> None:
     row = await _answered(world)
     appended = append_rework(row.body, "still broken", FILE, now=NOW)
     assert appended is not None
-    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.feedback"):
-        sent = await world.service.update(AUTHOR, row.id, FeedbackUpdate(body=appended))
-    assert "feedback.legacy_rework_append" in caplog.text
-    assert sent.body == "b" and sent.status is S.OPEN and sent.resolved_at is None
-    assert world.repository.calls == ["get", "apply"] and world.replies.calls == ["add"]
-    [(entry, _)] = world.replies.added
-    assert (entry.kind, entry.body, entry.attachment_url, entry.status_from, entry.status_to) == (
-        REWORK,
-        "still broken",
-        FILE,
-        S.DONE,
-        S.OPEN,
-    )
-    assert world.replies.notified == []
+    with pytest.raises(LegacyReworkAppendError) as refused:
+        await world.service.update(AUTHOR, row.id, FeedbackUpdate(body=appended))
+    assert refused.value.code == LEGACY_REWORK_APPEND
+    assert world.repository.calls == ["get"] and world.replies.calls == []
+    assert (row.body, row.status) == ("b", S.DONE)
 
 
-async def test_an_admins_append_to_someone_elses_report_is_a_rework_reply(world: World) -> None:
+async def test_an_admins_append_is_refused_as_well(world: World) -> None:
     row = await _answered(world)
     appended = append_rework(row.body, "please look again", now=NOW)
     assert appended is not None
-    sent = await world.service.update(ADMIN, row.id, FeedbackUpdate(body=appended))
-    assert sent.body == "b" and sent.status is S.REWORK
-    [(entry, by)] = world.replies.notified
-    assert (entry.kind, entry.author_id, entry.body, entry.status_to, by) == (
-        FeedbackEntryKind.REPLY,
-        ADMIN.id,
-        "please look again",
-        S.REWORK,
-        ADMIN,
-    )
-    # An admin's append to their own report is their rework entry.
-    own = await _answered(world, ADMIN)
-    again = append_rework(own.body, "mine", now=NOW)
-    assert again is not None
-    assert (await world.service.update(ADMIN, own.id, FeedbackUpdate(body=again))).status is S.REWORK
-    assert [entry.kind for entry, _ in world.replies.added] == [REWORK]
+    with pytest.raises(LegacyReworkAppendError):
+        await world.service.update(ADMIN, row.id, FeedbackUpdate(body=appended))
+    assert world.replies.added == [] and world.replies.notified == []
 
 
 # --- the views ---------------------------------------------------------------------------------

@@ -25,12 +25,11 @@ The lanes:
 * **Rework** (round 0.40, §10.3) — an entry of its own, ``POST /feedback/{id}/rework``,
   the report's author's only: :func:`plan_rework`. The server sets the status — REWORK
   when an admin sends it, OPEN otherwise (:func:`rework_status`, §10.2 decision 5).
-* **The legacy append** (server-kit 0.13 only) — a body-only PATCH that strictly extends
-  the body (admin or author; anyone else is refused before the append is looked at). On a
-  row outside OPEN / READY / IN_PROGRESS it is no body edit any more: :func:`plan_update`
-  answers the appended block in :attr:`UpdatePlan.rework`, leaves ``body`` out of the
-  changes and sets the status by :func:`rework_status`; the service writes the block as
-  an entry. From 0.14 such an append is a 422.
+* **The legacy append** — a body-only PATCH that strictly extends the body (admin or
+  author; anyone else is refused before the append is looked at), the rework of a client
+  from before ui-kit 0.40. On a row outside OPEN / READY / IN_PROGRESS it is a
+  :class:`LegacyReworkAppendError` (coded 422, since 0.16; 0.13–0.15 converted it into an
+  entry). Inside that lane it is an ordinary body edit.
 * **The first status** — the server decides it at submit, from the author's role:
   :func:`initial_status` (§8.2). The client never sends a status with a new row.
 * **resolved_at** — stamped on a real transition INTO DONE / WONT_DO, cleared on leaving
@@ -47,8 +46,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from eifi1_server_kit.feedback.attachments import DEFAULT_ATTACHMENT_URL_PREFIX
-from eifi1_server_kit.feedback.body import ReworkBlock, appended_text, is_rework_append, split_rework_blocks
+from eifi1_server_kit.feedback.body import is_rework_append
 from eifi1_server_kit.feedback.enums import (
     AUTHOR_EDITABLE_STATUSES,
     REWORKABLE_STATUSES,
@@ -56,7 +54,11 @@ from eifi1_server_kit.feedback.enums import (
     FeedbackCategory,
     FeedbackStatus,
 )
-from eifi1_server_kit.feedback.errors import CrashCategoryNotAssignableError, FeedbackForbiddenError
+from eifi1_server_kit.feedback.errors import (
+    CrashCategoryNotAssignableError,
+    FeedbackForbiddenError,
+    LegacyReworkAppendError,
+)
 
 #: The fields an author may edit while the row is in their lane (keksdose
 #: ``feedback_service.py:88``). Status, outcome and resolved_at record what the team decided.
@@ -94,8 +96,9 @@ def check_author_edit(
 
     Raises :class:`FeedbackForbiddenError` with keksdose's wording: ``Not the author``;
     ``Author cannot change: <fields>``; ``Entry is in <STATUS>; only OPEN / READY /
-    IN_PROGRESS entries can be edited by the author`` (unless ``reworking``, or a
-    ``public``-only change on a ``filed_private`` report, §9.3).
+    IN_PROGRESS entries can be edited by the author`` (unless ``reworking`` — then
+    :func:`plan_update` answers the coded 422 — or a ``public``-only change on a
+    ``filed_private`` report, §9.3).
     """
     current = FeedbackStatus(status)
     if not is_author:
@@ -111,8 +114,8 @@ def check_author_edit(
 
 
 def reopens(status: FeedbackStatus | str, *, reworking: bool) -> bool:
-    """Does a rework append send this row back to the queue? Yes outside OPEN / READY /
-    IN_PROGRESS (keksdose ``:179``); :func:`rework_status` says to which status."""
+    """Is this append the legacy rework (keksdose ``:179``)? Yes outside OPEN / READY /
+    IN_PROGRESS: :func:`plan_update` refuses it with :class:`LegacyReworkAppendError`."""
     return reworking and FeedbackStatus(status) not in AUTHOR_EDITABLE_STATUSES
 
 
@@ -160,34 +163,12 @@ def resolved_at_change(
 
 @dataclass(frozen=True, slots=True)
 class UpdatePlan:
-    """What to write onto the row: ``changes`` is the sent fields, plus the server's own
-    ``status`` (a rework sent back to the queue — :func:`rework_status`; ``reopened``
-    says it happened) and ``resolved_at`` (a stamp or a clear) when they apply.
-
-    ``rework`` (0.13 only, §10.3): set when ``reopened`` — the appended block, split, for
-    the service to write as an entry; ``body`` is then NOT in ``changes``."""
+    """What to write onto the row: ``changes`` is the sent fields, plus the server's
+    ``resolved_at`` (a stamp or a clear) when it applies. ``reworking`` says the PATCH was
+    an append — inside the author's lane, the only place one is still accepted."""
 
     changes: dict[str, Any]
     reworking: bool
-    reopened: bool
-    rework: ReworkBlock | None = None
-
-
-def legacy_rework_block(
-    old_body: str | None, new_body: str, *, now: datetime, prefix: str = DEFAULT_ATTACHMENT_URL_PREFIX
-) -> ReworkBlock:
-    """The block an old client's append carries (§10.3): the appended text split by
-    :func:`~eifi1_server_kit.feedback.split_rework_blocks` when it is exactly one
-    well-formed block; anything else appended is one round sent ``now``, its text the
-    note, no file."""
-    added = appended_text(old_body, new_body)
-    try:
-        rest, blocks = split_rework_blocks(added, prefix=prefix)
-    except ValueError:
-        rest, blocks = added, []
-    if len(blocks) == 1 and not rest.strip():
-        return blocks[0]
-    return ReworkBlock(stamp=now, note=added.strip())
 
 
 def plan_update(
@@ -199,20 +180,21 @@ def plan_update(
     is_author: bool,
     now: datetime | None = None,
     filed_private: bool = False,
-    prefix: str = DEFAULT_ATTACHMENT_URL_PREFIX,
 ) -> UpdatePlan:
     """The whole PATCH rule for one row, as data (keksdose ``update_feedback``).
 
     ``status`` / ``body`` are the row's STORED values; ``changes`` is what the client sent
     (``payload.model_dump(exclude_unset=True)``) and is not mutated. Raises
-    :class:`CrashCategoryNotAssignableError` (→ 422) or :class:`FeedbackForbiddenError`
-    (→ 403); otherwise every key of :attr:`UpdatePlan.changes` is a column to assign.
-    ``now`` stamps ``resolved_at`` (default: the current UTC time). ``filed_private`` is
-    the row's flag (§9.3): its author may then switch ``public`` at any status.
+    :class:`CrashCategoryNotAssignableError` (→ 422), :class:`FeedbackForbiddenError`
+    (→ 403) or :class:`LegacyReworkAppendError` (→ coded 422, below); otherwise every key
+    of :attr:`UpdatePlan.changes` is a column to assign. ``now`` stamps ``resolved_at``
+    (default: the current UTC time). ``filed_private`` is the row's flag (§9.3): its
+    author may then switch ``public`` at any status.
 
-    **The legacy append** (0.13 only, §10.3): a rework append on a row outside the author's
-    lane sets :attr:`UpdatePlan.rework` (:func:`legacy_rework_block`, its file found under
-    ``prefix``) and drops ``body`` from ``changes``; the status is :func:`rework_status`'s.
+    **The legacy append** (§10.3): a rework append on a row outside the author's lane, by
+    the author or an admin, is refused with :class:`LegacyReworkAppendError` (since 0.16;
+    0.13–0.15 converted it into an entry). An admin who means to annotate sends a status
+    with the body — then it is not an append at all (keksdose ``test_feedback.py:351``).
     """
     reject_manual_crash(changes.get("category"))
     current = FeedbackStatus(status)
@@ -220,25 +202,16 @@ def plan_update(
     reworking = is_rework_append(body, changes)
     if not is_admin:
         check_author_edit(current, changes, is_author=is_author, reworking=reworking, filed_private=filed_private)
+    if reopens(current, reworking=reworking):
+        raise LegacyReworkAppendError()
 
     planned = dict(changes)
-    at = now or datetime.now(UTC)
-    # The server re-queues, whoever sent the rework: to REWORK for an admin's (already
-    # triaged), to OPEN for anyone else's (§10.2 decision 5). An admin who means to annotate
-    # without re-queueing sends a status with the body — then this is not an append at all
-    # and the status they sent wins by construction (keksdose test_feedback.py:351).
-    reopened = reopens(current, reworking=reworking)
-    rework: ReworkBlock | None = None
-    if reopened:
-        rework = legacy_rework_block(body, planned.pop("body"), now=at, prefix=prefix)
-        planned["status"] = rework_status(actor_is_admin=is_admin)
-
     change = resolved_at_change(current, planned.get("status"))
     if change == "stamp":
-        planned["resolved_at"] = at
+        planned["resolved_at"] = now or datetime.now(UTC)
     elif change == "clear":
         planned["resolved_at"] = None
-    return UpdatePlan(changes=planned, reworking=reworking, reopened=reopened, rework=rework)
+    return UpdatePlan(changes=planned, reworking=reworking)
 
 
 @dataclass(frozen=True, slots=True)

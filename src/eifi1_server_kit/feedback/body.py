@@ -2,11 +2,10 @@
 
 **Legacy since round 0.40** (§10.2 decision 1): a rework is now an entry of its own
 (``feedback_replies.kind = 'rework'``), and nothing is appended to the body any more.
-:func:`split_rework_blocks` turns the old blocks into entries — each app's migration, and
-for one release (0.13) the server's PATCH conversion of an old client's append
-(:func:`~eifi1_server_kit.feedback.plan_update`). :func:`append_rework`,
-:func:`rework_count` and :func:`is_rework_append` stay for that conversion, the
-migration's downgrade and a client's fallback count.
+:func:`split_rework_blocks` turns the old blocks into entries — each app's migration.
+:func:`append_rework`, :func:`rework_count` and :func:`is_rework_append` stay for the
+migration's downgrade, a client's fallback count and the coded 422 an old client's append
+gets since 0.16 (:func:`~eifi1_server_kit.feedback.plan_update`; 0.13–0.15 converted it).
 
 Before round 0.40 a rework was a block appended to the body, and the server recognised
 the append and re-opened the row (see :mod:`eifi1_server_kit.feedback.rules`). The
@@ -87,7 +86,7 @@ def append_rework(
     """``body`` with one rework round appended — the exact text the contract's PATCH carried.
 
     Legacy (§10.3): a rework is an entry now; this is the shape a migration's downgrade
-    writes back and an old client still sends for one release.
+    writes back, and what an old client still sends (refused since 0.16).
 
     Mirrors the kit's ``appendRework``: the note is required and trimmed (a file alone
     cannot be sent — ``None`` for a blank note, as the kit returns ``null``); ONE file per
@@ -144,8 +143,9 @@ def body_attachment_urls(body: str | None, *, prefix: str = DEFAULT_ATTACHMENT_U
 def is_rework_append(old_body: str | None, changes: Mapping[str, Any]) -> bool:
     """Is this PATCH an APPEND to the body — the rework composer's shape?
 
-    Legacy (§10.3): server-kit 0.13 turns such a PATCH into a rework entry
-    (:func:`~eifi1_server_kit.feedback.plan_update`'s ``rework``); from 0.14 it is a 422.
+    Legacy (§10.3): on an answered report such a PATCH is a
+    :class:`~eifi1_server_kit.feedback.LegacyReworkAppendError` (coded 422, since 0.16;
+    server-kit 0.13–0.15 turned it into a rework entry).
 
     keksdose ``feedback_service.py:93`` ``_is_rework_append``, as the contract states it
     (§3.4): the changed fields are ``{"body"}`` and nothing else, and the new body strictly
