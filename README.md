@@ -1079,9 +1079,11 @@ domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` logs
 the mail with its link — development only; kastlan passes `logging.WARNING`.
 
 **The admin's test mail** (0.15, admin §9.2): `test_mail_message(locale, *, app_name,
-backend, sent_at)` → `MailMessage` in the admin's language (seven, through `pick_entry`'s
+backend, sent_at)` → `HtmlMailMessage` in the admin's language (seven, through `pick_entry`'s
 fallback), naming the app, the transport and the time in UTC — never the recipient, so
 neither the mail nor the route's log line carries the address; `sent_at` must be aware.
+`HtmlMailMessage` (0.15.1) is a `MailMessage` whose `html` is a `str`, so an app whose own
+send takes `html: str` passes `message.html` as it is, no `or ""`.
 `MAIL_TEST_KIND` (`mail_test`) is its `kind` and metric label, `MAIL_TEST_LIMIT` (3 per 10
 minutes per account) the app's limiter's budget, `MailTestResult` `{sent, mail_backend}` the
 answer. No router: each app's `POST /admin/mail/test` (kastlan `/platform/mail/test`) is a
@@ -1237,6 +1239,11 @@ app.include_router(
 install_contract_error_handlers(app)
 ```
 
+The export's `completed_at` is spelled as the routes answer it, `2026-10-18T07:00:00Z`
+(0.15.1; 0.15.0 wrote `isoformat()`'s `+00:00`). **A dead-code check** (vulture, as in
+Kurvenschmiede) sees the store's `completions` called only by the kit's service through the
+port: baseline it, as the feedback and translation-review store methods already are.
+
 ### `eifi1_server_kit.sync`
 
 Local-first sync, the server half (0.15, local-first contract §1.5 D1, D2, D5 and §1.6):
@@ -1252,7 +1259,7 @@ loads without it.
 | The merge | `merge_lww(existing_updated, incoming_updated, *, now)` (whole-row LWW on the device's edit time; equal keeps the incoming row; a row without a stamp loses), `merge_delete(…)` (always tombstones, stamped now), `clamp_stamp(stamp, *, now)` (none or a future stamp → now), `as_utc` (a naive value read as UTC) |
 | The counter | `KnowledgeCounter` (`bump(session, tenant_id)` → the next value under a row lock, synchronous, inside `before_flush`; `None`: unstamped), `TenantOf` |
 | The paged pull | `begin_page`, `PageStart` (`.resume_in(index)`), `cut_page`, `page_of` (the walk over rows in memory), `cursor_at_start`, `page_order`, `is_after`, `SYNC_PAGE_LIMIT` (2000): ordered `(knowledge, id)` per entity, entities in the app's order, the window pinned at `window_end` |
-| SQLAlchemy (`sync.mixin`, the `sync` extra) | `SyncColumns` (`knowledge`, `deleted_at`, a client-owned `updated_at`); `install_sync_stamping(session_cls, *, counter, tenant_of, is_synced, now=)` (one bump per tenant per flush; a model without `updated_at` gets its knowledge only; naive columns get naive UTC); `install_tombstone_filter(session_cls, *, synced)` and `INCLUDE_TOMBSTONED` (the pull's opt-out); `tombstone(obj, *, now=)`, `bulk_tombstone(model, *where, knowledge, now)`, `bulk_restamp(…)` |
+| SQLAlchemy (`sync.mixin`, the `sync` extra) | `SyncColumns` (`knowledge`, `deleted_at`, a client-owned `updated_at`); `install_sync_stamping(session_cls, *, counter, tenant_of, is_synced, now=)` (one bump per tenant per flush, so rows of one flush share a knowledge: a pull orders within it itself, entities in the app's order; a model without `updated_at` gets its knowledge only; naive columns get naive UTC); `install_tombstone_filter(session_cls, *, synced)` and `INCLUDE_TOMBSTONED` (the pull's opt-out); `tombstone(obj, *, now=)`, `bulk_tombstone(model, *where, knowledge, now)`, `bulk_restamp(…)` |
 | Testing (`sync.testing`) | `InMemoryKnowledgeCounter(*, per_tenant=True, start=0)` (`calls` as `(tenant_id, autoflush)`, `current(tenant_id)`; `per_tenant=False` is kastlan's one database-wide row) |
 
 **The lock is load-bearing**: `bump` reads and writes one row, so an implementation takes it
