@@ -78,6 +78,7 @@ __all__ = [
     "TIMEOUT_SECONDS",
     "AccountNoticeKind",
     "ConsoleMailer",
+    "HtmlMailMessage",
     "MailMessage",
     "MailTestResult",
     "MailText",
@@ -323,6 +324,15 @@ class MailMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class HtmlMailMessage(MailMessage):
+    """A :class:`MailMessage` whose ``html`` is always there, as :func:`test_mail_message`
+    returns it: an app whose own send takes ``html: str`` passes ``message.html`` as it is
+    (keksdose N2, 0.15.1). Every :class:`MailMessage` rule holds; ``html`` is required."""
+
+    html: str
+
+
+@dataclass(frozen=True, slots=True)
 class MailText:
     """One mail's words in one language (Kurvenschmiede ``MailText``).
 
@@ -509,7 +519,7 @@ _TEST_MAIL_TEXTS: Mapping[str, _TestMailText] = {
 }
 
 
-def test_mail_message(locale: str | None, *, app_name: str, backend: str, sent_at: datetime) -> MailMessage:
+def test_mail_message(locale: str | None, *, app_name: str, backend: str, sent_at: datetime) -> HtmlMailMessage:
     """The admin's test mail (§9.2.3) in the admin's language, through :func:`pick_entry`'s
     fallback: subject "Test mail from {app}", a body naming the transport and the time
     (UTC, ``2026-10-19 14:05 UTC``). It names no recipient, so the route's log line and
@@ -522,7 +532,8 @@ def test_mail_message(locale: str | None, *, app_name: str, backend: str, sent_a
         sent = await mailer.send(admin.email, message, kind=MAIL_TEST_KIND)
         return MailTestResult(sent=sent, mail_backend=backend)
 
-    ``sent_at`` must be aware; a naive one is a :class:`ValueError`.
+    ``sent_at`` must be aware; a naive one is a :class:`ValueError`. The answer is an
+    :class:`HtmlMailMessage`: its ``html`` is a ``str``, never ``None``.
     """
     if sent_at.tzinfo is None or sent_at.utcoffset() is None:
         raise ValueError("sent_at must carry a time zone")
@@ -536,7 +547,7 @@ def test_mail_message(locale: str | None, *, app_name: str, backend: str, sent_a
         f"<body><p>{escape(intro)}</p><p>{escape(body)}</p>"
         f'<p style="color:#64748b;font-size:12px">{escape(outro)}</p></body></html>'
     )
-    return MailMessage(subject=subject, text=f"{intro}\n\n{body}\n\n{outro}", html=html)
+    return HtmlMailMessage(subject=subject, text=f"{intro}\n\n{body}\n\n{outro}", html=html)
 
 
 # pytest collects a ``test_*`` function an app's test module imports; this one is not a test.

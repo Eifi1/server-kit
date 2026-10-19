@@ -7,6 +7,7 @@ import logging
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from typing import assert_type
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from eifi1_server_kit.mail import (
     RESEND_ENDPOINT,
     AccountNoticeKind,
     ConsoleMailer,
+    HtmlMailMessage,
     Mailer,
     MailMessage,
     MailTestResult,
@@ -539,6 +541,22 @@ def test_the_test_mail_names_no_recipient_and_escapes_its_values() -> None:
     assert message.subject == "Test mail from <b>A&B</b>", "the subject header is plain text"
     braces = test_mail_message("en", app_name="{backend}", backend="smtp", sent_at=SENT_AT)
     assert braces.subject == "Test mail from {backend}", "a value is never a format field"
+
+
+def test_the_test_mail_always_has_its_html_half() -> None:
+    """keksdose N2: the return type says ``html`` is a ``str``, so an app whose own send
+    takes ``html: str`` needs no ``message.html or ""``. Still a :class:`MailMessage`."""
+    message = test_mail_message("en", app_name="a", backend="b", sent_at=SENT_AT)
+    assert_type(message.html, str)
+    assert isinstance(message, HtmlMailMessage) and isinstance(message, MailMessage)
+    assert message.html.startswith("<!doctype html>")
+    keyed = replace(message, idempotency_key="k1")
+    assert_type(keyed, HtmlMailMessage)
+    assert keyed.html == message.html and keyed.idempotency_key == "k1"
+    with pytest.raises(TypeError):
+        HtmlMailMessage(subject="s", text="t")  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="mail header"):
+        HtmlMailMessage(subject="s", text="t", html="<p>t</p>", headers={"Bad Name": "v"})
 
 
 def test_the_test_mail_needs_an_aware_time() -> None:
