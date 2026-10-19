@@ -68,7 +68,8 @@ class AdminAction(enum.StrEnum):
     PLAN = "plan"
     #: A group was created (§11.3); its target is the group (``target_group_id``).
     GROUP_CREATE = "group_create"
-    #: A group was renamed. ``detail`` is ``{}``: never a name, old or new.
+    #: A group was renamed. ``detail`` is ``{}`` for a team (never a name, old or new), and
+    #: ``{from, to}`` for a company, whose name is business data (admin §9.1.3; Marcel, 2026-10-19).
     GROUP_RENAME = "group_rename"
     #: A group was deleted, with what goes with it: ``detail`` is the app's counts
     #: (Kurvenschmiede's ``{members, grants, invitations}``), and the row alone carries
