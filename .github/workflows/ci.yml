@@ -23,6 +23,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history: the commit check walks the PR's or the push's range.
+          fetch-depth: 0
+      # The same rules as the pre-push hook (scripts/check-pushed-commits.cjs, the shared
+      # copy pinned in scripts/shared-commit-rules.json): every non-merge commit in the PR's
+      # or the push's range — never the whole history, so main's four old headers over 100
+      # characters (v0.6.0, v0.8.0, v0.10.0, v0.13.1) fail nothing. A new tag's push has no
+      # `before` and checks its tip's range only. No .versionrc: the Conventional Commits
+      # defaults, as in the hook. Move this pin with scripts/sync-commit-rules.py's.
+      - name: Commit messages — Conventional Commits
+        uses: Eifi1/shared-workflows/actions/commit-check@63f04f830933b8bf1fa92d854344c256f13a500c # v1.3.0
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
