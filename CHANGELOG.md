@@ -14,9 +14,13 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 server-kit 0.16.0: the backend half of round 0.46 (ui-kit 0.46), from the 0.45 build reviews
 (kastlan, keksdose, Kurvenschmiede) and the D2 amendment of local-first sync
-(`docs/local-first-harmonization.md`). A **minor**, not the 0.15.1 it was prepared as: it adds
-public names, and a patch never changes the surface. One legacy path is removed and push
-becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other behaviour change an app may notice is under **Changed**.
+(`docs/local-first-harmonization.md`), plus notifications §10 and feedback §11 (settled
+2026-10-19, the zone amended 2026-10-20) and local-first §2's named sync scopes. A **minor**,
+not the 0.15.1 it was prepared as: it adds public names, and it **breaks** three things an app
+must handle in the same bump (under **⚠ BREAKING CHANGES**): the legacy rework append is a
+coded 422 and its names are gone, push becomes a channel of its own, and the notification
+settings lose their picked `timezone` (the zone is automatic). The behaviour changes an app
+may notice without code are under **Changed**. Per-app steps: ui-kit's `docs/adopt-0.46.md`.
 
 ### ⚠ BREAKING CHANGES
 
@@ -38,6 +42,13 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   type switched off would push again by its default. kastlan and Kurvenschmiede build their
   registry with `push_channel=False` (else kastlan's `app=False` types read `push: false`).
   `NotificationType`'s repr and the settings' JSON carry `push` (and `bundle`).
+* **notifications, auth:** the zone is automatic only (notifications §10.3, amended
+  2026-10-20): the account's zone is the device last used, else Zurich, and nobody picks one.
+  `QuietHoursFields.timezone` and `QuietHoursUpdate.timezone` are removed, so the settings'
+  answer carries no zone and a `timezone` sent in their PATCH is a 422 (`extra="forbid"`);
+  `UserResponse` / `ProfileUpdate` have no `timezone` either, so `PATCH /auth/me` with one is a
+  422. Quiet hours read `effective_zone(user.device_timezone)` (below); an app moves its stored
+  settings zone to `users.device_timezone` in the bump's migration.
 
 ### Added
 
@@ -57,7 +68,11 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   `notifications_tick`, `QUEUE_*`; layer 2 `notifications.router` (the `fastapi` extra:
   `InboxDeps`, `inbox_router`, `notifications_jobs_router`) and `notifications.testing`
   (`InMemoryInboxStore`, `InMemoryNotificationQueue`, `RecordingFlushPort`).
-* **notifications (§10.6, the rotation route's rules):** `PUSH_GONE_GRACE` (7 days) and
+* **notifications (§10.6):** the push replace route, `POST /notifications/devices/replace`, for
+  a subscription the browser rotated (`pushsubscriptionchange` runs in the service worker,
+  without a session): `PushReplaceIn` (the old endpoint plus its `auth` secret as the proof,
+  and the new subscription) and `push_auth_matches(stored, given)` (a constant-time compare);
+  the app mounts the route. Its rules: `PUSH_GONE_GRACE` (7 days) and
   `push_gone_expired(gone_at, now)`; `PushReplaceIn`'s docstring holds the settled rules (an
   inactive or demo account the same 404 and its row deleted, the proof before the 409, a gone
   row claimable within the grace, no RLS on device rows, the body never logged, push rows
@@ -67,9 +82,7 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   `null`, in `PROFILE_NOT_NULLABLE`), `RegisterRequest.device_timezone` (an unknown zone
   dropped), `ZoneName`, `MAX_ZONE_LENGTH`, `PROFILE_ZONE_FIELDS` (`("device_timezone",)`),
   `apply_zone_update(user, patch, *, is_demo)` (a demo's zone ignored). The account's zone is
-  the device last used, else Zurich: there is no pick (`timezone` on `/auth/me` is a 422), and
-  the settings resource carries no zone (`QuietHoursFields` / `QuietHoursUpdate` lost
-  `timezone`; a `timezone` in its PATCH is a 422).
+  the device last used, else Zurich; there is no pick (see **⚠ BREAKING CHANGES**).
 * **feedback (§11, the admins' alert):** `FEEDBACK_RECEIVED`, `FeedbackAlert`,
   `FeedbackAlertKind`, the `FeedbackAlerts` port, `admin_alert_recipients(admin_ids, *,
   actor_id)`, `mails_at_once(alert)`; `FeedbackService(alerts=None)` tells it after `create`,
@@ -112,7 +125,6 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   deleting it at once (§10.6 rule 4; the app's reaper); the daily reap deletes it after
   `PUSH_GONE_GRACE`. `in_quiet_hours`' held push waits for `quiet_hours_end` where the app
   runs the queue.
-* **ci:** the shared commit check (`Eifi1/shared-workflows` v1.3.0) over the PR or push range.
 
 ### Fixed — from the 0.45 build reviews
 
@@ -120,6 +132,11 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   documented but `audit_detail` refused (a 500; kastlan K8). The names are cleaned, never
   refused: control and format characters out, whitespace collapsed, cut at 200 with an
   ellipsis, a blank or secret-shaped name dropped (kastlan S1). Every other detail stays tokens.
+
+### CI
+
+* the shared commit check (`Eifi1/shared-workflows` v1.3.0) over the PR or push range; the
+  commit hooks follow the shared rules as of shared-workflows b4582d3 (v1.3.1, pending tag).
 
 ### Docs
 
