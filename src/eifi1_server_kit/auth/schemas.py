@@ -153,7 +153,7 @@ def _known_zone_or_none(value: object) -> object:
 ZoneName = Annotated[str, Field(max_length=MAX_ZONE_LENGTH), AfterValidator(_known_zone)]
 #: :func:`apply_zone_update`'s fields: pass them as ``apply_patch``'s ``skip``, so a demo's
 #: zone is never written.
-PROFILE_ZONE_FIELDS: tuple[str, ...] = ("timezone", "device_timezone")
+PROFILE_ZONE_FIELDS: tuple[str, ...] = ("device_timezone",)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -298,10 +298,9 @@ class UserResponse(BaseModel):
     #: The account's contrast mode (text-size §6, §10.6); ``None`` = never chosen, which
     #: reads as ``"system"``.
     contrast: ContrastMode | None = None
-    #: The person's zone pick (notifications §10.3, 0.16), an IANA name; ``None`` =
-    #: Automatic: the device's, else the app's (``effective_zone``).
-    timezone: str | None = None
-    #: The zone a device last reported; the client reports its own when it differs.
+    #: The zone the device last used reported (notifications §10.3, 0.16), an IANA name;
+    #: the client reports its own when it differs. It IS the account's zone — automatic
+    #: only (amended 2026-10-20), ``None`` = the app's (``effective_zone``).
     device_timezone: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
@@ -336,7 +335,7 @@ PROFILE_NOT_NULLABLE: tuple[str, ...] = (
 
 
 class ProfileUpdate(BaseModel):
-    """``PATCH /auth/me {first_name?, last_name?, locale?, text_size?, contrast?, timezone?,
+    """``PATCH /auth/me {first_name?, last_name?, locale?, text_size?, contrast?,
     device_timezone?}`` (§6.1;
     Kurvenschmiede ``ProfileUpdate``; ``docs/text-size-harmonization.md`` §6, §10.6).
 
@@ -356,10 +355,10 @@ class ProfileUpdate(BaseModel):
     ``de`` as the offered German, and a language the app doesn't offer is a 422. Unset,
     only the tag's shape is checked, as before.
 
-    **The zone** (notifications §10.3, 0.16): ``timezone`` (the pick, ``null`` =
-    Automatic) and ``device_timezone`` (a report, never ``null``), each an IANA name
-    ``zoneinfo`` knows (422 otherwise). A demo's are ignored, as its locale and
-    appearance are in Kurvenschmiede::
+    **The zone** (notifications §10.3, 0.16; amended 2026-10-20, Marcel: automatic only):
+    ``device_timezone``, the device's report (never ``null``), an IANA name ``zoneinfo``
+    knows (422 otherwise). There is no pick: a ``timezone`` field is refused as any unknown
+    field is. A demo's is ignored, as its locale and appearance are in Kurvenschmiede::
 
         apply_patch(user, body, not_nullable=PROFILE_NOT_NULLABLE, skip=PROFILE_ZONE_FIELDS)
         apply_zone_update(user, body, is_demo=user.is_demo)
@@ -378,11 +377,9 @@ class ProfileUpdate(BaseModel):
     text_size: TextSize | None = None
     #: One of :data:`CONTRAST_MODES`; left out keeps the account's, ``null`` is refused.
     contrast: ContrastMode | None = None
-    #: The person's zone pick (notifications §10.3, 0.16); ``null`` is Automatic. Write it
-    #: with :func:`apply_zone_update`, which ignores a demo's.
-    timezone: ZoneName | None = None
     #: The device's zone, reported at app start when it differs from the stored one; a
-    #: report, so ``null`` is refused. Write it with :func:`apply_zone_update`.
+    #: report, so ``null`` is refused. Write it with :func:`apply_zone_update`, which
+    #: ignores a demo's.
     device_timezone: ZoneName | None = None
 
     @field_validator("locale", mode="before")
@@ -410,11 +407,10 @@ class ProfileUpdate(BaseModel):
 def apply_zone_update(
     user: object | MutableMapping[str, object], patch: BaseModel, *, is_demo: bool
 ) -> dict[str, object]:
-    """Write the zone fields the PATCH sent (:data:`PROFILE_ZONE_FIELDS`) onto ``user`` —
-    an ORM row (``setattr``) or a mutable mapping — and answer them; nothing for a demo,
-    whose device zone is never stored (notifications §10.3 Settled). ``patch`` is a
-    :class:`ProfileUpdate` (or any model with those fields); a field left out keeps.
-    ``device_timezone`` never touches ``timezone``: a report is not a pick."""
+    """Write the zone field the PATCH sent (:data:`PROFILE_ZONE_FIELDS`: the device's
+    report) onto ``user`` — an ORM row (``setattr``) or a mutable mapping — and answer it;
+    nothing for a demo, whose device zone is never stored (notifications §10.3 Settled).
+    ``patch`` is a :class:`ProfileUpdate` (or any model with the field); left out keeps."""
     if is_demo:
         return {}
     written: dict[str, object] = {}

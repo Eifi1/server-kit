@@ -49,7 +49,7 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   the app has none); per device `PushDeviceUpdate(muted_types)`,
   `PushDeviceResponse.muted_types`, `device_receives`, `read_muted_types`, `apply_muted_types`;
   `PushData.inbox` (`false`: no inbox row, the worker shows it even while focused); the zone on
-  the account: `effective_zone(timezone, device_timezone)`, `local_today(zone, now)`,
+  the account, automatic only: `effective_zone(device_timezone)`, `local_today(zone, now)`,
   `quiet_hours_end(start, end, zone, now)` (across midnight, both DST days); the inbox's port
   `InboxStore`, `NewInboxItem`, `InboxItem.company`, `INBOX_PAGE_DEFAULT` / `INBOX_PAGE_MAX`;
   the opt-in queue `NotificationQueue`, `NewQueueItem`, `QueueItem`, `QueueChannel`,
@@ -62,12 +62,14 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   inactive or demo account the same 404 and its row deleted, the proof before the 409, a gone
   row claimable within the grace, no RLS on device rows, the body never logged, push rows
   deleted on sign-out-everywhere, deactivation and erasure).
-* **auth (notifications §10.3):** `UserResponse.timezone` / `.device_timezone`,
-  `ProfileUpdate.timezone` (`null` = Automatic) / `.device_timezone` (never `null`, in
-  `PROFILE_NOT_NULLABLE`), `RegisterRequest.device_timezone` (an unknown zone dropped),
-  `ZoneName`, `MAX_ZONE_LENGTH`, `PROFILE_ZONE_FIELDS`, `apply_zone_update(user, patch, *,
-  is_demo)` (a demo's zone ignored). The settings resource's `timezone` stays one release as
-  the account's alias.
+* **auth (notifications §10.3, amended 2026-10-20: automatic only):**
+  `UserResponse.device_timezone`, `ProfileUpdate.device_timezone` (the device's report, never
+  `null`, in `PROFILE_NOT_NULLABLE`), `RegisterRequest.device_timezone` (an unknown zone
+  dropped), `ZoneName`, `MAX_ZONE_LENGTH`, `PROFILE_ZONE_FIELDS` (`("device_timezone",)`),
+  `apply_zone_update(user, patch, *, is_demo)` (a demo's zone ignored). The account's zone is
+  the device last used, else Zurich: there is no pick (`timezone` on `/auth/me` is a 422), and
+  the settings resource carries no zone (`QuietHoursFields` / `QuietHoursUpdate` lost
+  `timezone`; a `timezone` in its PATCH is a 422).
 * **feedback (§11, the admins' alert):** `FEEDBACK_RECEIVED`, `FeedbackAlert`,
   `FeedbackAlertKind`, the `FeedbackAlerts` port, `admin_alert_recipients(admin_ids, *,
   actor_id)`, `mails_at_once(alert)`; `FeedbackService(alerts=None)` tells it after `create`,
@@ -87,7 +89,9 @@ becomes a channel of its own (both under **⚠ BREAKING CHANGES**); the other be
   `readable`, `writable`, `withheld`, `after_apply`; `pull_order(walk)` for the paged pull's
   `entities`), `EntityRule` (`create`/`update` schemas, `deletable`, `fixed_parents`,
   `fixed_fields`, `guard`), the `ScopeRows` port (`find`, `parent_id`, `references`),
-  `RuleContext`, `AfterApplyContext`, `async sort_changes(scope, changes, rows)` →
+  `RuleContext`, `AfterApplyContext` (`found`: the live rows, mutated by the apply; `before`: a
+  snapshot of the fields each allowed change sends, taken before the apply — kastlan S5),
+  `async sort_changes(scope, changes, rows)` →
   `SortedChanges(allowed, rejections, context)` (one rejection per refused change; a child of a
   refused new row is refused with it; `refuse_whole()` for a client without `refusals`),
   `SyncScopeError`, and `withhold(scope, change)`: a scope's `withheld` `"<entity>.<field>"`

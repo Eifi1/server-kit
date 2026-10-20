@@ -5,10 +5,10 @@
   ``HH:MM``, or start = end is no quiet hours at all, never a silently muted account
   (keksdose ``domain/services/notification_preferences_service.py:154-181``,
   ``should_push_now``, which answers the opposite question).
-* **The zone** is the account's (§10.3, 0.16, reversing decision 6): the person's pick,
-  else the zone the last device reported, else the app's, ``Europe/Zurich`` in all three
-  (:func:`effective_zone`). A name ``zoneinfo`` no longer knows (tzdata dropped it)
-  counts as unset. keksdose fell back to UTC (``notification_preferences_service.py:169-174``,
+* **The zone** is the account's (§10.3, 0.16, reversing decision 6; amended 2026-10-20,
+  Marcel: automatic only, no pick): the zone the last device reported, else the app's,
+  ``Europe/Zurich`` in all three (:func:`effective_zone`). A name ``zoneinfo`` no longer
+  knows (tzdata dropped it) counts as unset. keksdose fell back to UTC (``notification_preferences_service.py:169-174``,
   ``push_notifications.py:1097-1102``); the contract's fallback replaces it. A person's
   or a company's "today" is :func:`local_today`, never the server's ``date.today()``.
 * **A held push** waits until :func:`quiet_hours_end` where the app runs the queue
@@ -90,23 +90,20 @@ def resolve_zone(name: str | None, fallback: str = DEFAULT_ZONE) -> ZoneInfo:
     return ZoneInfo(name) if name and is_known_zone(name) else ZoneInfo(fallback)
 
 
-def effective_zone(timezone: str | None, device_timezone: str | None, fallback: str = DEFAULT_ZONE) -> ZoneInfo:
-    """The account's zone (§10.3, 0.16): the person's pick (``timezone``), else the zone
-    the last device reported (``device_timezone``), else ``fallback`` — the app's zone,
-    ``Europe/Zurich``. A name ``zoneinfo`` no longer knows counts as unset, so a stale pick
-    falls through to the device's.
+def effective_zone(device_timezone: str | None, fallback: str = DEFAULT_ZONE) -> ZoneInfo:
+    """The account's zone (§10.3, 0.16; amended 2026-10-20, Marcel: automatic only): the
+    zone the last device reported (``device_timezone``), else ``fallback`` — the app's
+    zone, ``Europe/Zurich``. There is no pick: the zone always follows the device last
+    used. A name ``zoneinfo`` no longer knows counts as unset.
 
     It is the zone of everything the server writes for ONE person: quiet hours, the digest
     day, the dates in a push, a notification or account mail, a billing notice to a
     person, and "today" of a person's own reminders. A company's documents and the jobs'
     run times keep the app's zone (:func:`local_today` with it)::
 
-        zone = effective_zone(user.timezone, user.device_timezone)
+        zone = effective_zone(user.device_timezone)
     """
-    for name in (timezone, device_timezone):
-        if is_known_zone(name):
-            return ZoneInfo(cast(str, name))
-    return ZoneInfo(fallback)
+    return resolve_zone(device_timezone, fallback)
 
 
 def local_today(zone: tzinfo, now: datetime) -> date:

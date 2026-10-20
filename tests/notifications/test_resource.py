@@ -53,7 +53,6 @@ def _row() -> dict[str, Any]:
     return {
         "quiet_hours_start": "22:00",
         "quiet_hours_end": "07:00",
-        "timezone": "Europe/Zurich",
         "digest_cadence": "weekly",
         "low_balance_threshold": None,
     }
@@ -99,19 +98,18 @@ def test_only_the_types_the_account_receives_are_answered() -> None:
 
 def test_the_response_is_the_contracts_shape() -> None:
     types = resolve_switches(KEKSDOSE, {"share_events": StoredSwitches(app=False)})
-    body = KeksdoseResponse(types=types, quiet_hours_start="22:00", quiet_hours_end="07:00", timezone="Europe/Zurich")
+    body = KeksdoseResponse(types=types, quiet_hours_start="22:00", quiet_hours_end="07:00")
     dumped = body.model_dump(mode="json")
     assert list(dumped) == [
         "types",
         "quiet_hours_start",
         "quiet_hours_end",
-        "timezone",
         "digest_cadence",
         "low_balance_threshold",
     ]
     assert dumped["types"]["recurring_posted"] == {"app": True, "email": None, "push": True}
     assert dumped["digest_cadence"] == "weekly", "the default"
-    assert QuietHoursFields().model_dump() == {"quiet_hours_start": None, "quiet_hours_end": None, "timezone": None}
+    assert QuietHoursFields().model_dump() == {"quiet_hours_start": None, "quiet_hours_end": None}
 
 
 # ── the PATCH body ───────────────────────────────────────────────────────────
@@ -122,7 +120,6 @@ def test_the_body_leads_with_types_and_takes_the_apps_knobs() -> None:
         "types",
         "quiet_hours_start",
         "quiet_hours_end",
-        "timezone",
         "digest_cadence",
         "low_balance_threshold",
     ]
@@ -154,14 +151,14 @@ def test_the_body_leads_with_types_and_takes_the_apps_knobs() -> None:
         (KeksdoseUpdate, {"colour": "teal"}, "Extra inputs"),
         (KeksdoseUpdate, {"quiet_hours_start": "24:00"}, "String should match pattern"),
         (KeksdoseUpdate, {"quiet_hours_end": "7:00"}, "String should match pattern"),
-        (KeksdoseUpdate, {"timezone": "Mars/Olympus"}, "IANA zone"),
-        (KeksdoseUpdate, {"timezone": "Europe/" + "x" * 60}, "at most 64 characters"),
+        (KeksdoseUpdate, {"timezone": "Europe/Zurich"}, "Extra inputs"),
         (KeksdoseUpdate, {"digest_cadence": "daily"}, "'weekly' or 'monthly'"),
         (KeksdoseUpdate, {"types": {"digest": {"app": "maybe"}}}, "valid boolean"),
     ],
 )
 def test_each_422(model: type[NotificationSettingsUpdate], body: dict[str, Any], words: str) -> None:
-    """Rule 4: an unknown field, an unknown type, a switch the type doesn't offer, a bad zone."""
+    """Rule 4: an unknown field, an unknown type, a switch the type doesn't offer, a zone
+    (the account's, §10.3: automatic only)."""
     with pytest.raises(ValidationError, match=words):
         model.model_validate(body)
 
@@ -180,11 +177,11 @@ def test_a_body_without_its_registry_is_a_programming_error() -> None:
         Forgotten.model_validate({})
 
 
-def test_nulls_clear_the_quiet_hours_and_the_zone() -> None:
-    body = KeksdoseUpdate.model_validate({"quiet_hours_start": None, "quiet_hours_end": None, "timezone": None})
+def test_nulls_clear_the_quiet_hours() -> None:
+    body = KeksdoseUpdate.model_validate({"quiet_hours_start": None, "quiet_hours_end": None})
     row = _row()
     written = apply_patch(row, body, not_nullable=SETTINGS_NOT_NULLABLE, skip=SETTINGS_SKIP)
-    assert written == {"quiet_hours_start": None, "quiet_hours_end": None, "timezone": None}
+    assert written == {"quiet_hours_start": None, "quiet_hours_end": None}
     assert row["digest_cadence"] == "weekly", "omitted keeps"
 
 

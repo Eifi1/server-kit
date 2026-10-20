@@ -235,16 +235,16 @@ def test_the_digest_tag_is_the_period_key() -> None:
 # ── the zone on the account (§10.3, 0.16) ────────────────────────────────────
 
 
-def test_the_effective_zone_is_the_pick_then_the_device_then_zurich() -> None:
-    assert effective_zone("America/New_York", "Asia/Tokyo") == ZoneInfo("America/New_York")
-    assert effective_zone(None, "Asia/Tokyo") == ZoneInfo("Asia/Tokyo")
-    assert effective_zone(None, None) == ZURICH
-    assert effective_zone(None, None, fallback="UTC") == ZoneInfo("UTC")
+def test_the_effective_zone_is_the_last_devices_then_zurich() -> None:
+    """Amended 2026-10-20 (Marcel): automatic only — there is no pick to prefer."""
+    assert effective_zone("Asia/Tokyo") == ZoneInfo("Asia/Tokyo")
+    assert effective_zone(None) == ZURICH
+    assert effective_zone(None, fallback="UTC") == ZoneInfo("UTC")
 
 
 def test_a_name_that_no_longer_resolves_counts_as_unset() -> None:
-    assert effective_zone("Mars/Olympus", "Asia/Tokyo") == ZoneInfo("Asia/Tokyo")
-    assert effective_zone("", "Mars/Olympus") == ZURICH
+    assert effective_zone("Mars/Olympus") == ZURICH
+    assert effective_zone("") == ZURICH
 
 
 @pytest.mark.parametrize(

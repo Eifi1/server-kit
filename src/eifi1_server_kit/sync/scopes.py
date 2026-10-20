@@ -115,8 +115,16 @@ class AfterApplyContext:
     rows: ScopeRows
     #: The changes the scope allowed, in push order.
     changes: Sequence[Change]
-    #: The server's rows as they stood BEFORE the push, by change id (new rows absent).
+    #: The server's rows the allowed changes touch, by change id (new rows absent). These
+    #: are the app's LIVE rows (an ORM session hands back the same identity-mapped object
+    #: the apply mutates), so they show the values AFTER the apply: compare against
+    #: :attr:`before`, never against ``found``.
     found: Mapping[str, object]
+    #: A snapshot taken while sorting, before any apply: per allowed change on an existing
+    #: row, the fields its ``data`` sends, as the row held them (read with ``getattr``; a
+    #: wire key that is no attribute of the row is left out; a delete's entry is empty).
+    #: "Did ``last_performed`` change" is ``data["last_performed"] != before[id]["last_performed"]``.
+    before: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
 #: An app rule on one change: a reason refuses it, ``None`` lets it through.
@@ -237,6 +245,7 @@ async def _check(
     push: Sequence[Change],
     new_in_push: frozenset[str],
     found: dict[str, object],
+    before: dict[str, dict[str, object]],
 ) -> None:
     """Refuse (:class:`SyncScopeError`) a change the scope does not allow."""
     entity, change_id, op = str(change["entity"]), str(change["id"]), change["op"]
@@ -247,6 +256,7 @@ async def _check(
     existing = await rows.find(entity, change_id)
     if existing is not None:
         found[change_id] = existing
+        before[change_id] = {key: getattr(existing, key) for key in data if hasattr(existing, key)}
 
     if op == "delete":
         if not rule.deletable:
@@ -310,10 +320,11 @@ async def sort_changes(scope: SyncScope, changes: Sequence[Change], rows: ScopeR
     refused"), and so on down."""
     new_in_push = frozenset(str(change["id"]) for change in changes if change["op"] == "upsert")
     found: dict[str, object] = {}
+    before: dict[str, dict[str, object]] = {}
     rejections: dict[str, SyncRejection] = {}
     for change in changes:
         try:
-            await _check(scope, change, rows, changes, new_in_push, found)
+            await _check(scope, change, rows, changes, new_in_push, found, before)
         except SyncScopeError as exc:
             rejections.setdefault(
                 exc.change_id, SyncRejection(change_id=exc.change_id, code=SYNC_REJECTED, detail=exc.detail)
@@ -342,6 +353,7 @@ async def sort_changes(scope: SyncScope, changes: Sequence[Change], rows: ScopeR
             rows=rows,
             changes=allowed,
             found={str(change["id"]): found[str(change["id"])] for change in allowed if str(change["id"]) in found},
+            before={str(change["id"]): before[str(change["id"])] for change in allowed if str(change["id"]) in before},
         ),
     )
 

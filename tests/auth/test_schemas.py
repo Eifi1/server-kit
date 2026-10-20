@@ -324,26 +324,28 @@ def test_the_refresh_request_takes_any_text() -> None:
 # --- the zone on the account (notifications §10.3, 0.16) --------------------------------------
 
 
-def test_the_account_answers_its_zone_pick_and_its_devices() -> None:
-    answer = UserResponse.model_validate(_user() | {"timezone": None, "device_timezone": "Asia/Tokyo"})
+def test_the_account_answers_its_devices_zone_and_no_pick() -> None:
+    """Amended 2026-10-20 (Marcel): the zone is automatic only, so there is no ``timezone``."""
+    answer = UserResponse.model_validate(_user() | {"timezone": "Europe/Paris", "device_timezone": "Asia/Tokyo"})
     dumped = answer.model_dump()
-    assert (dumped["timezone"], dumped["device_timezone"]) == (None, "Asia/Tokyo")
-    assert UserResponse.model_validate(_user()).timezone is None, "an app without the columns answers None"
+    assert dumped["device_timezone"] == "Asia/Tokyo"
+    assert "timezone" not in dumped, "no pick is answered, even where a column is left over"
+    assert UserResponse.model_validate(_user()).device_timezone is None, "an app without the column answers None"
 
 
-def test_the_zone_pick_may_be_cleared_the_device_report_may_not() -> None:
-    assert ProfileUpdate.model_validate({"timezone": None}).model_fields_set == {"timezone"}
-    assert ProfileUpdate.model_validate({"timezone": "Europe/Zurich"}).timezone == "Europe/Zurich"
-    assert "device_timezone" in PROFILE_NOT_NULLABLE and "timezone" not in PROFILE_NOT_NULLABLE
+def test_a_zone_pick_is_refused_and_the_device_report_is_never_null() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        ProfileUpdate.model_validate({"timezone": "Europe/Zurich"})
+    assert ProfileUpdate.model_validate({"device_timezone": "Europe/Zurich"}).device_timezone == "Europe/Zurich"
+    assert "device_timezone" in PROFILE_NOT_NULLABLE
     with pytest.raises(ValidationError, match="device_timezone cannot be null"):
         ProfileUpdate.model_validate({"device_timezone": None})
 
 
-@pytest.mark.parametrize("field", ["timezone", "device_timezone"])
 @pytest.mark.parametrize("name", ["Mars/Olympus", "Europe", "../etc/passwd", "Europe/" + "x" * 60])
-def test_an_unknown_zone_is_a_422(field: str, name: str) -> None:
+def test_an_unknown_zone_is_a_422(name: str) -> None:
     with pytest.raises(ValidationError):
-        ProfileUpdate.model_validate({field: name})
+        ProfileUpdate.model_validate({"device_timezone": name})
 
 
 def test_a_sign_up_drops_a_device_zone_this_server_does_not_know() -> None:
@@ -354,20 +356,20 @@ def test_a_sign_up_drops_a_device_zone_this_server_does_not_know() -> None:
 
 
 class _Account:
-    timezone: str | None = "Europe/Zurich"
     device_timezone: str | None = None
 
 
-def test_the_zone_update_writes_what_was_sent_and_nothing_for_a_demo() -> None:
+def test_the_zone_update_writes_the_report_and_nothing_for_a_demo() -> None:
     account = _Account()
     patch = ProfileUpdate.model_validate({"device_timezone": "Asia/Tokyo"})
     assert apply_zone_update(account, patch, is_demo=False) == {"device_timezone": "Asia/Tokyo"}
-    assert (account.timezone, account.device_timezone) == ("Europe/Zurich", "Asia/Tokyo"), "a report is no pick"
+    assert account.device_timezone == "Asia/Tokyo"
     row: dict[str, object] = {}
-    assert apply_zone_update(row, ProfileUpdate.model_validate({"timezone": None}), is_demo=False) == {"timezone": None}
-    assert row == {"timezone": None}
+    assert apply_zone_update(row, ProfileUpdate.model_validate({"locale": "en"}), is_demo=False) == {}
+    assert row == {}, "left out keeps"
+    assert apply_zone_update(row, patch, is_demo=False) == {"device_timezone": "Asia/Tokyo"}
+    assert row == {"device_timezone": "Asia/Tokyo"}
     demo = _Account()
-    both = ProfileUpdate.model_validate({"timezone": "Asia/Tokyo", "device_timezone": "Asia/Tokyo"})
-    assert apply_zone_update(demo, both, is_demo=True) == {}
-    assert (demo.timezone, demo.device_timezone) == ("Europe/Zurich", None)
-    assert PROFILE_ZONE_FIELDS == ("timezone", "device_timezone")
+    assert apply_zone_update(demo, patch, is_demo=True) == {}
+    assert demo.device_timezone is None
+    assert PROFILE_ZONE_FIELDS == ("device_timezone",)

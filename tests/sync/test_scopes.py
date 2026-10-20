@@ -47,6 +47,7 @@ class Row:
     amount: Decimal = Decimal("1.50")
     token: uuid.UUID = TOKEN
     note: str | None = None
+    status: str = "open"
 
 
 class InMemoryRows:
@@ -384,6 +385,21 @@ async def test_allowed_changes_keep_their_order_and_the_context_carries_the_rows
         "p1": rows.rows[("protocols", "p1")],
         "d1": rows.rows[("defects", "d1")],
     }
+
+
+async def test_the_context_keeps_the_sent_fields_as_they_stood_before_the_apply() -> None:
+    rows = InMemoryRows(_store())
+    push = [
+        _change("protocols", "p1", status="done", note=None, notes="not an attribute"),
+        _change("rooms", "r9", protocol_uuid="p1", name="New"),
+        _change("defects", "d1", "delete"),
+        _change("meters", "m1", value=1),
+    ]
+    result = await sort_changes(HANDOVER, push, rows)
+    found = rows.rows[("protocols", "p1")]
+    found.status = "done"  # the app's apply mutates the identity-mapped row
+    assert result.context.found["p1"] is found
+    assert result.context.before == {"p1": {"status": "open", "note": None}, "d1": {}}
 
 
 async def test_a_uuid_id_and_reference_are_read_as_their_text() -> None:

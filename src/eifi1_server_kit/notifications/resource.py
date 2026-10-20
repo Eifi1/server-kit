@@ -4,10 +4,9 @@ One resource per account replaces keksdose's two PUTs (``/push/preferences``,
 ``/push/settings``; ``adapters/api/push_router.py:133-172``)::
 
     {"types": {"recurring_posted": {"app": true, "push": true, "email": null}, …},
-     "quiet_hours_start": "22:00", "quiet_hours_end": "07:00",
-     "timezone": "Europe/Zurich", "digest_cadence": "weekly"}
+     "quiet_hours_start": "22:00", "quiet_hours_end": "07:00", "digest_cadence": "weekly"}
 
-``types`` is in every app; the quiet hours and the zone where the app has push
+``types`` is in every app; the quiet hours where the app has push
 (:class:`QuietHoursFields`, :class:`QuietHoursUpdate`); the cadence where it has a digest
 (:class:`DigestFields`, :class:`DigestUpdate`); an app adds its own knobs beside them
 (keksdose's ``low_balance_threshold``). Mixins first, so the JSON lists ``types`` first::
@@ -37,12 +36,14 @@ is a missing row or a null column (:class:`StoredSwitches`).
 ``NotificationTypes(..., push_channel=False)``), and a PATCH sending it there is a 422.
 keksdose's stored ``enabled`` becomes both in-app switches
 (:func:`migrate_enabled_to_channels`); while an old bundle can still send ``{app}`` alone,
-its PATCH passes ``couple_push_to_app=True`` (it goes with the ``/push/*`` aliases).
+its legacy ``/push/preferences`` shim passes ``couple_push_to_app=True`` (it goes with the
+``/push/*`` aliases). ``PATCH /notifications/settings`` never couples: the 0.46 card's "In
+the app" column sends ``{app}`` alone, and coupling there would flip push with it.
 
-**The zone moved to the account** (§10.3, 0.16): :class:`QuietHoursFields`' and
-:class:`QuietHoursUpdate`'s ``timezone`` stay for one release as an ALIAS that reads and
-writes the account's ``timezone`` (``users.timezone``; keksdose's old bundles), and go
-with the ``/push/*`` aliases.
+**The zone is the account's** (§10.3, 0.16; amended 2026-10-20, Marcel: automatic only):
+the zone of the device last used (``users.device_timezone``, ``effective_zone``), never a
+field of this resource; a ``timezone`` in the PATCH is refused as any unknown field is.
+keksdose's old bundles reach its ``/push/*`` aliases, which the app answers.
 """
 
 from __future__ import annotations
@@ -51,11 +52,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from eifi1_server_kit.notifications.errors import NotificationChannelError, NotificationTypeError
 from eifi1_server_kit.notifications.registry import NotificationTypes
-from eifi1_server_kit.notifications.timing import QUIET_HOURS_PATTERN, DigestCadence, is_known_zone
+from eifi1_server_kit.notifications.timing import QUIET_HOURS_PATTERN, DigestCadence
 
 __all__ = [
     "SETTINGS_NOT_NULLABLE",
@@ -81,9 +82,6 @@ SETTINGS_NOT_NULLABLE: tuple[str, ...] = ("types", "digest_cadence")
 #: ``apply_patch``'s ``skip``: ``types`` is checked for a null there and written by the app
 #: from :func:`apply_switches_patch`.
 SETTINGS_SKIP: tuple[str, ...] = ("types",)
-
-#: The longest IANA name keksdose's ``notification_settings.timezone String(64)`` holds.
-_ZONE_MAX_LENGTH = 64
 
 
 class TypeSwitches(BaseModel):
@@ -131,14 +129,11 @@ class NotificationSettingsResponse(BaseModel):
 
 
 class QuietHoursFields(BaseModel):
-    """The quiet hours and the zone, where the app has push (§3.2, §3.4)."""
+    """The quiet hours, where the app has push (§3.2, §3.4), in the account's zone."""
 
     #: Local ``HH:MM``; with ``quiet_hours_end``, the window — which may cross midnight.
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
-    #: The ACCOUNT's pick (``users.timezone``, §10.3), answered here for one release as an
-    #: alias for keksdose's old bundles; ``null`` is Automatic.
-    timezone: str | None = None
 
 
 class DigestFields(BaseModel):
@@ -188,22 +183,13 @@ class NotificationSettingsUpdate(BaseModel):
 
 
 class QuietHoursUpdate(BaseModel):
-    """The quiet hours and the zone in the ``PATCH``: ``HH:MM`` bounds, an IANA zone
-    ``zoneinfo`` knows; ``null`` clears each. ``timezone`` is the one-release alias of the
-    account's pick (§10.3): the app writes it to ``users.timezone``."""
+    """The quiet hours in the ``PATCH``: ``HH:MM`` bounds; ``null`` clears each. No zone:
+    it is the account's (§10.3, automatic only)."""
 
     model_config = ConfigDict(extra="forbid")
 
     quiet_hours_start: str | None = Field(default=None, pattern=QUIET_HOURS_PATTERN)
     quiet_hours_end: str | None = Field(default=None, pattern=QUIET_HOURS_PATTERN)
-    timezone: str | None = Field(default=None, max_length=_ZONE_MAX_LENGTH)
-
-    @field_validator("timezone")
-    @classmethod
-    def _known_zone(cls, value: str | None) -> str | None:
-        if value is not None and not is_known_zone(value):
-            raise ValueError("timezone must be an IANA zone name, such as Europe/Zurich")
-        return value
 
 
 class DigestUpdate(BaseModel):
