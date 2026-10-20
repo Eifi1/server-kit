@@ -30,15 +30,14 @@ adds the author's vote after the report, which it needs the id of).
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from eifi1_server_kit.auth.accounts import first_name_of, full_name
 from eifi1_server_kit.demo import refuse_demo
+from eifi1_server_kit.feedback.alerts import FeedbackAlert, FeedbackAlertKind, FeedbackAlerts
 from eifi1_server_kit.feedback.attachments import AttachmentUrlPolicy
-from eifi1_server_kit.feedback.body import ReworkBlock
 from eifi1_server_kit.feedback.context import stamp_identity
 from eifi1_server_kit.feedback.crash import (
     CrashDecision,
@@ -139,8 +138,6 @@ __all__ = [
     "upload_attachment",
 ]
 
-logger = logging.getLogger("eifi1_server_kit.feedback")
-
 #: What a file is served as when its bytes name nothing the policy accepts.
 _UNKNOWN_MEDIA_TYPE = "application/octet-stream"
 
@@ -229,6 +226,10 @@ class FeedbackService[RowT: FeedbackRow]:
     sealed — Kurvenschmiede). With ``public_viewer`` set, ``comments``, ``votes`` and
     ``people`` are required and the repository must implement
     :class:`~eifi1_server_kit.feedback.PublicFeedbackRepository` (:class:`ValueError`).
+
+    ``alerts`` (0.16, feedback §11) is the app's :class:`~eifi1_server_kit.feedback.FeedbackAlerts`:
+    told after a new report, a new crash row and a rework that lands OPEN. ``None`` tells
+    nobody — a loop's service (Kurvenschmiede's ``feedback_loop``) is built without it.
     """
 
     def __init__(
@@ -244,8 +245,10 @@ class FeedbackService[RowT: FeedbackRow]:
         people: PeopleLookup | None = None,
         public_viewer: Callable[[FeedbackActor], bool] | None = None,
         public_search: bool = True,
+        alerts: FeedbackAlerts | None = None,
     ) -> None:
         self.repository = repository
+        self.alerts = alerts
         self.policy = policy
         self.foreign_row = foreign_row
         self.now = now
@@ -286,6 +289,21 @@ class FeedbackService[RowT: FeedbackRow]:
             raise RuntimeError("FeedbackService: no vote store was given")
         return self.vote_store
 
+    async def _alert(
+        self, kind: FeedbackAlertKind, row: RowT, actor: FeedbackActor, category: FeedbackCategory | str | None
+    ) -> None:
+        """Tell the app's :class:`FeedbackAlerts`, after the write (feedback §11.2 rule 8)."""
+        if self.alerts is None:
+            return
+        alert = FeedbackAlert(
+            kind=kind,
+            feedback_id=row.id,
+            category=category,
+            actor_id=actor.id,
+            company_id=getattr(row, "company_id", None),
+        )
+        await self.alerts.filed(alert, row)
+
     async def _names(self, user_ids: Iterable[int | None]) -> _Names:
         wanted = {user_id for user_id in user_ids if user_id is not None}
         if self.people is None or not wanted:
@@ -297,7 +315,7 @@ class FeedbackService[RowT: FeedbackRow]:
         the server's (:func:`~eifi1_server_kit.feedback.initial_status`), the identity in
         ``context`` the session's (:func:`~eifi1_server_kit.feedback.stamp_identity`, §2.13),
         ``attachment_urls`` ``None`` for none. With a vote store, the author's vote is
-        cast after the report (§9.6)."""
+        cast after the report (§9.6). Then the admins' alert (§11, ``"report"``)."""
         refuse_demo(actor.is_demo, "feedback")
         reject_manual_crash(payload.category)
         row = await self.repository.add(
@@ -320,6 +338,7 @@ class FeedbackService[RowT: FeedbackRow]:
         if self.vote_store is not None:
             # The author's report is their vote (§9.6): the count starts at 1.
             await self.vote_store.put(row.id, actor.id)
+        await self._alert("report", row, actor, payload.category)
         return row
 
     async def report_crash(
@@ -333,7 +352,7 @@ class FeedbackService[RowT: FeedbackRow]:
 
         ``stored: false`` for a demo, then for a spent window — charged before the lookup,
         so repeats count (§2.11) — and never an error status: the caller is a page that
-        has just crashed.
+        has just crashed. A NEW row tells the admins (§11, ``"crash"``); a fold does not.
         """
         if actor.is_demo:
             return CrashReportResponse(stored=False)
@@ -370,6 +389,7 @@ class FeedbackService[RowT: FeedbackRow]:
                 )
             )
             duplicate = False
+            await self._alert("crash", row, actor, FeedbackCategory.CRASH)
         return CrashReportResponse(
             stored=True, duplicate=duplicate, feedback_id=row.id, reference=crash_reference(fingerprint)
         )
@@ -394,11 +414,9 @@ class FeedbackService[RowT: FeedbackRow]:
         the row's ``filed_private``; then the one write. ``public`` is a 422 where the app
         has no public parts (no ``public_viewer``).
 
-        **The legacy append** (0.13 only, §10.3): an old client's rework append is written
-        as an entry (one write per store, the report last; ``body`` untouched) — the
-        actor's ``rework`` entry when the actor is the author, else (an admin on another's
-        report) a reply with status REWORK — and logged ``feedback.legacy_rework_append``.
-        Without a reply store the body is appended as before 0.13."""
+        **The legacy append** (§10.3): an old client's rework append on an answered report
+        is a :class:`~eifi1_server_kit.feedback.LegacyReworkAppendError` (coded 422, since
+        0.16; 0.13–0.15 wrote it as an entry), raised by ``plan_update`` before any write."""
         refuse_demo(actor.is_demo, "feedback")
         reject_manual_crash(payload.category)
         changes = payload.model_dump(exclude_unset=True)
@@ -418,41 +436,8 @@ class FeedbackService[RowT: FeedbackRow]:
             is_author=is_author,
             now=self.now(),
             filed_private=bool(getattr(row, "filed_private", False)),
-            prefix=self.policy.prefix,
         )
-        if plan.rework is not None:
-            return await self._legacy_rework(
-                actor, row, plan.changes, plan.rework, body=changes["body"], is_author=is_author
-            )
         return await self.repository.apply(row, plan.changes, actor=actor)
-
-    async def _legacy_rework(
-        self,
-        actor: FeedbackActor,
-        row: RowT,
-        changes: dict[str, Any],
-        block: ReworkBlock,
-        *,
-        body: str,
-        is_author: bool,
-    ) -> RowT:
-        if self.reply_store is None:
-            return await self.repository.apply(row, {**changes, "body": body}, actor=actor)
-        kind = FeedbackEntryKind.REWORK if is_author else FeedbackEntryKind.REPLY
-        logger.info("feedback.legacy_rework_append feedback_id=%s actor_id=%s kind=%s", row.id, actor.id, kind.value)
-        await self.reply_store.add(
-            NewFeedbackReply(
-                feedback_id=row.id,
-                author_id=actor.id,
-                body=block.note,
-                status_from=FeedbackStatus(row.status),
-                status_to=changes["status"],
-                kind=kind,
-                attachment_url=block.url,
-            ),
-            actor=actor,
-        )
-        return await self.repository.apply(row, changes, actor=actor)
 
     async def erase_author(self, user_id: int, identifiers: Iterable[str | None]) -> ErasedFeedback:
         """Take an erased account out of its reports, and answer the files to delete (§2.15).
@@ -763,7 +748,9 @@ class FeedbackService[RowT: FeedbackRow]:
         anyone but the author, an admin included, and outside the reworkable statuses).
         The ``rework`` entry is added — the store fires nothing for it — then the report
         moves (REWORK for an admin author, OPEN otherwise): one write per store, the
-        report last. Answers the report; the router answers it with its replies."""
+        report last. Only once the report moved, and only when it landed OPEN, the admins
+        are told (§11, ``"rework"``). Answers the report; the router answers it with its
+        replies."""
         refuse_demo(actor.is_demo, "feedback")
         store = self._reply_store()
         if payload.attachment_url is not None:
@@ -787,7 +774,10 @@ class FeedbackService[RowT: FeedbackRow]:
             ),
             actor=actor,
         )
-        return await self.repository.apply(row, plan.changes, actor=actor)
+        moved = await self.repository.apply(row, plan.changes, actor=actor)
+        if plan.status_to == FeedbackStatus.OPEN:
+            await self._alert("rework", moved, actor, getattr(moved, "category", None))
+        return moved
 
     async def list_public(
         self,

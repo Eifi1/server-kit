@@ -17,10 +17,12 @@ KEKSDOSE = NotificationTypes(
     NotificationType("scheduled_due", app=True),
 )
 
-#: kastlan's two: the overdue invoices in the app and by mail, the dunnings in the app.
+#: kastlan's two: the overdue invoices in the app and by mail, the dunnings in the app. No
+#: push (§10.2 Settled): every ``push`` is ``None``.
 KASTLAN = NotificationTypes(
     NotificationType("invoices_overdue", app=False, email=False),
     NotificationType("dunnings_pending", app=False),
+    push_channel=False,
 )
 
 #: Kurvenschmiede's three, e-mail only.
@@ -28,4 +30,5 @@ KURVENSCHMIEDE = NotificationTypes(
     NotificationType("feedback_answered", app=None, email=True),
     NotificationType("share_granted", app=None, email=False),
     NotificationType("team_added", app=None, email=False),
+    push_channel=False,
 )

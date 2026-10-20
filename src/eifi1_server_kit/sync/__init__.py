@@ -4,17 +4,21 @@
 * :mod:`~eifi1_server_kit.sync.schemas` — the wire shapes, ``refused`` (one
   :class:`SyncRefusal` for the whole push, moved here from billing, which re-exports it) and
   the new per-change ``rejections``;
-* :mod:`~eifi1_server_kit.sync.merge` — whole-row LWW on the device's edit time, deletes
-  that always tombstone;
+* :mod:`~eifi1_server_kit.sync.merge` — whole-row LWW on the device's edit time, corrected
+  for the device clock's skew when the push carries ``client_now`` (0.16.0), deletes that
+  always tombstone;
 * :mod:`~eifi1_server_kit.sync.counter` — the knowledge counter as a port;
 * :mod:`~eifi1_server_kit.sync.paging` — the ``(entity, knowledge, id)`` page cursor;
+* :mod:`~eifi1_server_kit.sync.scopes` — named scopes (0.16.0, §2.4): what a device reads
+  and writes, per entity rule, the fields withheld from it, and :func:`sort_changes`, which
+  refuses a push's changes one by one behind the app's :class:`ScopeRows` port;
 * :mod:`~eifi1_server_kit.sync.mixin` — the columns, the ``before_flush`` stamping, the
   tombstones and their filter, in SQLAlchemy: only with the ``sync`` extra
   (``eifi1-server-kit[sync]``), and imported lazily, so this package loads without it.
 
 ``eifi1_server_kit.sync.testing`` has :class:`InMemoryKnowledgeCounter`; it is not
 re-exported. Stays in the apps: the routes, the entity registries, tenancy and RLS, E2EE,
-billing's refusals, unique-key merges and revival rules, and kastlan's scopes.
+billing's refusals, unique-key merges and revival rules, and each scope's own rules (guards).
 """
 
 from __future__ import annotations
@@ -22,7 +26,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from eifi1_server_kit.sync.counter import KnowledgeCounter, TenantOf
-from eifi1_server_kit.sync.merge import as_utc, clamp_stamp, merge_delete, merge_lww
+from eifi1_server_kit.sync.merge import (
+    CLOCK_SKEW_TOLERANCE,
+    MAX_CLOCK_SKEW,
+    as_utc,
+    clamp_stamp,
+    clock_skew,
+    correct_stamp,
+    merge_delete,
+    merge_lww,
+)
 from eifi1_server_kit.sync.paging import (
     SYNC_PAGE_LIMIT,
     PageStart,
@@ -43,6 +56,17 @@ from eifi1_server_kit.sync.schemas import (
     SyncRequest,
     SyncResponse,
 )
+from eifi1_server_kit.sync.scopes import (
+    AfterApplyContext,
+    EntityRule,
+    RuleContext,
+    ScopeRows,
+    SortedChanges,
+    SyncScope,
+    SyncScopeError,
+    sort_changes,
+    withhold,
+)
 
 if TYPE_CHECKING:
     from eifi1_server_kit.sync.mixin import (
@@ -56,12 +80,19 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "CLOCK_SKEW_TOLERANCE",
     "INCLUDE_TOMBSTONED",
+    "MAX_CLOCK_SKEW",
     "SYNC_PAGE_LIMIT",
     "SYNC_PLAN_LIMIT",
     "SYNC_REJECTED",
+    "AfterApplyContext",
+    "EntityRule",
     "KnowledgeCounter",
     "PageStart",
+    "RuleContext",
+    "ScopeRows",
+    "SortedChanges",
     "SyncChange",
     "SyncColumns",
     "SyncPageCursor",
@@ -69,12 +100,16 @@ __all__ = [
     "SyncRejection",
     "SyncRequest",
     "SyncResponse",
+    "SyncScope",
+    "SyncScopeError",
     "TenantOf",
     "as_utc",
     "begin_page",
     "bulk_restamp",
     "bulk_tombstone",
     "clamp_stamp",
+    "clock_skew",
+    "correct_stamp",
     "cursor_at_start",
     "cut_page",
     "install_sync_stamping",
@@ -84,7 +119,9 @@ __all__ = [
     "merge_lww",
     "page_of",
     "page_order",
+    "sort_changes",
     "tombstone",
+    "withhold",
 ]
 
 #: The names :mod:`~eifi1_server_kit.sync.mixin` provides, loaded on first use.

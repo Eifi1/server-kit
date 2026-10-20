@@ -23,6 +23,8 @@ call per store per page); :class:`InMemoryFeedbackRepository` is a
 :func:`check_public_repository`; and :func:`assert_public_view`, which walks a public
 answer for any key outside §9.10's lists and any attachment URL.
 
+The admins' alert (0.16, feedback §11): :class:`RecordingAlerts`.
+
 Synthetic data only: every file is made here, with a fresh token in it, so two runs on
 the same database never share a content-addressed key.
 """
@@ -39,6 +41,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from eifi1_server_kit.feedback.alerts import FeedbackAlert
 from eifi1_server_kit.feedback.attachments import DEFAULT_ATTACHMENT_URL_POLICY, AttachmentUrlPolicy
 from eifi1_server_kit.feedback.body import attachment_line
 from eifi1_server_kit.feedback.enums import TERMINAL_STATUSES, FeedbackCategory, FeedbackEntryKind, FeedbackStatus
@@ -81,6 +84,7 @@ __all__ = [
     "MemoryCommentRow",
     "MemoryFeedbackRow",
     "MemoryReplyRow",
+    "RecordingAlerts",
     "actor",
     "assert_public_view",
     "check_comment_store",
@@ -521,6 +525,22 @@ class InMemoryAttachmentStorage:
         if self.uploader_only and uploader_id != viewer.id:
             return None
         return stored
+
+
+@dataclass(slots=True)
+class RecordingAlerts:
+    """A :class:`~eifi1_server_kit.feedback.FeedbackAlerts` that records each alert with
+    its row, in order (feedback §11, 0.16)."""
+
+    alerts: list[tuple[FeedbackAlert, Any]] = dataclasses.field(default_factory=list)
+
+    async def filed(self, alert: FeedbackAlert, row: Any) -> None:
+        self.alerts.append((alert, row))
+
+    @property
+    def kinds(self) -> list[str]:
+        """Each alert's kind, in order."""
+        return [alert.kind for alert, _ in self.alerts]
 
 
 def actor(**overrides: Any) -> FeedbackActor:

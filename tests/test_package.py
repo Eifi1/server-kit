@@ -43,8 +43,11 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.limiter",
         "eifi1_server_kit.mail",
         "eifi1_server_kit.notifications",
+        "eifi1_server_kit.notifications.router",
+        "eifi1_server_kit.notifications.testing",
         "eifi1_server_kit.settings",
         "eifi1_server_kit.sync",
+        "eifi1_server_kit.sync.scopes",
         "eifi1_server_kit.sync.testing",
         "eifi1_server_kit.tours",
         "eifi1_server_kit.tours.router",
@@ -123,6 +126,29 @@ def test_the_tours_router_names_its_extra_without_fastapi(monkeypatch: pytest.Mo
         match=r"tours\.router needs FastAPI: install the kit with its fastapi extra, eifi1-server-kit\[fastapi\]",
     ):
         importlib.import_module("eifi1_server_kit.tours.router")
+
+
+def test_notifications_layer_2_loads_no_web_framework() -> None:
+    """The inbox's port, the queue, its service and ``notifications.testing`` run without
+    FastAPI, httpx or SQLAlchemy — in a Cloud Run Job such as keksdose's tick (§10.4). A
+    fresh interpreter."""
+    probe = (
+        "import sys, eifi1_server_kit.notifications, eifi1_server_kit.notifications.testing;"
+        "print(sorted({name.split('.')[0] for name in sys.modules} & {'fastapi', 'httpx', 'sqlalchemy'}))"
+    )
+    loaded = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout
+    assert loaded.strip() == "[]"
+
+
+def test_the_notifications_router_names_its_extra_without_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "eifi1_server_kit.notifications.router", raising=False)
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+    with pytest.raises(
+        ImportError,
+        match=r"notifications\.router needs FastAPI: install the kit with its fastapi extra, "
+        r"eifi1-server-kit\[fastapi\]",
+    ):
+        importlib.import_module("eifi1_server_kit.notifications.router")
 
 
 def test_the_clock_is_one_object_for_both_services() -> None:

@@ -32,7 +32,7 @@ def test_an_old_request_without_refusals_or_edit_times_parses() -> None:
         {"last_knowledge": 7, "changes": [{"entity": "accounts", "id": ROW, "op": "upsert", "data": {"name": "A"}}]}
     )
     assert request.refusals is False and request.paged is False and request.page_cursor is None
-    assert request.scope is None
+    assert request.scope is None and request.client_now is None
     (change,) = request.changes
     assert change.updated_at is None and change.knowledge is None
     assert SyncRequest().last_knowledge == 0 and list(SyncRequest().changes) == []
@@ -157,3 +157,13 @@ def test_the_ids_text_arm_is_bounded_and_stays_text_from_python() -> None:
         id: uuid.UUID
 
     assert Narrowed.model_validate({"entity": "e", "id": ROW, "op": "delete"}).id == uuid.UUID(ROW)
+
+
+def test_a_request_carries_the_devices_clock_in_utc() -> None:
+    """0.16.0: ``client_now``, the device's clock when it sends the push, spelt as
+    ``updated_at``; a naive value is refused."""
+    request = SyncRequest.model_validate({"client_now": "2026-10-19T13:40:00+02:00"})
+    assert request.client_now == datetime(2026, 10, 19, 11, 40, tzinfo=UTC)
+    assert request.client_now is not None and request.client_now.tzinfo is UTC
+    with pytest.raises(ValidationError):
+        SyncRequest.model_validate({"client_now": "2026-10-19T11:40:00"})

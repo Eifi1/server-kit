@@ -1,7 +1,7 @@
 """``POST /feedback/{feedback_id}/rework`` over HTTP (feedback-harmonization §10.3).
 
 201 with the report and its replies, the demo guard first and no admin guard, the
-author-only 403, the app's own body model, and the legacy PATCH append answered as an entry.
+author-only 403, the app's own body model, and the legacy PATCH append's coded 422 (since 0.16).
 
 No ``from __future__ import annotations``: FastAPI reads the app's models below.
 """
@@ -13,6 +13,8 @@ import pytest
 from fastapi.routing import APIRoute
 
 from eifi1_server_kit.feedback import (
+    LEGACY_REWORK_APPEND,
+    LEGACY_REWORK_APPEND_DETAIL,
     UUID32_SHA12_KEY_PATTERN,
     AttachmentUrlPolicy,
     FeedbackReworkCreate,
@@ -102,12 +104,11 @@ async def test_the_app_may_bring_its_own_rework_model() -> None:
         assert refused.status_code == 422 and "not a feedback attachment URL" in refused.text
 
 
-async def test_the_legacy_append_comes_back_as_an_entry(world: World) -> None:
+async def test_the_legacy_append_is_a_coded_422(world: World) -> None:
+    """Since 0.16: a tab left open across the deploy gets the code to say "reload"."""
     feedback_id = await _done(world)
     body = "Slow.\nsee " + SHOT
     appended = append_rework(body, "again", now=NOW)
     patched = await world.request("PATCH", f"{BASE}/{feedback_id}", AUTHOR, json={"body": appended})
-    assert patched.status_code == 200, patched.text
-    answer = patched.json()
-    assert answer["body"] == body and answer["status"] == "OPEN"
-    assert answer["replies"][-1]["kind"] == "rework" and answer["replies"][-1]["body"] == "again"
+    assert patched.status_code == 422, patched.text
+    assert patched.json() == {"detail": LEGACY_REWORK_APPEND_DETAIL, "code": LEGACY_REWORK_APPEND}

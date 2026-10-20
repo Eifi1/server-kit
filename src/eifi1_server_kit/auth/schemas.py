@@ -27,7 +27,7 @@ field.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -44,6 +44,7 @@ from pydantic import (
 )
 
 from eifi1_server_kit.auth.accounts import full_name, name_incomplete, normalise_email
+from eifi1_server_kit.notifications.timing import is_known_zone
 from eifi1_server_kit.settings import canonical_locale
 
 #: bcrypt hashes at most 72 BYTES, and bcrypt 5 RAISES past it in both the hash and the
@@ -131,6 +132,30 @@ PersonName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=
 LocaleTag = Annotated[str, StringConstraints(strip_whitespace=True, pattern=LOCALE_PATTERN)]
 
 
+#: The longest IANA name the account's zone columns hold (``String(64)``).
+MAX_ZONE_LENGTH = 64
+
+
+def _known_zone(value: str) -> str:
+    if not is_known_zone(value):
+        raise ValueError("must be an IANA zone name, such as Europe/Zurich")
+    return value
+
+
+def _known_zone_or_none(value: object) -> object:
+    """A device's zone at sign-up: one this server doesn't know is dropped, never a 422 —
+    a sign-up must not fail over an observation (the next app start reports again)."""
+    return value if value is None or (isinstance(value, str) and is_known_zone(value)) else None
+
+
+#: An IANA zone ``zoneinfo`` knows (``Europe/Zurich``), at most :data:`MAX_ZONE_LENGTH`
+#: characters (notifications §10.3).
+ZoneName = Annotated[str, Field(max_length=MAX_ZONE_LENGTH), AfterValidator(_known_zone)]
+#: :func:`apply_zone_update`'s fields: pass them as ``apply_patch``'s ``skip``, so a demo's
+#: zone is never written.
+PROFILE_ZONE_FIELDS: tuple[str, ...] = ("device_timezone",)
+
+
 def _as_utc(value: datetime) -> datetime:
     """Aware and in UTC: a naive value is read as UTC (SQLite, and kastlan's naive
     columns), an aware one converted."""
@@ -162,6 +187,11 @@ class RegisterRequest(BaseModel):
     #: ``/register?invite=<token>`` (§4.4); its mail address must accept ``email``
     #: (:func:`~eifi1_server_kit.auth.invitation_accepts`).
     invite_token: str | None = Field(default=None, min_length=1, max_length=256)
+    #: The device's zone (``Intl…timeZone``, notifications §10.3, 0.16), stored as the
+    #: account's ``device_timezone``; one this server doesn't know is dropped, not refused.
+    device_timezone: Annotated[str | None, BeforeValidator(_known_zone_or_none)] = Field(
+        default=None, max_length=MAX_ZONE_LENGTH
+    )
 
 
 class LoginRequest(BaseModel):
@@ -268,6 +298,10 @@ class UserResponse(BaseModel):
     #: The account's contrast mode (text-size §6, §10.6); ``None`` = never chosen, which
     #: reads as ``"system"``.
     contrast: ContrastMode | None = None
+    #: The zone the device last used reported (notifications §10.3, 0.16), an IANA name;
+    #: the client reports its own when it differs. It IS the account's zone — automatic
+    #: only (amended 2026-10-20), ``None`` = the app's (``effective_zone``).
+    device_timezone: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -290,11 +324,19 @@ class UserResponse(BaseModel):
 #: The fields of :class:`ProfileUpdate` that a PATCH may leave out but never null. The
 #: text size and the contrast are among them (text-size §10.6): their ``null`` means only
 #: "never chosen", which a person cannot choose — "System" is a value of its own.
-PROFILE_NOT_NULLABLE: tuple[str, ...] = ("first_name", "last_name", "locale", "text_size", "contrast")
+PROFILE_NOT_NULLABLE: tuple[str, ...] = (
+    "first_name",
+    "last_name",
+    "locale",
+    "text_size",
+    "contrast",
+    "device_timezone",
+)
 
 
 class ProfileUpdate(BaseModel):
-    """``PATCH /auth/me {first_name?, last_name?, locale?, text_size?, contrast?}`` (§6.1;
+    """``PATCH /auth/me {first_name?, last_name?, locale?, text_size?, contrast?,
+    device_timezone?}`` (§6.1;
     Kurvenschmiede ``ProfileUpdate``; ``docs/text-size-harmonization.md`` §6, §10.6).
 
     Every field optional, so the language picker writes the locale alone, and the text-size
@@ -312,6 +354,16 @@ class ProfileUpdate(BaseModel):
     :func:`~eifi1_server_kit.settings.canonical_locale`: ``de_ch`` is stored as ``de-CH``,
     ``de`` as the offered German, and a language the app doesn't offer is a 422. Unset,
     only the tag's shape is checked, as before.
+
+    **The zone** (notifications §10.3, 0.16; amended 2026-10-20, Marcel: automatic only):
+    ``device_timezone``, the device's report (never ``null``), an IANA name ``zoneinfo``
+    knows (422 otherwise). There is no pick: a ``timezone`` field — a stale 0.45 bundle's
+    picker still sends one — is **ignored in 0.16** (dropped before the checks, never
+    written) **and refused from 0.17** as any unknown field is. A demo's zone is ignored, as
+    its locale and appearance are in Kurvenschmiede::
+
+        apply_patch(user, body, not_nullable=PROFILE_NOT_NULLABLE, skip=PROFILE_ZONE_FIELDS)
+        apply_zone_update(user, body, is_demo=user.is_demo)
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -327,6 +379,10 @@ class ProfileUpdate(BaseModel):
     text_size: TextSize | None = None
     #: One of :data:`CONTRAST_MODES`; left out keeps the account's, ``null`` is refused.
     contrast: ContrastMode | None = None
+    #: The device's zone, reported at app start when it differs from the stored one; a
+    #: report, so ``null`` is refused. Write it with :func:`apply_zone_update`, which
+    #: ignores a demo's.
+    device_timezone: ZoneName | None = None
 
     @field_validator("locale", mode="before")
     @classmethod
@@ -344,7 +400,31 @@ class ProfileUpdate(BaseModel):
     @classmethod
     def _refuse_explicit_nulls(cls, data: object) -> object:
         if isinstance(data, dict):
+            if "timezone" in data:
+                # A 0.45 bundle's zone pick: ignored in 0.16, refused as unknown from 0.17.
+                data = {key: value for key, value in data.items() if key != "timezone"}
             for name in PROFILE_NOT_NULLABLE:
                 if name in data and data[name] is None:
                     raise ValueError(f"{name} cannot be null; leave it out to keep it")
         return data
+
+
+def apply_zone_update(
+    user: object | MutableMapping[str, object], patch: BaseModel, *, is_demo: bool
+) -> dict[str, object]:
+    """Write the zone field the PATCH sent (:data:`PROFILE_ZONE_FIELDS`: the device's
+    report) onto ``user`` — an ORM row (``setattr``) or a mutable mapping — and answer it;
+    nothing for a demo, whose device zone is never stored (notifications §10.3 Settled).
+    ``patch`` is a :class:`ProfileUpdate` (or any model with the field); left out keeps."""
+    if is_demo:
+        return {}
+    written: dict[str, object] = {}
+    for name in PROFILE_ZONE_FIELDS:
+        if name in patch.model_fields_set:
+            value = getattr(patch, name)
+            if isinstance(user, MutableMapping):
+                user[name] = value
+            else:
+                setattr(user, name, value)
+            written[name] = value
+    return written

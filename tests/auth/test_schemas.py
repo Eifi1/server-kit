@@ -13,6 +13,7 @@ from eifi1_server_kit.auth import (
     CONTRAST_MODES,
     MAX_NAME_LENGTH,
     PROFILE_NOT_NULLABLE,
+    PROFILE_ZONE_FIELDS,
     TEXT_SIZES,
     AuthError,
     AuthErrorCode,
@@ -24,6 +25,7 @@ from eifi1_server_kit.auth import (
     TokenResponse,
     TwoFactorChallenge,
     UserResponse,
+    apply_zone_update,
 )
 
 ADA: dict[str, Any] = {
@@ -317,3 +319,63 @@ def test_the_refresh_request_takes_any_text() -> None:
         RefreshRequest.model_validate({})
     with pytest.raises(ValidationError):
         RefreshRequest.model_validate({"refresh_token": None})
+
+
+# --- the zone on the account (notifications §10.3, 0.16) --------------------------------------
+
+
+def test_the_account_answers_its_devices_zone_and_no_pick() -> None:
+    """Amended 2026-10-20 (Marcel): the zone is automatic only, so there is no ``timezone``."""
+    answer = UserResponse.model_validate(_user() | {"timezone": "Europe/Paris", "device_timezone": "Asia/Tokyo"})
+    dumped = answer.model_dump()
+    assert dumped["device_timezone"] == "Asia/Tokyo"
+    assert "timezone" not in dumped, "no pick is answered, even where a column is left over"
+    assert UserResponse.model_validate(_user()).device_timezone is None, "an app without the column answers None"
+
+
+def test_a_stale_zone_pick_is_ignored_in_0_16_and_the_device_report_is_never_null() -> None:
+    """A 0.45 bundle's picker still sends ``{timezone}``: ignored for one release (never
+    written), refused as unknown from 0.17."""
+    stale = ProfileUpdate.model_validate({"timezone": "Europe/Zurich", "locale": "en"})
+    assert stale.model_fields_set == {"locale"}
+    assert "timezone" not in stale.model_dump()
+    assert ProfileUpdate.model_validate({"timezone": None}).model_fields_set == set()
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        ProfileUpdate.model_validate({"timezone": "Europe/Zurich", "role": "admin"})
+    assert ProfileUpdate.model_validate({"device_timezone": "Europe/Zurich"}).device_timezone == "Europe/Zurich"
+    assert "device_timezone" in PROFILE_NOT_NULLABLE
+    with pytest.raises(ValidationError, match="device_timezone cannot be null"):
+        ProfileUpdate.model_validate({"device_timezone": None})
+
+
+@pytest.mark.parametrize("name", ["Mars/Olympus", "Europe", "../etc/passwd", "Europe/" + "x" * 60])
+def test_an_unknown_zone_is_a_422(name: str) -> None:
+    with pytest.raises(ValidationError):
+        ProfileUpdate.model_validate({"device_timezone": name})
+
+
+def test_a_sign_up_drops_a_device_zone_this_server_does_not_know() -> None:
+    assert RegisterRequest.model_validate(ADA | {"device_timezone": "Asia/Tokyo"}).device_timezone == "Asia/Tokyo"
+    assert RegisterRequest.model_validate(ADA | {"device_timezone": "Mars/Olympus"}).device_timezone is None
+    assert RegisterRequest.model_validate(ADA | {"device_timezone": 42}).device_timezone is None
+    assert RegisterRequest.model_validate(ADA).device_timezone is None
+
+
+class _Account:
+    device_timezone: str | None = None
+
+
+def test_the_zone_update_writes_the_report_and_nothing_for_a_demo() -> None:
+    account = _Account()
+    patch = ProfileUpdate.model_validate({"device_timezone": "Asia/Tokyo"})
+    assert apply_zone_update(account, patch, is_demo=False) == {"device_timezone": "Asia/Tokyo"}
+    assert account.device_timezone == "Asia/Tokyo"
+    row: dict[str, object] = {}
+    assert apply_zone_update(row, ProfileUpdate.model_validate({"locale": "en"}), is_demo=False) == {}
+    assert row == {}, "left out keeps"
+    assert apply_zone_update(row, patch, is_demo=False) == {"device_timezone": "Asia/Tokyo"}
+    assert row == {"device_timezone": "Asia/Tokyo"}
+    demo = _Account()
+    assert apply_zone_update(demo, patch, is_demo=True) == {}
+    assert demo.device_timezone is None
+    assert PROFILE_ZONE_FIELDS == ("device_timezone",)

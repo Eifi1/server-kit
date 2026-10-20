@@ -4,8 +4,10 @@
  *
  * The allowed types come from the CALLING repo's commit-and-tag-version config,
  * so a commit that passes here is one its release tool can categorise. The
- * config is looked up in the working directory (the repo root), in whichever
- * flavour the repo uses: .versionrc.js (kastlan), .versionrc.cjs (ui-kit, an
+ * config is looked up at the git top level (`git rev-parse --show-toplevel`,
+ * so a hook or script started in a subdirectory still finds it; outside a
+ * repo, or without git, the working directory), in whichever flavour the
+ * repo uses: .versionrc.js (kastlan), .versionrc.cjs (ui-kit, an
  * ESM package), .versionrc.json (keksdose, kurvenschmiede). A repo with no
  * config gets the standard Conventional Commits types.
  *
@@ -13,13 +15,58 @@
  */
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const DEFAULT_TYPES = [
   "feat", "fix", "perf", "refactor", "revert",
   "docs", "style", "chore", "test", "build", "ci",
 ];
 
-function loadTypes(dir = process.cwd()) {
+/** `git rev-parse --show-toplevel` under `env`, or null when git fails or prints nothing. */
+function gitTopLevel(env) {
+  try {
+    const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      env,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return top || null;
+  } catch {
+    return null; /* not a repo, or no git */
+  }
+}
+
+/**
+ * The repo's root: git's top level, or the working directory outside a repo.
+ *
+ * git runs hooks with GIT_DIR exported. After a hook cds into a subdirectory a relative GIT_DIR
+ * no longer resolves, and any GIT_DIR without GIT_WORK_TREE makes git report the working
+ * directory as the top level, so with GIT_DIR set (and no GIT_WORK_TREE) the top level is first
+ * discovered from the working directory with both unset. A GIT_DIR that leads nowhere warns
+ * before the working-directory fallback instead of silently using the standard types.
+ */
+function configDir() {
+  const env = process.env;
+  if (env.GIT_DIR && !env.GIT_WORK_TREE) {
+    // Discover from the working directory: the same environment without the two git paths.
+    const discover = { ...env };
+    delete discover.GIT_DIR;
+    delete discover.GIT_WORK_TREE;
+    const discovered = gitTopLevel(discover);
+    if (discovered) return discovered;
+  }
+  const top = gitTopLevel(env);
+  if (top) return top;
+  if (env.GIT_DIR) {
+    console.error(
+      `commit-check: GIT_DIR=${env.GIT_DIR} does not resolve from ${process.cwd()}; ` +
+        "reading the commit types from the working directory",
+    );
+  }
+  return process.cwd();
+}
+
+function loadTypes(dir = configDir()) {
   for (const name of [".versionrc.js", ".versionrc.cjs"]) {
     const file = path.join(dir, name);
     if (fs.existsSync(file)) return { types: require(file).types, source: name };

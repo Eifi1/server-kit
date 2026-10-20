@@ -33,6 +33,7 @@ from eifi1_server_kit.feedback.router import FeedbackDeps, app_state_limiters, f
 from eifi1_server_kit.feedback.testing import (
     InMemoryAttachmentStorage,
     MemoryFeedbackRow,
+    RecordingAlerts,
     check_round_trip,
     fixed_clock,
 )
@@ -200,6 +201,14 @@ async def test_create_answers_201_in_the_servers_status(world: World) -> None:
     assert answer["context"] == {"user_id": 1, "user_email": AUTHOR.email, "user_display_name": AUTHOR.display_name}
     assert answer["reworks"] == 0  # the app's response model
     assert (await world.file(ADMIN))["status"] == "READY"
+
+
+async def test_the_apps_alerts_hear_a_new_report_over_http() -> None:
+    """``FeedbackDeps.alerts`` (0.16, feedback §11): the app's port, as a dependency."""
+    alerts = RecordingAlerts()
+    world = World(alerts=lambda: alerts)
+    answer = await world.file(AUTHOR)
+    assert [(alert.kind, alert.feedback_id) for alert, _row in alerts.alerts] == [("report", answer["id"])]
 
 
 async def test_create_refuses_a_foreign_url_and_crash_by_hand(world: World) -> None:

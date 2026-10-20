@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from datetime import timedelta
 
 import pytest
 
@@ -62,7 +63,7 @@ def test_the_registry_keeps_the_apps_order() -> None:
 def test_the_registry_answers_ids() -> None:
     assert "digest" in KEKSDOSE
     assert "feedback_answered" not in KEKSDOSE
-    assert KEKSDOSE["digest"] == NotificationType("digest", app=False)
+    assert KEKSDOSE["digest"] == NotificationType("digest", app=False, push=False), "push takes the app default"
     assert 42 not in KEKSDOSE and None not in KEKSDOSE
     assert ["digest"] not in KEKSDOSE, "an unhashable value is simply not an id"
     with pytest.raises(KeyError):
@@ -86,7 +87,48 @@ def test_receivable_narrows_in_the_same_order() -> None:
 
 def test_the_registry_reads_as_its_types() -> None:
     assert repr(KASTLAN) == (
-        "NotificationTypes(NotificationType(id='invoices_overdue', app=False, email=False, quiet=True), "
-        "NotificationType(id='dunnings_pending', app=False, email=None, quiet=True))"
+        "NotificationTypes(NotificationType(id='invoices_overdue', app=False, email=False, quiet=True, "
+        "push=None, bundle=None), "
+        "NotificationType(id='dunnings_pending', app=False, email=None, quiet=True, push=None, bundle=None))"
     )
     assert repr(NotificationTypes()) == "NotificationTypes()"
+
+
+# ── push and bundle (§10.2, §10.4; 0.16) ─────────────────────────────────────
+
+
+def test_push_takes_the_app_default_in_an_app_with_push() -> None:
+    types = NotificationTypes(
+        NotificationType("scan_done", app=False),
+        NotificationType("support_chat", app=True, push=False),
+        NotificationType("feedback_received", app=None, email=True),
+    )
+    assert types.push_channel
+    assert [item.push for item in types] == [False, False, None]
+
+
+def test_an_app_without_push_offers_it_on_no_type() -> None:
+    types = NotificationTypes(
+        NotificationType("invoices_overdue", app=False, email=False, push=True),
+        NotificationType("dunnings_pending", app=False),
+        push_channel=False,
+    )
+    assert not types.push_channel
+    assert [item.push for item in types] == [None, None]
+    narrowed = types.receivable(lambda _item: True)
+    assert not narrowed.push_channel and [item.push for item in narrowed] == [None, None]
+    assert [item.push for item in KEKSDOSE.receivable(lambda _item: True)] == [item.push for item in KEKSDOSE]
+
+
+def test_a_push_only_type_is_a_channel_and_vanishes_without_push() -> None:
+    assert NotificationType("alarm", app=None, push=True).push is True
+    with pytest.raises(ValueError, match="offers no channel"):
+        NotificationTypes(NotificationType("alarm", app=None, push=True), push_channel=False)
+
+
+def test_a_bundle_is_a_positive_time() -> None:
+    assert NotificationType("feedback_received", app=True, email=True, bundle=timedelta(minutes=15)).bundle == (
+        timedelta(minutes=15)
+    )
+    with pytest.raises(ValueError, match="positive time"):
+        NotificationType("feedback_received", app=True, bundle=timedelta(0))

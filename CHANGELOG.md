@@ -10,6 +10,143 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.16.0] (2026-10-19)
+
+server-kit 0.16.0: the backend half of round 0.46 (ui-kit 0.46), from the 0.45 build reviews
+(kastlan, keksdose, Kurvenschmiede) and the D2 amendment of local-first sync
+(`docs/local-first-harmonization.md`), plus notifications §10 and feedback §11 (settled
+2026-10-19, the zone amended 2026-10-20) and local-first §2's named sync scopes. A **minor**,
+not the 0.15.1 it was prepared as: it adds public names, and it **breaks** three things an app
+must handle in the same bump (under **⚠ BREAKING CHANGES**): the legacy rework append is a
+coded 422 and its names are gone, push becomes a channel of its own, and the notification
+settings lose their picked `timezone` (the zone is automatic). The behaviour changes an app
+may notice without code are under **Changed**. Per-app steps: ui-kit's `docs/adopt-0.46.md`.
+
+### ⚠ BREAKING CHANGES
+
+* **feedback:** the legacy rework append is a coded 422 (feedback contract §10.3; Marcel
+  2026-10-19, kastlan and Kurvenschmiede agreed). A body-only PATCH that appends to a report
+  outside OPEN / READY / IN_PROGRESS — the rework of a client from before ui-kit 0.40, which
+  0.13–0.15 converted into an entry — is refused before anything is written:
+  `LegacyReworkAppendError` (a `FeedbackValidationError`), answered `{"detail": "This page is
+  out of date: reload it, then send the report back again.", "code": "legacy_rework_append"}`
+  (`LEGACY_REWORK_APPEND`, `LEGACY_REWORK_APPEND_DETAIL`). Only a tab open across the deploy
+  still sends it. Removed: `legacy_rework_block`, `UpdatePlan.rework`, `UpdatePlan.reopened`,
+  `plan_update(prefix=)` and the `feedback.legacy_rework_append` log line. An app test that
+  PATCHes an append to an answered report expects the 422 now.
+* **notifications:** push is a channel of its own (notifications §10.2). `plan_delivery`
+  sends the push on `switches.push`, no longer on `app`; `resolve_switches` answers `push`
+  (a type's `push=None` takes its `app` default in a registry with push, `null` in one built
+  with `push_channel=False`). A `TypeSwitches` built by hand without `push` sends no push.
+  **keksdose migrates first** (`app = push = enabled`, `migrate_enabled_to_channels`), or a
+  type switched off would push again by its default. kastlan and Kurvenschmiede build their
+  registry with `push_channel=False` (else kastlan's `app=False` types read `push: false`).
+  `NotificationType`'s repr and the settings' JSON carry `push` (and `bundle`).
+* **notifications, auth:** the zone is automatic only (notifications §10.3, amended
+  2026-10-20): the account's zone is the device last used, else Zurich, and nobody picks one.
+  `QuietHoursFields.timezone` and `QuietHoursUpdate.timezone` are removed, so the settings'
+  answer carries no zone; `UserResponse` / `ProfileUpdate` have no `timezone` either. A
+  `timezone` sent anyway — a stale 0.45 bundle's picker or its quiet hours' first entry, to
+  `PATCH /notifications/settings`, keksdose's `/push/settings` shim (through
+  `QuietHoursUpdate`) or `PATCH /auth/me` — is **ignored in 0.16** (dropped before the checks,
+  never written) **and refused from 0.17** as any unknown field (`extra="forbid"`, a 422): the
+  PWA keeps old bundles for days (keksdose S2/S3). Quiet hours read `effective_zone(user.device_timezone)` (below); an app moves its stored
+  settings zone to `users.device_timezone` in the bump's migration.
+
+### Added
+
+* **notifications (round 0.46, §10):** `NotificationType(push=, bundle=)`,
+  `NotificationTypes(push_channel=)` and `.push_channel`; `TypeSwitches.push`,
+  `TypeSwitchesPatch.push`, `StoredSwitches.push`; `apply_switches_patch(couple_push_to_app=)`
+  (keksdose's `{app}`-only bundles, with the `/push/*` aliases); `migrate_enabled_to_channels`;
+  `NotificationChannelError` (422 `notification_channel_not_offered`, also on `{push}` where
+  the app has none); per device `PushDeviceUpdate(muted_types)`,
+  `PushDeviceResponse.muted_types`, `device_receives`, `read_muted_types`, `apply_muted_types`;
+  `PushData.inbox` (`false`: no inbox row, the worker shows it even while focused); the zone on
+  the account, automatic only: `effective_zone(device_timezone)`, `local_today(zone, now)`,
+  `quiet_hours_end(start, end, zone, now)` (across midnight, both DST days); the inbox's port
+  `InboxStore`, `NewInboxItem`, `InboxItem.company`, `INBOX_PAGE_DEFAULT` / `INBOX_PAGE_MAX`;
+  the opt-in queue `NotificationQueue`, `NewQueueItem`, `QueueItem`, `QueueChannel`,
+  `FlushPort`, `QueueService` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult`,
+  `notifications_tick`, `QUEUE_*`; layer 2 `notifications.router` (the `fastapi` extra:
+  `InboxDeps`, `inbox_router`, `notifications_jobs_router`) and `notifications.testing`
+  (`InMemoryInboxStore`, `InMemoryNotificationQueue`, `RecordingFlushPort`).
+* **notifications (§10.6):** the push replace route, `POST /notifications/devices/replace`, for
+  a subscription the browser rotated (`pushsubscriptionchange` runs in the service worker,
+  without a session): `PushReplaceIn` (the old endpoint plus its `auth` secret as the proof,
+  and the new subscription) and `push_auth_matches(stored, given)` (a constant-time compare);
+  the app mounts the route. Its rules: `PUSH_GONE_GRACE` (7 days) and
+  `push_gone_expired(gone_at, now)`; `PushReplaceIn`'s docstring holds the settled rules (an
+  inactive or demo account the same 404 and its row deleted, the proof before the 409, a gone
+  row claimable within the grace, no RLS on device rows, the body never logged, push rows
+  deleted on sign-out-everywhere, deactivation and erasure).
+* **auth (notifications §10.3, amended 2026-10-20: automatic only):**
+  `UserResponse.device_timezone`, `ProfileUpdate.device_timezone` (the device's report, never
+  `null`, in `PROFILE_NOT_NULLABLE`), `RegisterRequest.device_timezone` (an unknown zone
+  dropped), `ZoneName`, `MAX_ZONE_LENGTH`, `PROFILE_ZONE_FIELDS` (`("device_timezone",)`),
+  `apply_zone_update(user, patch, *, is_demo)` (a demo's zone ignored). The account's zone is
+  the device last used, else Zurich; there is no pick (see **⚠ BREAKING CHANGES**).
+* **feedback (§11, the admins' alert):** `FEEDBACK_RECEIVED`, `FeedbackAlert`,
+  `FeedbackAlertKind`, the `FeedbackAlerts` port, `admin_alert_recipients(admin_ids, *,
+  actor_id)`, `mails_at_once(alert)`; `FeedbackService(alerts=None)` tells it after `create`,
+  after a NEW crash row (never a fold) and after a rework's `apply` that lands OPEN (an
+  admin's rework, a reply, a status change, a comment, a vote and `alerts=None` tell nobody);
+  `FeedbackDeps(alerts=)`; testing `RecordingAlerts`.
+
+* **sync:** each push's device clock skew is corrected (D2 amended): `SyncRequest.client_now`
+  (the device's clock when it sends, spelt as `updated_at`), `clock_skew(client_now, *, now)`
+  once per push (`now - client_now`; `timedelta(0)` without `client_now` or within
+  `CLOCK_SKEW_TOLERANCE`, 2 s; capped at `MAX_CLOCK_SKEW`, 24 h), `correct_stamp(stamp, *,
+  skew)`, and an optional `skew=` on `merge_lww` and `clamp_stamp`. A SLOW clock's edits no
+  longer lose to a colleague's later-arriving older edit; without `client_now`, 0.15.0's
+  behaviour.
+* **sync:** named scopes, `sync.scopes` (local-first §2.4; lifted from kastlan's
+  `sync_scopes.py`, its handover rules left to the app as guards): `SyncScope` (`name`, `roles`,
+  `readable`, `writable`, `withheld`, `after_apply`; `pull_order(walk)` for the paged pull's
+  `entities`), `EntityRule` (`create`/`update` schemas, `deletable`, `fixed_parents`,
+  `fixed_fields`, `guard`), the `ScopeRows` port (`find`, `parent_id`, `references`),
+  `RuleContext`, `AfterApplyContext` (`found`: the live rows, mutated by the apply; `before`: a
+  snapshot of the fields each allowed change sends, taken before the apply — kastlan S5),
+  `async sort_changes(scope, changes, rows)` →
+  `SortedChanges(allowed, rejections, context)` (one rejection per refused change; a child of a
+  refused new row is refused with it; `refuse_whole()` for a client without `refusals`),
+  `SyncScopeError`, and `withhold(scope, change)`: a scope's `withheld` `"<entity>.<field>"`
+  never reaches a device and a push that writes one is rejected (D14; kastlan:
+  `estates.qr_iban`). Layer 1, no extra.
+* **mail:** `HtmlMailMessage`, a `MailMessage` whose `html` is a `str` (keksdose N2).
+* **user_admin:** `group_name_problem(name)` → `GroupNameProblem` (`blank` / `too_long` /
+  `control_character` / `secret_shaped`) or `None`, for the app's 422 on a new bad name;
+  `DETAIL_NAME_MAX_LENGTH` (200); `audit_detail(detail, *, action=)`, which
+  `admin_action_record` passes its action.
+
+### Changed
+
+* **tours:** the export spells `completed_at` with `Z`, as the wire does (was `isoformat()`'s
+  `+00:00`; Kurvenschmiede). **A test that pins the export's value must be re-pinned.**
+* **mail:** `test_mail_message` returns `HtmlMailMessage` (still a `MailMessage`).
+* **notifications:** a push service's 404/410 marks the device gone (`gone_at`) instead of
+  deleting it at once (§10.6 rule 4; the app's reaper); the daily reap deletes it after
+  `PUSH_GONE_GRACE`. `in_quiet_hours`' held push waits for `quiet_hours_end` where the app
+  runs the queue.
+
+### Fixed — from the 0.45 build reviews
+
+* **user_admin:** a company's `group_rename` records its `{from, to}` names, which 0.15.0
+  documented but `audit_detail` refused (a 500; kastlan K8). The names are cleaned, never
+  refused: control and format characters out, whitespace collapsed, cut at 200 with an
+  ellipsis, a blank or secret-shaped name dropped (kastlan S1). Every other detail stays tokens.
+
+### CI
+
+* the shared commit check (`Eifi1/shared-workflows` v1.3.0) over the PR or push range; the
+  commit hooks follow the shared rules as of shared-workflows b4582d3 (v1.3.1, pending tag).
+
+### Docs
+
+* **sync:** the rows of one flush share a knowledge — take it with `SELECT … FOR UPDATE` or one
+  atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` (kastlan K5); **tours:** the export's
+  spelling and the vulture note (Kurvenschmiede).
+
 ## [0.15.0] (2026-10-19)
 
 server-kit 0.15.0: the backend half of round 0.45 (ui-kit 0.45), settled on 2026-10-19 after

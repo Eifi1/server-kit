@@ -23,10 +23,22 @@ Rework as an entry (0.13, contract §10): ``FeedbackStatus.REWORK``, :data:`QUEU
 The admin's counts (0.15, ``docs/admin-harmonization.md`` §9.5):
 :meth:`FeedbackRepository.count_by_status` and :func:`feedback_attention`, which folds it
 into :class:`FeedbackAttention`'s three tiles from the kit's own status sets.
+
+The admins' alert (0.16, contract §11): :data:`FEEDBACK_RECEIVED`, :class:`FeedbackAlert`,
+the :class:`FeedbackAlerts` port :class:`FeedbackService` tells (``alerts=``),
+:func:`admin_alert_recipients` and :func:`mails_at_once`.
 """
 
 from __future__ import annotations
 
+from eifi1_server_kit.feedback.alerts import (
+    FEEDBACK_RECEIVED,
+    FeedbackAlert,
+    FeedbackAlertKind,
+    FeedbackAlerts,
+    admin_alert_recipients,
+    mails_at_once,
+)
 from eifi1_server_kit.feedback.attachments import (
     DEFAULT_ATTACHMENT_URL_POLICY,
     DEFAULT_ATTACHMENT_URL_PREFIX,
@@ -95,6 +107,8 @@ from eifi1_server_kit.feedback.erasure import (
 )
 from eifi1_server_kit.feedback.errors import (
     COMMENTS_THROTTLED_DETAIL,
+    LEGACY_REWORK_APPEND,
+    LEGACY_REWORK_APPEND_DETAIL,
     THROTTLED_DETAIL,
     VOTES_THROTTLED_DETAIL,
     AttachmentNotFoundError,
@@ -105,6 +119,7 @@ from eifi1_server_kit.feedback.errors import (
     FeedbackNotFoundError,
     FeedbackThrottledError,
     FeedbackValidationError,
+    LegacyReworkAppendError,
     UnknownAttachmentUrlError,
 )
 from eifi1_server_kit.feedback.ports import (
@@ -151,7 +166,6 @@ from eifi1_server_kit.feedback.rules import (
     UpdatePlan,
     check_author_edit,
     initial_status,
-    legacy_rework_block,
     plan_reply,
     plan_rework,
     plan_update,
@@ -213,6 +227,9 @@ __all__ = [
     "FEEDBACK_ANSWERED",
     "FEEDBACK_COMMENT",
     "FEEDBACK_CONTEXT_KEEP",
+    "FEEDBACK_RECEIVED",
+    "LEGACY_REWORK_APPEND",
+    "LEGACY_REWORK_APPEND_DETAIL",
     "MAX_ATTACHMENT_BYTES",
     "MAX_ATTACHMENT_URLS",
     "MAX_BODY_LENGTH",
@@ -255,6 +272,9 @@ __all__ = [
     "CrashReportResponse",
     "ErasedFeedback",
     "FeedbackActor",
+    "FeedbackAlert",
+    "FeedbackAlertKind",
+    "FeedbackAlerts",
     "FeedbackAttachmentResponse",
     "FeedbackAttention",
     "FeedbackCategory",
@@ -287,6 +307,7 @@ __all__ = [
     "FeedbackValidationError",
     "FeedbackVoteResponse",
     "FeedbackVoteStore",
+    "LegacyReworkAppendError",
     "NewFeedback",
     "NewFeedbackComment",
     "NewFeedbackReply",
@@ -300,6 +321,7 @@ __all__ = [
     "StoredAttachment",
     "UnknownAttachmentUrlError",
     "UpdatePlan",
+    "admin_alert_recipients",
     "anonymise_feedback",
     "anonymise_reply",
     "append_rework",
@@ -324,7 +346,7 @@ __all__ = [
     "initial_status",
     "is_public",
     "is_rework_append",
-    "legacy_rework_block",
+    "mails_at_once",
     "normalise_crash_text",
     "opens_with_rework_rule",
     "plan_reply",

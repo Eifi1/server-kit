@@ -9,7 +9,7 @@ FastAPI, as an app's would be.
 
 import time
 from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Annotated, Any
 
 import httpx
@@ -177,10 +177,23 @@ async def test_the_service_exports_the_accounts_rows(store: SpyStore) -> None:
     """§10.2.9: the export's ``tour_progress``, by id, ``completed_at`` null for ""."""
     service = TourProgressService(store)
     assert await service.export(1) == [
-        {"tour_id": "intro", "completed_at": "2026-10-01T08:00:00+00:00"},
+        {"tour_id": "intro", "completed_at": "2026-10-01T08:00:00Z"},
         {"tour_id": "old", "completed_at": None},
     ]
     assert await service.export(5) == []
+
+
+async def test_the_export_spells_an_instant_as_the_wire_does(client: Sign) -> None:
+    """One record, one spelling: the export's ``completed_at`` is the ``GET``'s string
+    (``Z``, not ``+00:00``), fractions and other zones included (0.16.0, KS's adoption)."""
+    rows = {
+        "a": datetime(2026, 10, 18, 7, 0, 0, 120000, tzinfo=UTC),
+        "b": datetime(2026, 10, 18, 9, 30, tzinfo=timezone(timedelta(hours=2))),
+    }
+    store = SpyStore({1: rows})
+    wire = (await client("ada", app_for(store)).get(URL)).json()["completed"]
+    exported = {row["tour_id"]: row["completed_at"] for row in await TourProgressService(store).export(1)}
+    assert exported == wire == {"a": "2026-10-18T07:00:00.120000Z", "b": "2026-10-18T07:30:00Z"}
 
 
 def test_the_service_defaults_to_the_kits_clock(store: SpyStore) -> None:
@@ -210,7 +223,7 @@ async def test_a_naive_store_exports_utc(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("TZ", "Europe/Berlin")
     time.tzset()
     service = TourProgressService(InMemoryTourProgressStore({1: {"intro": datetime(2026, 10, 1, 8, 0)}}))
-    assert await service.export(1) == [{"tour_id": "intro", "completed_at": "2026-10-01T08:00:00+00:00"}]
+    assert await service.export(1) == [{"tour_id": "intro", "completed_at": "2026-10-01T08:00:00Z"}]
     assert (await service.progress(1)).completed == {"intro": datetime(2026, 10, 1, 8, 0, tzinfo=UTC)}
     monkeypatch.undo()
     time.tzset()

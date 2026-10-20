@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 
 __all__ = [
+    "NotificationChannelError",
     "NotificationError",
     "NotificationTypeError",
     "PushEndpointTakenError",
@@ -48,6 +49,25 @@ class NotificationTypeError(NotificationError):
         self.type_ids = tuple(type_ids)
         self.extra = {"types": list(self.type_ids)}
         super().__init__(detail or f"{self.default_detail}: {', '.join(self.type_ids)}")
+
+
+class NotificationChannelError(NotificationError):
+    """A switch for a channel the type doesn't offer (§10.2, 0.16) — ``push`` in an app with
+    no push, a type id a device can't mute: 422 ``{"detail": …, "code":
+    "notification_channel_not_offered", "types": [...], "channel": "push"}``. The settings
+    model refuses the PATCH's switch first; :func:`~.resource.apply_switches_patch` and
+    :func:`~.delivery.apply_muted_types` check it again for a caller without it."""
+
+    status_code = 422
+    code = "notification_channel_not_offered"
+    default_detail = "These notifications don't offer this channel"
+    extra: Mapping[str, object]
+
+    def __init__(self, type_ids: Iterable[str], channel: str, detail: str | None = None) -> None:
+        self.type_ids = tuple(type_ids)
+        self.channel = channel
+        self.extra = {"types": list(self.type_ids), "channel": channel}
+        super().__init__(detail or f"{self.default_detail} ({channel}): {', '.join(self.type_ids)}")
 
 
 class PushEndpointTakenError(NotificationError):

@@ -58,14 +58,14 @@ SQLAlchemy or an app's model ([`docs/server-services-harmonization.md`](https://
 | Schemas | `FeedbackCreate`, `FeedbackUpdate`, `FeedbackResponse`, `FeedbackAttachmentResponse`, `CrashReportCreate`, `CrashReportResponse` — subclass them; the knobs are class variables (`attachment_url_policy`, `max_context_size`) |
 | Limits | `MAX_ATTACHMENT_URLS` (5), `MAX_ATTACHMENT_BYTES` (10 MB), `ACCEPTED_MEDIA_TYPES`, `MAX_TITLE_LENGTH` (255), `MAX_BODY_LENGTH` (50 000), `MAX_CONTEXT_SIZE` (8 KB), `NOT_NULLABLE_FIELDS` |
 | Statuses the server decides | `initial_status(author_is_admin=, crash=False)` (READY for an admin's own report, OPEN otherwise and for every crash); `rework_status(actor_is_admin=)` (a rework goes back to REWORK from an admin, to OPEN from anyone else; READY before 0.13) |
-| PATCH rules | `plan_update(status=, body=, changes=, is_admin=, is_author=, prefix=)` → `UpdatePlan(changes, reworking, reopened, rework)`; `reject_manual_crash`, `check_author_edit`, `reopens`, `resolved_at_change` |
-| Rework entries (0.13) | `plan_rework(*, status, is_author, actor_is_admin, now=)` → `ReplyPlan` (403 `REWORK_AUTHOR_ONLY` for anyone but the author, 403 outside `REWORKABLE_STATUSES`); `FeedbackReworkCreate(body, attachment_url)`; `split_rework_blocks(body, *, prefix=)` → `(description, [ReworkBlock(stamp, note, url)])` for the migrations (`REWORK_BLOCK_RE`; a rule that is no block, `--- REWORK ANSWERED … ---` or date-only, raises `ValueError`; split `body` only, never `outcome`); `legacy_rework_block` (the PATCH conversion) |
-| Rework bodies (legacy) | `append_rework`, `rework_count` (anchored on `^---\s*REWORK\b`), `is_rework_append`, `split_body_attachments`, `body_attachment_urls`, `rework_stamp` — the 0.13 PATCH conversion, a migration's downgrade, a client's fallback count |
+| PATCH rules | `plan_update(status=, body=, changes=, is_admin=, is_author=)` → `UpdatePlan(changes, reworking)`; an append to an answered report raises `LegacyReworkAppendError` (since 0.16); `reject_manual_crash`, `check_author_edit`, `reopens`, `resolved_at_change` |
+| Rework entries (0.13) | `plan_rework(*, status, is_author, actor_is_admin, now=)` → `ReplyPlan` (403 `REWORK_AUTHOR_ONLY` for anyone but the author, 403 outside `REWORKABLE_STATUSES`); `FeedbackReworkCreate(body, attachment_url)`; `split_rework_blocks(body, *, prefix=)` → `(description, [ReworkBlock(stamp, note, url)])` for the migrations (`REWORK_BLOCK_RE`; a rule that is no block, `--- REWORK ANSWERED … ---` or date-only, raises `ValueError`; split `body` only, never `outcome`) |
+| Rework bodies (legacy) | `append_rework`, `rework_count` (anchored on `^---\s*REWORK\b`), `is_rework_append`, `split_body_attachments`, `body_attachment_urls`, `rework_stamp` — the old append's 422, a migration's downgrade, a client's fallback count |
 | Crash filing | `crash_fingerprint(payload, user_id)` (byte-identical to keksdose's), `decide_crash(candidate_status)` → `CrashDecision.FOLD` / `FILE` (the candidate is the newest row with the fingerprint whose status is NOT in `TERMINAL_STATUSES` — filter that in the query, as keksdose does), `fold_crash_context`, `crash_title`, `crash_body`, `crash_context`, `crash_seen_at`, `crash_reference` |
 | Erasure | `FEEDBACK_CONTEXT_KEEP`, `ERASED_MARK`, `scrub_text`, `scrub_context`, `anonymise_feedback`, `anonymise_reply` (an entry kept, un-named and scrubbed, its rework file answered for the purge), `feedback_attachment_urls`, `attachment_keys_to_purge` |
 | Attachment URLs | `AttachmentUrlPolicy(key_pattern, prefix)`, `OPAQUE_KEY_PATTERN` (default), `SHA12_KEY_PATTERN` (keksdose), `UUID32_SHA12_KEY_PATTERN` (kastlan) |
 | Context | `stamp_identity` (the server writes `user_*` from the session), `context_size`, `CONTEXT_KEYS` |
-| Errors | `FeedbackError` → `FeedbackValidationError` (422: `CrashCategoryNotAssignableError`, `UnknownAttachmentUrlError`), `FeedbackForbiddenError` (403) — all `ValueError`s with a `status_code` |
+| Errors | `FeedbackError` → `FeedbackValidationError` (422: `CrashCategoryNotAssignableError`, `UnknownAttachmentUrlError`, `LegacyReworkAppendError` with `code` `LEGACY_REWORK_APPEND`, since 0.16), `FeedbackForbiddenError` (403) — all `ValueError`s with a `status_code` |
 | Public feedback (0.11) | `public_body(body, *, policy)` (no file line, no attachment URL anywhere, kastlan's folded `--- COMMENT <stamp> · <name> ---` without the name), `public_text(text, *, policy)` (the URL removal alone, `REMOVED_URL` "[…]"), `is_public(category, public)` (never a CRASH), `feedback_recipients(*, author_id, commenter_ids, writer_id)`; `FEEDBACK_ANSWERED`, `FEEDBACK_COMMENT`, `COMMENT_MAX` (4000), `REPLY_MAX` (8000), `PUBLIC_PAGE_SIZE` (50), `PUBLIC_PAGE_MAX` (100); `PUBLIC_REPORT_FIELDS`, `PUBLIC_COMMENT_FIELDS`, `PUBLIC_REPLY_FIELDS` (what leaves for others, §9.10; `kind` since 0.13, never `attachment_url`); `DECIDED_STATUSES`; `plan_reply(*, status, new_status, now=)` → `ReplyPlan(changes, status_from, status_to)`; `plan_update(…, filed_private=False)` (`public` is the author's while the report is open, at any status when `filed_private`) |
 | Public schemas (0.11) | `FeedbackResponse` gains `author_name`, `mine`, `public`, `filed_private`, `votes`, `voted`, `comment_count`, `replies` (all optional); `FeedbackUpdate` gains `public`, and **`outcome` is frozen**: a PATCH naming it is 422 `OUTCOME_READ_ONLY` ("outcome is read-only; post a reply"); `FeedbackReplyCreate`, `FeedbackReplyResponse` (`FeedbackPublicReplyResponse` + `status_from`, + `attachment_url` since 0.13; `kind` on both), `FeedbackPublicListItem`, `FeedbackPublicResponse` (separate models, so nothing added to `FeedbackResponse` reaches the public), `FeedbackCommentCreate`, `FeedbackCommentResponse`, `FeedbackCommentHide`, `FeedbackVoteResponse`, `PublicSort` |
 
@@ -84,10 +84,11 @@ admin author's lands in `REWORK` ("Rework requested", in the loops' queue), anyo
 in OPEN for the triager. **A rework entry notifies nobody**: the reply store's `add` fires
 `feedback_answered` for `kind = 'reply'` only, `feedback_recipients` is never asked for
 one, and no admin mail is sent; the REWORK status (or the chip on an OPEN row) is the
-inbox's signal. `outcome` answers as the newest entry of kind `reply`. For one release the
-PATCH still takes an old client's body append and writes it as an entry — the author's
-rework, or an admin's reply with status REWORK on someone else's report — leaving `body`
-untouched and logging `feedback.legacy_rework_append`; from 0.14 an append is a 422. Each
+inbox's signal. `outcome` answers as the newest entry of kind `reply`. An old client's body
+append to an answered report (its rework before ui-kit 0.40), by the author or an admin, is
+a coded 422 since 0.16: `{"detail": …, "code": "legacy_rework_append"}`, nothing written, so
+a tab open across the deploy shows the detail until it reloads (0.13–0.15 converted it into
+an entry). Inside OPEN / READY / IN_PROGRESS an append stays a body edit. Each
 app migrates its `--- REWORK <stamp> ---` blocks with `split_rework_blocks` and adds the
 enum label (`ADD VALUE IF NOT EXISTS 'REWORK' AFTER 'READY'`) and the columns
 `kind VARCHAR(12) NOT NULL DEFAULT 'reply'`, `attachment_url VARCHAR(500) NULL`.
@@ -111,6 +112,7 @@ written once (server-services §2, §4.1). The ports and the service come with
 | Public ports (0.11) | `FeedbackActor.role` (for the app's predicate); `NewFeedback.public` (True; False for a crash); `PublicFeedbackRow`; `FeedbackReplyRow`, `FeedbackCommentRow`; `NewFeedbackReply`, `NewFeedbackComment`; `PublicListEntry(row, votes, voted, comment_count)`; `PublicFeedbackRepository[RowT]` (`public_page(*, viewer_id, sort, status, category, q, limit, offset)` with the counts in SQL, `get_public(id)`); `FeedbackReplyStore` (`for_reports`, `add(new, *, actor)` fires `feedback_answered` for a reply only, `by_author`, `apply`); since 0.13 `FeedbackReplyRow` reads `kind` and `attachment_url`, `NewFeedbackReply` carries `kind`, `attachment_url` and an optional `created_at` (the migration's stamp), and `urls_named_except` names other reports' rework files too; `FeedbackCommentStore` (`for_report`, `counts(ids, *, include_hidden)`, `commenters`, `add(new, *, actor)` fires `feedback_comment`, `get`, `apply`, `delete`, `by_author`, `clear_hidden_by`); `FeedbackVoteStore` (`counts(ids, *, viewer_id)`, `put`, `delete`, `delete_by_author`); `PeopleLookup` (`names(ids)` → `(first, last)`, the one read of `users`). `AttachmentStorage.read` states the files predicate: the uploader, the author of a report naming the file, an admin |
 | Public service (0.11) | `FeedbackService(…, replies=None, comments=None, votes=None, people=None, public_viewer=None, public_search=True)`: `reply`, `list_public`, `get_public`, `comments`, `comment(…, limiter=)`, `hide_comment`, `delete_comment`, `vote(…, limiter=)`, `unvote(…, limiter=)`, `sees_public(actor)`; the page views `admin_view(actor, pairs)`, `author_view(actor, rows)`, `public_item(actor, entries)`, `public_view(actor, row)` (one call per store a page); `create` casts the author's vote; `erase_author` → `ErasedFeedback(…, comments, votes, replies)`; 0.13: `rework(actor, id, payload)`, `update` converts the legacy append, the views carry `kind` (and `attachment_url` for the admin and the author), `erase_author` un-names rework entries and purges their files |
 | Public testing (0.11) | `InMemoryReplyStore`, `InMemoryCommentStore`, `InMemoryVoteStore`, `InMemoryPeopleLookup` (each logs `calls`; the reply and comment stores record `added` with the actor), `MemoryReplyRow`, `MemoryCommentRow`; `check_reply_store`, `check_comment_store`, `check_vote_store`, `check_public_repository`; `assert_public_view(payload, *, policy=)` |
+| Admin alerts (0.16, feedback §11) | `FEEDBACK_RECEIVED` (the type every app declares, on by default, `quiet`); `FeedbackAlert(kind, feedback_id, category, actor_id, company_id=None)`, `FeedbackAlertKind` (`report`, `rework`, `crash`); the port `FeedbackAlerts` (`async filed(alert, row)`); `FeedbackService(…, alerts=None)` tells it after `create`, after a NEW crash row (never a fold) and after a rework's `apply` when it lands OPEN — `None` (a loop's service) tells nobody; `FeedbackDeps(alerts=)`; `admin_alert_recipients(admin_ids, *, actor_id)` (the actor never told), `mails_at_once(alert)` (False for a crash: mailed only in the queue's bundle); testing `RecordingAlerts` |
 
 | Route | Endpoint | Guard (the app's) | Answer |
 |---|---|---|---|
@@ -324,7 +326,7 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
-| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; no pick: a stale 0.45 bundle's `timezone` is ignored in 0.16, a 422 from 0.17), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
 | Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
@@ -407,7 +409,7 @@ holds stay in the app.
 | Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` (`target_email=None` is a group: the tick alone, never `type_email`) |
 | Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, billing §6's `plan` at `acknowledge`, and §11's group words `group_create`, `group_rename`, `group_delete` (at `acknowledge`), `membership_add`, `membership_role`, and (0.15) `group_deactivate`, `group_reactivate` (a whole company switched off and on); a team's `group_rename` detail is `{}`, a company's `{from, to}`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
 | User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, `RosterQueryError` (422), `LIKE_ESCAPE` |
-| Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, target_group_id=, target_group_name=, now=)` → the row's fields (`target_group_name` on a `group_delete` row only) (an `AdminAction`, or the app's own action kept as written); `audit_detail` (ids, roles, flags and counts only), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
+| Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, target_group_id=, target_group_name=, now=)` → the row's fields (`target_group_name` on a `group_delete` row only) (an `AdminAction`, or the app's own action kept as written); `audit_detail(detail, action=)` (ids, roles, flags and counts only; 0.16: a `group_rename`'s top-level `from` / `to` are names, free text cleaned to at most `DETAIL_NAME_MAX_LENGTH` 200, never refused), `group_name_problem(name)` → `GroupNameProblem` (`blank` / `too_long` / `control_character` / `secret_shaped`) or `None`, the same rule for the app's request schema (0.16), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
 | Schemas | `AdminUserRow`, `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
 | Export | `export_envelope(app, account, data, now)` (`"format": "eifi1-account-export"`, `"version": 1`), `export_filename`, `EXPORT_PER_USER` (once a minute), `NEVER_EXPORT`; `assert_no_secrets(obj, allow=)` / `secret_paths` → `ExportSecretError`; `looks_secret`, `looks_secret_key`, `looks_secret_value` |
@@ -453,6 +455,25 @@ rest, and a plaintext copy in `detail` would carry them past the encryption, int
 table every admin reads and past the erasure scrub. So `audit_detail` accepts only short
 tokens: a role, a locale, an ISO date. It refuses sentences, addresses, secrets and
 anything that is not JSON. A refusal is a bug in the app, and its tests catch it.
+One exception (0.16): a company's name is business data, so a `group_rename` detail's
+top-level `from` and `to` are free text. They are cleaned, never refused, so the log
+cannot turn a rename into a 500, even for a stored name from before the rule: control and
+format characters go (a tab or line break becomes a space, a soft hyphen or zero-width
+space vanishes), whitespace collapses, and a name over 200 characters is cut, ending in
+`…`. A blank or secret-shaped name is left out with its key. The seam is
+`audit_detail(detail, action=)`, and `admin_action_record` passes its own action. The rest
+of that detail is still tokens, and every other action still refuses a name. A team's
+rename keeps `{}`. A NEW name is the app's to refuse, with a 422 at the edge, by the same
+rule:
+
+```python
+@field_validator("name")
+@classmethod
+def _name(cls, name: str) -> str:
+    if problem := kit.group_name_problem(name):  # "blank", "too_long", ...
+        raise ValueError(f"name: {problem}")
+    return name.strip()
+```
 
 **The user list** takes the contract's `-key` and DataTable's `key.desc` alike. An app
 narrows or widens the state vocabulary: Kurvenschmiede has no `invited` rows, and keksdose
@@ -1079,9 +1100,11 @@ domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` logs
 the mail with its link — development only; kastlan passes `logging.WARNING`.
 
 **The admin's test mail** (0.15, admin §9.2): `test_mail_message(locale, *, app_name,
-backend, sent_at)` → `MailMessage` in the admin's language (seven, through `pick_entry`'s
+backend, sent_at)` → `HtmlMailMessage` in the admin's language (seven, through `pick_entry`'s
 fallback), naming the app, the transport and the time in UTC — never the recipient, so
 neither the mail nor the route's log line carries the address; `sent_at` must be aware.
+`HtmlMailMessage` (0.16.0) is a `MailMessage` whose `html` is a `str`, so an app whose own
+send takes `html: str` passes `message.html` as it is, no `or ""`.
 `MAIL_TEST_KIND` (`mail_test`) is its `kind` and metric label, `MAIL_TEST_LIMIT` (3 per 10
 minutes per account) the app's limiter's budget, `MailTestResult` `{sent, mail_backend}` the
 answer. No router: each app's `POST /admin/mail/test` (kastlan `/platform/mail/test`) is a
@@ -1132,19 +1155,22 @@ off the event loop, its mailer). keksdose is the source
 
 | Area | Names |
 |---|---|
-| The types | `NotificationType(id, app, email=None, quiet=True)`, `NotificationTypes(*types)` (`in`, `[id]`, `.ids`, `.receivable(keep)`), `TYPE_ID_PATTERN` |
-| The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate`, `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
-| Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE` |
-| Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
+| The types | `NotificationType(id, app, email=None, quiet=True, push=None, bundle=None)`, `NotificationTypes(*types, push_channel=True)` (`in`, `[id]`, `.ids`, `.push_channel`, `.receivable(keep)`), `TYPE_ID_PATTERN` |
+| The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches(app, email, push=None)`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate` (both ignore a stale `timezone` in 0.16, a 422 from 0.17), `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches(app, email, push)`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch, *, couple_push_to_app=False)`, `migrate_enabled_to_channels(enabled)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
+| Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE`; per device (0.16) `device_receives(muted_types, type_id)`, `read_muted_types(types, stored)`, `apply_muted_types(types, muted)` |
+| Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `quiet_hours_end(start, end, zone, now)`, `effective_zone(device_timezone, fallback=DEFAULT_ZONE)`, `local_today(zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
 | A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day)`), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
-| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE` |
+| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse` (`muted_types`), `PushDeviceUpdate(muted_types)`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type, inbox=True)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `push_gone_expired(gone_at, now, *, grace=PUSH_GONE_GRACE)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE`, `PUSH_GONE_GRACE` (7 days) |
 | Unsubscribe | `unsubscribe_token(secret, user_id, type_id)`, `read_unsubscribe_token(secret, token)` → `UnsubscribeClaim(user_id, type_id)`, `unsubscribe_key(secret)` |
-| The inbox | `InboxItem`, `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days) |
-| Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `PushEndpointTakenError` (409, `push_endpoint_taken`), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
+| The inbox | `InboxItem` (`company`, 0.16), `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days); layer 2 (0.16): `InboxStore` (`add`, `page`, `mark_read`, `clear`, `prune`), `NewInboxItem`, `INBOX_PAGE_DEFAULT`, `INBOX_PAGE_MAX` |
+| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted`, `send_push`, `send_mail`), `QueueService(queue, port)` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
+| Routes (`notifications.router`, the `fastapi` extra) | `InboxDeps(store=, current_user_id=, guards=())`, `inbox_router(deps, *, prefix="/notifications/inbox")`; `notifications_jobs_router(service, require_jobs_token, *, now=utc_now, prefix="/ops/notifications")` → `POST /flush` |
+| Testing (`notifications.testing`) | `InMemoryInboxStore`, `InMemoryNotificationQueue` (`commit`, `rollback`, `commits`), `RecordingFlushPort` |
+| Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `NotificationChannelError` (422, `notification_channel_not_offered`, `types`, `channel`; 0.16), `PushEndpointTakenError` (409, `push_endpoint_taken`), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
 
 **The types are the app's**: a registry built once, the one list — the `GET` answers every
 type the account receives, in its order, and the card draws what it answers. A type
-offers `app` (the inbox and push, one switch) and `email`, each with its default; off
+offers `app` (in the app), `push` (0.16; `app`'s default unless set) and `email`, each with its default; off
 unless it can only fire in answer to the person's own action. `receivable(keep)` is the
 account's narrowing (kastlan: staff in any company).
 
@@ -1172,12 +1198,12 @@ async def update_settings(body: SettingsUpdate, …) -> SettingsOut:
     return SettingsOut(types=kit.resolve_switches(types, {**stored, **changed}), …)
 ```
 
-**Delivery** (§3.3): nothing for an inactive account, a demo or the event's actor; `app`
-on is an inbox row and a push, the push dropped for a `quiet` type inside quiet hours;
-`email` on is the mail, only to a verified address; `service=True` skips the switch on
-the app channel (keksdose's guest deadline). **Quiet hours** fail open (half set, start =
-end); the zone is the settings' `timezone`, and an unset or no longer resolvable one is
-`Europe/Zurich`, never UTC. **The digest** is due from its period's first local day until
+**Delivery** (§3.3, §10.2): nothing for an inactive account, a demo or the event's actor;
+`app` on is an inbox row; `push` on (0.16: its own switch) a push, held for a `quiet` type
+inside quiet hours; `email` on is the mail, only to a verified address; `service=True`
+skips the switches in the app and by push (keksdose's guest deadline). **Quiet hours** fail
+open (half set, start = end); the zone is the account's (`effective_zone`), and an unset
+or no longer resolvable one is `Europe/Zurich`, never UTC. **The digest** is due from its period's first local day until
 3 days after, once per period: store `digest_due`'s key as `digest_sent` in the
 transaction that writes its inbox row (an app with no inbox: once the send answered
 `True`); its push's tag is `digest:2026-W42`.
@@ -1196,9 +1222,10 @@ written. The event key is the app's, built by `mail_event` (kastlan:
 `mail_event(company_id, day)` → `"42:2026-10-13"`): ids and days, no personal data, no
 sealed content. The same job deletes markers older than `MAIL_MARKER_RETENTION`.
 
-**Push**: the payload is `{title, body, tag, data: {url, type}}` — `url` a path in the
-app, never `//` or a scheme — encoded under 3 KB with the body cut by "…". A 404 or 410
-deletes the device, anything else counts a failure, and 10 in a row reap it
+**Push**: the payload is `{title, body, tag, data: {url, type, inbox}}` — `url` a path in
+the app, never `//` or a scheme — encoded under 3 KB with the body cut by "…". A 404 or
+410 marks the device gone (`gone_at`, deleted after `PUSH_GONE_GRACE`; 0.16), anything
+else counts a failure, and 10 in a row reap it
 (`should_reap(count, limit=…)` takes the app's own limit). TTL 24 h and
 timeout 10 s, passed explicitly. The VAPID subject is `mailto:` the support address.
 
@@ -1206,6 +1233,41 @@ timeout 10 s, passed explicitly. The VAPID subject is `mailto:` the support addr
 existing signing secret, not stored, never expiring; it names one account and one type
 and can only turn that e-mail off. A bad token is a 400; a GET never unsubscribes. The
 mail half is `mail.MailUnsubscribe`.
+
+**Round 0.46** (server-kit 0.16, notifications §10). **Three channels**, each its own
+switch: `app` (in the app), `push` and `email`; push no longer needs the inbox, and a push
+with no inbox row carries `data.inbox: false`. An app with no push builds its registry
+with `push_channel=False` (kastlan, Kurvenschmiede): every `push` is `null`, and a PATCH
+sending one is a 422. keksdose migrates `enabled` with `migrate_enabled_to_channels` and
+passes `couple_push_to_app=True` in its legacy `/push/preferences` shim only, while old
+bundles send `{app}` alone (never in `PATCH /notifications/settings`, where the card sends
+`{app}` alone on purpose). A device mutes
+types (`muted_types`), never adds them. **The zone is the account's**, automatic only
+(amended 2026-10-20): `effective_zone(user.device_timezone)` (the device last used, else
+Zurich; no pick) for everything written for one person, `local_today(zone, now)` for "today".
+A `timezone` that a stale 0.45 bundle still sends (`PATCH /notifications/settings`, keksdose's
+`/push/settings` shim, `PATCH /auth/me`) is ignored in 0.16 and refused from 0.17.
+The tick is idempotent, so a job runner may retry it.
+**The inbox** has a port and three routes; **the queue** is opt-in — an app that runs it
+holds a quiet type's push instead of dropping it, and calls the tick every 15 minutes:
+
+```python
+from eifi1_server_kit import notifications as kit
+
+zone = kit.effective_zone(user.device_timezone)
+if switches.push and kind.quiet and kit.in_quiet_hours(start, end, zone, now):
+    until = kit.quiet_hours_end(start, end, zone, now)
+    await queue_service.hold_push(user.id, kind.id, event, payload, not_before=until, now=now)
+
+result = await kit.notifications_tick(queue_service, now)  # the 15-minute job
+```
+
+**The rotation route** (`POST /notifications/devices/replace`, §10.6): `PushReplaceIn`'s
+docstring holds its rules — the old row proven before the 409, an inactive or demo
+account the same 404 (and its row deleted), a row marked gone claimable for
+`PUSH_GONE_GRACE` (`push_gone_expired`), no RLS on device rows, the body never logged;
+and the app deletes an account's push rows on "sign out everywhere", deactivation and
+erasure.
 
 ### `eifi1_server_kit.tours`
 
@@ -1237,22 +1299,28 @@ app.include_router(
 install_contract_error_handlers(app)
 ```
 
+The export's `completed_at` is spelled as the routes answer it, `2026-10-18T07:00:00Z`
+(0.16.0; 0.15.0 wrote `isoformat()`'s `+00:00`). **A dead-code check** (vulture, as in
+Kurvenschmiede) sees the store's `completions` called only by the kit's service through the
+port: baseline it, as the feedback and translation-review store methods already are.
+
 ### `eifi1_server_kit.sync`
 
 Local-first sync, the server half (0.15, local-first contract §1.5 D1, D2, D5 and §1.6):
 keksdose's `/sync` protocol, shared with kastlan. The routes, the entity registries, tenancy
-and RLS, E2EE, billing's refusals, unique-key merges and revival rules, and kastlan's scopes
-stay in the app. Everything but `sync.mixin` is pure; the mixin needs the **`sync` extra**
+and RLS, E2EE, billing's refusals, unique-key merges and revival rules, and each scope's own
+rules (its guards) stay in the app. Everything but `sync.mixin` is pure; the mixin needs the **`sync` extra**
 (`eifi1-server-kit[sync]`, `sqlalchemy>=2.0`) and is imported lazily, so `eifi1_server_kit.sync`
 loads without it.
 
 | Area | Names |
 |---|---|
-| Wire shapes | `SyncChange` (`entity`, `id`: a UUID or text of 1–200 characters, `op`, `data`, the device's edit time `updated_at`, `knowledge`), `SyncRequest` (`scope`, `last_knowledge`, `changes`, `refusals`, `paged`, `page_cursor`), `SyncResponse` (`server_knowledge`, `changes`, `refused`, the per-change `rejections`, `page_cursor`), `SyncRefusal` (the WHOLE push; moved from billing, which re-exports it), `SyncRejection(change_id, code, detail)` with `SYNC_REJECTED` / `SYNC_PLAN_LIMIT`, `SyncPageCursor`; subclass them (no model forbids extra fields; `id` and `changes` narrow covariantly). A request without `refusals` or a change without `updated_at` still parses, for one release |
-| The merge | `merge_lww(existing_updated, incoming_updated, *, now)` (whole-row LWW on the device's edit time; equal keeps the incoming row; a row without a stamp loses), `merge_delete(…)` (always tombstones, stamped now), `clamp_stamp(stamp, *, now)` (none or a future stamp → now), `as_utc` (a naive value read as UTC) |
+| Wire shapes | `SyncChange` (`entity`, `id`: a UUID or text of 1–200 characters, `op`, `data`, the device's edit time `updated_at`, `knowledge`), `SyncRequest` (`scope`, `last_knowledge`, `changes`, `refusals`, `paged`, `page_cursor`, (0.16.0) `client_now`: the device's clock when it sends the push, spelt as `updated_at`), `SyncResponse` (`server_knowledge`, `changes`, `refused`, the per-change `rejections`, `page_cursor`), `SyncRefusal` (the WHOLE push; moved from billing, which re-exports it), `SyncRejection(change_id, code, detail)` with `SYNC_REJECTED` / `SYNC_PLAN_LIMIT`, `SyncPageCursor`; subclass them (no model forbids extra fields; `id` and `changes` narrow covariantly). A request without `refusals` or a change without `updated_at` still parses, for one release |
+| The merge | `merge_lww(existing_updated, incoming_updated, *, now, skew=timedelta(0))` (whole-row LWW on the device's edit time; equal keeps the incoming row; a row without a stamp loses), `merge_delete(…)` (always tombstones, stamped now), `clamp_stamp(stamp, *, now, skew=timedelta(0))` (the stamp shifted by `skew`, then none or a future stamp → now), `as_utc` (a naive value read as UTC); (0.16.0) the device clock's skew, `clock_skew(client_now, *, now)` once per push (`now - client_now`: a SLOW clock's edits no longer lose to a colleague's later-arriving older edit, a FAST clock's no longer win; `timedelta(0)` without `client_now`, i.e. 0.15.0's clamp alone, or within `CLOCK_SKEW_TOLERANCE` (2 s, latency); capped at `MAX_CLOCK_SKEW` (24 h), past which the clock likely changed between edit and push) and `correct_stamp(stamp, *, skew)` (saturates at the calendar's edge). It assumes the device's clock did not change between the edit and the push: `skew = clock_skew(request.client_now, now=now)`, then `merge_lww(row.updated_at, change.updated_at, now=now, skew=skew)` and store `clamp_stamp(change.updated_at, now=now, skew=skew)` |
 | The counter | `KnowledgeCounter` (`bump(session, tenant_id)` → the next value under a row lock, synchronous, inside `before_flush`; `None`: unstamped), `TenantOf` |
 | The paged pull | `begin_page`, `PageStart` (`.resume_in(index)`), `cut_page`, `page_of` (the walk over rows in memory), `cursor_at_start`, `page_order`, `is_after`, `SYNC_PAGE_LIMIT` (2000): ordered `(knowledge, id)` per entity, entities in the app's order, the window pinned at `window_end` |
-| SQLAlchemy (`sync.mixin`, the `sync` extra) | `SyncColumns` (`knowledge`, `deleted_at`, a client-owned `updated_at`); `install_sync_stamping(session_cls, *, counter, tenant_of, is_synced, now=)` (one bump per tenant per flush; a model without `updated_at` gets its knowledge only; naive columns get naive UTC); `install_tombstone_filter(session_cls, *, synced)` and `INCLUDE_TOMBSTONED` (the pull's opt-out); `tombstone(obj, *, now=)`, `bulk_tombstone(model, *where, knowledge, now)`, `bulk_restamp(…)` |
+| SQLAlchemy (`sync.mixin`, the `sync` extra) | `SyncColumns` (`knowledge`, `deleted_at`, a client-owned `updated_at`); `install_sync_stamping(session_cls, *, counter, tenant_of, is_synced, now=)` (one bump per tenant per flush, so rows of one flush share a knowledge: a pull orders within it itself, entities in the app's order; a model without `updated_at` gets its knowledge only; naive columns get naive UTC); `install_tombstone_filter(session_cls, *, synced)` and `INCLUDE_TOMBSTONED` (the pull's opt-out); `tombstone(obj, *, now=)`, `bulk_tombstone(model, *where, knowledge, now)`, `bulk_restamp(…)` |
+| Scopes (0.16.0, §2.4) | `SyncScope(name, roles, readable, writable={}, withheld=frozenset(), after_apply=None)` (`withheld` holds `"<entity>.<field>"`, never pulled and never written, D14; `.withheld_fields(entity)`; `.pull_order(walk)`: the readable entities in the app's walk order, for the paged pull's `entities`, a `ValueError` when the walk leaves one out); `EntityRule(model, create, update, deletable=False, fixed_parents=(), fixed_fields=(), guard=None)` (`create=None`: not created through sync; a fixed parent or field may be re-sent unchanged; `guard(RuleContext)` → a reason refuses); the port `ScopeRows` (`find(entity, row_id)` in the request's company, tombstones included; `parent_id(row, wire_key)`; `references`: wire key → entity); `async sort_changes(scope, changes, rows)` → `SortedChanges(allowed, rejections, context)` (per change: writable, deletable, no withheld field, the create/update schema, references in the company or new in the push, fixed parents and fields, the guard; a child of a refused NEW row is refused with it, "its parent was refused"; `.refuse_whole()` raises the first as `SyncScopeError(change_id, detail)` for a client without `refusals`); `AfterApplyContext(scope, rows, changes, found, before)` for `after_apply` (`found` holds the LIVE rows, which the apply has mutated; `before[id]` is the snapshot of the fields the change sends, as they stood before the apply: compare against it in the row's type, `date.fromisoformat(data[k]) != before[id][k]`, as the wire is JSON; two changes to one row each see the row before the push); `withhold(scope, change)` strips the withheld fields from a pulled `SyncChange` or dict |
 | Testing (`sync.testing`) | `InMemoryKnowledgeCounter(*, per_tenant=True, start=0)` (`calls` as `(tenant_id, autoflush)`, `current(tenant_id)`; `per_tenant=False` is kastlan's one database-wide row) |
 
 **The lock is load-bearing**: `bump` reads and writes one row, so an implementation takes it
@@ -1260,13 +1328,43 @@ with `SELECT … FOR UPDATE` (keksdose mutates its `households.knowledge` row in
 atomic `INSERT … ON CONFLICT DO UPDATE … RETURNING` (kastlan); two flushes that both read N
 would hide one device's rows from the other.
 
+**A scope in the app's router** (0.16.0): the app's `ScopeRows` holds its session, so a guard
+or `after_apply` reads it from the context's `rows`. The router stays the app's (roles,
+billing, the demo, the company pin):
+
+```python
+scope = SCOPES[payload.scope]
+rows = CompanyRows(session, company_id)  # the app's ScopeRows
+changes = [change.model_dump() for change in payload.changes]
+sorted_changes = await sort_changes(scope, changes, rows)
+if not payload.refusals:
+    sorted_changes.refuse_whole()  # an older client: the first refusal, a 422, nothing written
+await apply_incoming(session, sorted_changes.allowed)
+if scope.after_apply is not None:
+    await scope.after_apply(sorted_changes.context)
+page, cursor = page_of(
+    rows_by_entity,
+    entities=scope.pull_order(ENTITY_ORDER),
+    cursor=payload.page_cursor,
+    last_knowledge=payload.last_knowledge,
+    server_knowledge=server_knowledge,
+)
+pulled = [withhold(scope, serialize(entity, row)) for entity, row in page]
+return SyncResponse(
+    server_knowledge=server_knowledge,
+    changes=pulled,
+    rejections=sorted_changes.rejections,
+    page_cursor=cursor,
+)
+```
+
 ## Installing it in an app
 
 Apps depend on a **published** version — the wheel attached to a tagged GitHub Release, whose hash `uv.lock` pins —
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.15.0/eifi1_server_kit-0.15.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.16.0/eifi1_server_kit-0.16.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).

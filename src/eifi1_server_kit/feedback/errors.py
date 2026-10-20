@@ -32,6 +32,10 @@ THROTTLED_DETAIL = "Too many attachments uploaded — please try again later."
 #: The comment and vote windows' sentences (§9.2 decision 19), on the same 429.
 COMMENTS_THROTTLED_DETAIL = "Too many comments — please try again later."
 VOTES_THROTTLED_DETAIL = "Too many votes — please try again later."
+#: The code of :class:`LegacyReworkAppendError` (§10.3, since 0.16).
+LEGACY_REWORK_APPEND = "legacy_rework_append"
+#: Its sentence: only a tab older than the deploy still sends the append, and a reload mends it.
+LEGACY_REWORK_APPEND_DETAIL = "This page is out of date: reload it, then send the report back again."
 
 
 class FeedbackError(ValueError):
@@ -54,12 +58,26 @@ class UnknownAttachmentUrlError(FeedbackValidationError):
     """A ``screenshot_url`` / ``attachment_urls`` entry that is not this app's own attachment URL."""
 
 
+class LegacyReworkAppendError(FeedbackValidationError):
+    """A coded 422 (``code`` :data:`LEGACY_REWORK_APPEND`, since 0.16; §10.3): a body-only
+    PATCH that appends to a report outside OPEN / READY / IN_PROGRESS — the rework a client
+    from before ui-kit 0.40 sent. A rework is ``POST /feedback/{id}/rework`` now; server-kit
+    0.13–0.15 still converted the append into an entry. Nothing is written.
+    :func:`~eifi1_server_kit.errors.install_contract_error_handlers` answers
+    ``{"detail": …, "code": "legacy_rework_append"}``."""
+
+    code = LEGACY_REWORK_APPEND
+
+    def __init__(self, detail: str = LEGACY_REWORK_APPEND_DETAIL) -> None:
+        super().__init__(detail)
+
+
 class FeedbackForbiddenError(FeedbackError):
     """The actor may not make this change (→ 403; keksdose ``FeedbackUpdateForbiddenError``).
 
     Raised for: not the author and not an admin; an author changing a field outside
     title / body / category; an author editing a row outside OPEN / READY / IN_PROGRESS
-    without it being a rework append.
+    (an append there is :class:`LegacyReworkAppendError` instead).
     """
 
     status_code = 403

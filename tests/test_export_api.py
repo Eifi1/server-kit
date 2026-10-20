@@ -123,6 +123,7 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     # routes, behind the `fastapi` extra.
     public |= {
         "eifi1_server_kit.feedback.router",
+        "eifi1_server_kit.notifications.router",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.translation_review.router",
     }
@@ -133,6 +134,11 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     assert contracts["eifi1_server_kit.settings"] == {"doc": "docs/settings-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.demo"] == {"doc": "docs/landing-demo-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.billing"] == {"doc": "docs/billing-harmonization.md", "section": "§10, §14"}
+    # 0.16's named scopes are `sync`'s own (§2.4), re-exported from `sync.scopes`.
+    assert contracts["eifi1_server_kit.sync"] == {
+        "doc": "docs/local-first-harmonization.md",
+        "section": "§1.5, §1.6, §2.4",
+    }
 
 
 def test_the_members_are_each_modules_all_in_order(data: dict[str, Any]) -> None:
@@ -210,6 +216,13 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
         "admin_guard",
         "policy",
     ]
+    # 0.16's sync scopes: the port is a protocol, the rule a frozen dataclass.
+    assert members["eifi1_server_kit.sync", "ScopeRows"]["kind"] == "protocol"
+    rule = members["eifi1_server_kit.sync", "EntityRule"]
+    assert rule["signature"] == "@dataclass(frozen=True, slots=True) class EntityRule"
+    assert members["eifi1_server_kit.sync", "sort_changes"]["signature"] == (
+        "async sort_changes(scope: SyncScope, changes: Sequence[Change], rows: ScopeRows) -> SortedChanges"
+    )
 
 
 def test_nothing_machine_specific_reaches_the_file(exporter: ModuleType, data: dict[str, Any]) -> None:

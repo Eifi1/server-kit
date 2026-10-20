@@ -156,6 +156,10 @@ class FeedbackDeps[RowT: FeedbackRow]:
     comment_response_model: type[FeedbackCommentResponse] = FeedbackCommentResponse
     public_item_model: type[FeedbackPublicListItem] = FeedbackPublicListItem
     public_response_model: type[FeedbackPublicResponse] = FeedbackPublicResponse
+    #: The app's dependency answering its :class:`~eifi1_server_kit.feedback.FeedbackAlerts`
+    #: (0.16, feedback §11): the admins told of a new report, a new crash and a rework.
+    #: ``None`` tells nobody.
+    alerts: Callable[..., Any] | None = None
 
 
 async def _absent() -> None:
@@ -203,6 +207,7 @@ def feedback_router[RowT: FeedbackRow](
         comments: Annotated[Any, Depends(deps.comments or _absent)],
         votes: Annotated[Any, Depends(deps.votes or _absent)],
         people: Annotated[Any, Depends(deps.people or _absent)],
+        alerts: Annotated[Any, Depends(deps.alerts or _absent)],
     ) -> _service.FeedbackService[RowT]:
         return _service.FeedbackService(
             repository,
@@ -215,6 +220,7 @@ def feedback_router[RowT: FeedbackRow](
             people=people,
             public_viewer=deps.public_viewer,
             public_search=deps.public_search,
+            alerts=alerts,
         )
 
     Service = Annotated[_service.FeedbackService[Any], Depends(get_service)]  # noqa: N806
