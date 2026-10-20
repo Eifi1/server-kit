@@ -123,7 +123,13 @@ class AfterApplyContext:
     #: A snapshot taken while sorting, before any apply: per allowed change on an existing
     #: row, the fields its ``data`` sends, as the row held them (read with ``getattr``; a
     #: wire key that is no attribute of the row is left out; a delete's entry is empty).
-    #: "Did ``last_performed`` change" is ``data["last_performed"] != before[id]["last_performed"]``.
+    #: The snapshot holds the row's own types and the wire holds JSON, so compare in the
+    #: row's type: "did ``last_performed`` change" is
+    #: ``date.fromisoformat(data["last_performed"]) != before[id]["last_performed"]`` (a
+    #: plain ``!=`` of the wire's ``"2026-10-01"`` and a ``date`` is always true). Two changes
+    #: to one row in a push (a waiting and a pending one) each see the row as it stood
+    #: before the push, not after the other; where that matters, recompute idempotently
+    #: from the stored row instead.
     before: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 

@@ -45,9 +45,12 @@ may notice without code are under **Changed**. Per-app steps: ui-kit's `docs/ado
 * **notifications, auth:** the zone is automatic only (notifications §10.3, amended
   2026-10-20): the account's zone is the device last used, else Zurich, and nobody picks one.
   `QuietHoursFields.timezone` and `QuietHoursUpdate.timezone` are removed, so the settings'
-  answer carries no zone and a `timezone` sent in their PATCH is a 422 (`extra="forbid"`);
-  `UserResponse` / `ProfileUpdate` have no `timezone` either, so `PATCH /auth/me` with one is a
-  422. Quiet hours read `effective_zone(user.device_timezone)` (below); an app moves its stored
+  answer carries no zone; `UserResponse` / `ProfileUpdate` have no `timezone` either. A
+  `timezone` sent anyway — a stale 0.45 bundle's picker or its quiet hours' first entry, to
+  `PATCH /notifications/settings`, keksdose's `/push/settings` shim (through
+  `QuietHoursUpdate`) or `PATCH /auth/me` — is **ignored in 0.16** (dropped before the checks,
+  never written) **and refused from 0.17** as any unknown field (`extra="forbid"`, a 422): the
+  PWA keeps old bundles for days (keksdose S2/S3). Quiet hours read `effective_zone(user.device_timezone)` (below); an app moves its stored
   settings zone to `users.device_timezone` in the bump's migration.
 
 ### Added

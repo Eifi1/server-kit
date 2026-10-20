@@ -216,6 +216,22 @@ async def test_the_tick_flushes_then_purges_old_finished_rows() -> None:
     assert queue.commits[-1] == "purge" and len(port.mails) == 2
 
 
+async def test_a_retried_tick_job_sends_nothing_twice() -> None:
+    """keksdose runs the tick inside its product-metrics job (``--max-retries=1``): a retry
+    after the tick ran, or after it died mid-send, never sends an item a second time."""
+    service, queue, port = _service()
+    await service.queue_mail(COMMENT, 7, "comment:1", {"number": 1}, now=NOW)
+    await service.hold_push(7, "scan_done", "scan:1", _push("Scan", "Done", "scan:1"), not_before=NOW, now=NOW)
+    queue.commit()
+    assert await notifications_tick(service, NOW) == FlushResult(sent=2)
+    assert await notifications_tick(service, NOW + timedelta(minutes=1)) == FlushResult(), "the retry"
+    await service.queue_mail(COMMENT, 7, "comment:2", {"number": 2}, now=NOW)
+    queue.commit()
+    assert len(await queue.claim(NOW, 10, NOW - QUEUE_CLAIM_TIMEOUT)) == 1  # the run that died mid-send
+    assert await notifications_tick(service, NOW + timedelta(minutes=2)) == FlushResult(), "still claimed"
+    assert (len(port.mails), len(port.pushes)) == (1, 1)
+
+
 def test_a_flush_claims_one_row_or_more() -> None:
     with pytest.raises(ValueError, match="1 row or more"):
         QueueService(InMemoryNotificationQueue(), RecordingFlushPort(), limit=0)

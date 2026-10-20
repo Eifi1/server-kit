@@ -333,9 +333,15 @@ def test_the_account_answers_its_devices_zone_and_no_pick() -> None:
     assert UserResponse.model_validate(_user()).device_timezone is None, "an app without the column answers None"
 
 
-def test_a_zone_pick_is_refused_and_the_device_report_is_never_null() -> None:
+def test_a_stale_zone_pick_is_ignored_in_0_16_and_the_device_report_is_never_null() -> None:
+    """A 0.45 bundle's picker still sends ``{timezone}``: ignored for one release (never
+    written), refused as unknown from 0.17."""
+    stale = ProfileUpdate.model_validate({"timezone": "Europe/Zurich", "locale": "en"})
+    assert stale.model_fields_set == {"locale"}
+    assert "timezone" not in stale.model_dump()
+    assert ProfileUpdate.model_validate({"timezone": None}).model_fields_set == set()
     with pytest.raises(ValidationError, match="Extra inputs"):
-        ProfileUpdate.model_validate({"timezone": "Europe/Zurich"})
+        ProfileUpdate.model_validate({"timezone": "Europe/Zurich", "role": "admin"})
     assert ProfileUpdate.model_validate({"device_timezone": "Europe/Zurich"}).device_timezone == "Europe/Zurich"
     assert "device_timezone" in PROFILE_NOT_NULLABLE
     with pytest.raises(ValidationError, match="device_timezone cannot be null"):

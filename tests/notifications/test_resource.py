@@ -151,14 +151,12 @@ def test_the_body_leads_with_types_and_takes_the_apps_knobs() -> None:
         (KeksdoseUpdate, {"colour": "teal"}, "Extra inputs"),
         (KeksdoseUpdate, {"quiet_hours_start": "24:00"}, "String should match pattern"),
         (KeksdoseUpdate, {"quiet_hours_end": "7:00"}, "String should match pattern"),
-        (KeksdoseUpdate, {"timezone": "Europe/Zurich"}, "Extra inputs"),
         (KeksdoseUpdate, {"digest_cadence": "daily"}, "'weekly' or 'monthly'"),
         (KeksdoseUpdate, {"types": {"digest": {"app": "maybe"}}}, "valid boolean"),
     ],
 )
 def test_each_422(model: type[NotificationSettingsUpdate], body: dict[str, Any], words: str) -> None:
-    """Rule 4: an unknown field, an unknown type, a switch the type doesn't offer, a zone
-    (the account's, §10.3: automatic only)."""
+    """Rule 4: an unknown field, an unknown type, a switch the type doesn't offer."""
     with pytest.raises(ValidationError, match=words):
         model.model_validate(body)
 
@@ -175,6 +173,32 @@ def test_a_body_without_its_registry_is_a_programming_error() -> None:
 
     with pytest.raises(TypeError, match=r"Forgotten\.registry is unset"):
         Forgotten.model_validate({})
+
+
+class LegacySettingsShim(DigestUpdate, QuietHoursUpdate):
+    """keksdose's ``/push/settings`` shim body (``LegacyNotificationSettingsUpdate``)."""
+
+
+@pytest.mark.parametrize("model", [KeksdoseUpdate, KastlanUpdate, KurvenschmiedeUpdate, LegacySettingsShim])
+def test_a_stale_bundles_timezone_is_ignored_in_0_16(model: type[Any]) -> None:
+    """A 0.45 bundle still sends ``{timezone}`` (its picker, its quiet hours' first entry):
+    accepted and dropped for one release, never written; refused as unknown from 0.17."""
+    body = model.model_validate({"timezone": "Europe/Zurich"})
+    assert body.model_fields_set == set()
+    assert "timezone" not in body.model_dump()
+    row = _row()
+    skip = () if model is LegacySettingsShim else SETTINGS_SKIP
+    assert apply_patch(row, body, not_nullable=skip, skip=skip) == {}
+    assert "timezone" not in row
+
+
+def test_a_stale_timezone_rides_beside_the_real_fields() -> None:
+    sent = {"timezone": "Europe/Zurich", "quiet_hours_start": "22:00"}
+    body = KeksdoseUpdate.model_validate(sent)
+    assert body.model_fields_set == {"quiet_hours_start"}
+    assert sent == {"timezone": "Europe/Zurich", "quiet_hours_start": "22:00"}, "the input is not changed"
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        KeksdoseUpdate.model_validate({"timezone": "Europe/Zurich", "colour": "teal"})
 
 
 def test_nulls_clear_the_quiet_hours() -> None:

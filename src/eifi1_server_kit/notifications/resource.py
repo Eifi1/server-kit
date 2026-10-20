@@ -42,8 +42,11 @@ the app" column sends ``{app}`` alone, and coupling there would flip push with i
 
 **The zone is the account's** (§10.3, 0.16; amended 2026-10-20, Marcel: automatic only):
 the zone of the device last used (``users.device_timezone``, ``effective_zone``), never a
-field of this resource; a ``timezone`` in the PATCH is refused as any unknown field is.
-keksdose's old bundles reach its ``/push/*`` aliases, which the app answers.
+field of this resource. **A ``timezone`` in the PATCH is ignored in 0.16, refused from
+0.17**: a stale 0.45 bundle (its zone picker, its quiet hours' first entry) still sends
+one, here and to keksdose's ``/push/settings`` shim, and the PWA keeps old bundles for days.
+:class:`NotificationSettingsUpdate` and :class:`QuietHoursUpdate` drop it before the
+checks, so it is never in ``model_fields_set`` and ``apply_patch`` never writes it.
 """
 
 from __future__ import annotations
@@ -82,6 +85,14 @@ SETTINGS_NOT_NULLABLE: tuple[str, ...] = ("types", "digest_cadence")
 #: ``apply_patch``'s ``skip``: ``types`` is checked for a null there and written by the app
 #: from :func:`apply_switches_patch`.
 SETTINGS_SKIP: tuple[str, ...] = ("types",)
+
+
+def _drop_stale_timezone(data: object) -> object:
+    """The input without ``timezone``: a 0.45 bundle's zone, ignored in 0.16 and refused
+    as an unknown field from 0.17 (§10.3, automatic only)."""
+    if isinstance(data, dict) and "timezone" in data:
+        return {key: value for key, value in data.items() if key != "timezone"}
+    return data
 
 
 class TypeSwitches(BaseModel):
@@ -151,10 +162,13 @@ class NotificationSettingsUpdate(BaseModel):
     type that doesn't offer it (``push`` in an app with no push), is a validation error
     (422). A type the registry knows but this
     account doesn't receive is :func:`apply_switches_patch`'s
-    :class:`~.errors.NotificationTypeError`. Unknown fields are a 422.
+    :class:`~.errors.NotificationTypeError`. Unknown fields are a 422 — except
+    ``timezone``, which a stale 0.45 bundle sends: ignored in 0.16, refused from 0.17.
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    _ignore_stale_timezone = model_validator(mode="before")(_drop_stale_timezone)
 
     #: The app's whole registry; the account's narrowing is :func:`apply_switches_patch`'s.
     registry: ClassVar[NotificationTypes | None] = None
@@ -184,9 +198,12 @@ class NotificationSettingsUpdate(BaseModel):
 
 class QuietHoursUpdate(BaseModel):
     """The quiet hours in the ``PATCH``: ``HH:MM`` bounds; ``null`` clears each. No zone:
-    it is the account's (§10.3, automatic only)."""
+    it is the account's (§10.3, automatic only). A ``timezone`` (a stale 0.45 bundle's, also
+    through keksdose's ``/push/settings`` shim) is ignored in 0.16, refused from 0.17."""
 
     model_config = ConfigDict(extra="forbid")
+
+    _ignore_stale_timezone = model_validator(mode="before")(_drop_stale_timezone)
 
     quiet_hours_start: str | None = Field(default=None, pattern=QUIET_HOURS_PATTERN)
     quiet_hours_end: str | None = Field(default=None, pattern=QUIET_HOURS_PATTERN)

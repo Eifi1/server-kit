@@ -373,6 +373,10 @@ def _collapsed(type_id: str, items: list[QueueItem]) -> PushPayload:
 async def notifications_tick(service: QueueService, now: datetime) -> FlushResult:
     """The app's 15-minute tick (§10.4 Settled): flush, then purge. Call it from the app's
     own job path — keksdose's tick job, kastlan's ``/ops/jobs/notifications-flush`` — or
-    mount ``eifi1_server_kit.notifications.router.notifications_jobs_router``."""
+    mount ``eifi1_server_kit.notifications.router.notifications_jobs_router``.
+
+    Idempotent, so a job runner may retry it (keksdose's product-metrics job,
+    ``--max-retries=1``): a sent row is done, a claimed one waits out
+    :data:`QUEUE_CLAIM_TIMEOUT`, and a resend carries the same ``Idempotency-Key``."""
     result = await service.flush(now)
     return result.model_copy(update={"purged": await service.purge(now)})
