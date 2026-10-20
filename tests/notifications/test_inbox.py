@@ -50,6 +50,7 @@ def test_a_page_of_the_inbox() -> None:
                 "created_at": "2026-10-13T08:00:00Z",
                 "read_at": None,
                 "company": None,
+                "company_id": None,
             }
         ],
         "unread_count": 7,
@@ -61,3 +62,22 @@ def test_marking_read_takes_some_ids_or_all() -> None:
     assert InboxMarkRead.model_validate({"ids": None}).ids is None
     assert InboxMarkRead.model_validate({"ids": [str(ROW_ID), 12]}).ids == [ROW_ID, 12]
     assert InboxMarkReadResponse(updated=3).model_dump() == {"updated": 3}
+
+
+def test_a_row_names_its_company_by_id_too() -> None:
+    """0.17.0 (kastlan N7): the bell switches to the row's company by id, not by name."""
+    item = InboxItem.model_validate(
+        {
+            "id": 5,
+            "notification_type": "invoices_overdue",
+            "title": "t",
+            "body": "b",
+            "url": None,
+            "created_at": "2026-10-13T08:00:00Z",
+            "read_at": None,
+            "company": "Muster AG",
+            "company_id": 3,
+        }
+    )
+    assert (item.company, item.company_id) == ("Muster AG", 3)
+    assert InboxItem.model_validate({**item.model_dump(), "company_id": "c-uuid"}).company_id == "c-uuid"

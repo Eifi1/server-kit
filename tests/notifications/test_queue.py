@@ -16,6 +16,7 @@ from eifi1_server_kit.notifications import (
     NotificationType,
     PushData,
     PushPayload,
+    QueueChannel,
     QueueService,
     notifications_tick,
 )
@@ -235,3 +236,46 @@ async def test_a_retried_tick_job_sends_nothing_twice() -> None:
 def test_a_flush_claims_one_row_or_more() -> None:
     with pytest.raises(ValueError, match="1 row or more"):
         QueueService(InMemoryNotificationQueue(), RecordingFlushPort(), limit=0)
+
+
+async def test_a_port_that_takes_now_gets_the_flushs_now() -> None:
+    """N8 (0.17.0): ``still_wanted(..., now=)`` judges quiet hours at the flush's own time."""
+    service, queue, port = _service()
+    await service.hold_push(7, "scan_done", "scan:1", _push("a", "b", "c"), not_before=END, now=NOW)
+    await service.queue_mail(RECEIVED, 7, "fb:1", {}, now=NOW)
+    queue.commit()
+    late = END + timedelta(hours=1)
+    assert await service.flush(late) == FlushResult(sent=2)
+    assert port.checked_at == [late, late]
+
+
+class _PortWithoutNow(RecordingFlushPort):
+    """A port written before 0.17.0: ``still_wanted`` takes no ``now``."""
+
+    async def still_wanted(self, user_id: int, type_id: str, channel: QueueChannel) -> bool | datetime:  # type: ignore[override]
+        return False
+
+
+async def test_a_port_without_now_keeps_working() -> None:
+    queue = InMemoryNotificationQueue()
+    service = QueueService(queue, _PortWithoutNow())
+    await service.hold_push(7, "scan_done", "scan:1", _push("a", "b", "c"), not_before=END, now=NOW)
+    queue.commit()
+    assert await service.flush(END) == FlushResult(dropped=1)
+
+
+class _PortWithKeywords(RecordingFlushPort):
+    async def still_wanted(  # type: ignore[override]
+        self, user_id: int, type_id: str, channel: QueueChannel, **context: datetime
+    ) -> bool | datetime:
+        self.checked_at.append(context["now"])
+        return True
+
+
+async def test_a_port_taking_keywords_gets_now_too() -> None:
+    queue = InMemoryNotificationQueue()
+    port = _PortWithKeywords()
+    service = QueueService(queue, port)
+    await service.hold_push(7, "scan_done", "scan:1", _push("a", "b", "c"), not_before=END, now=NOW)
+    queue.commit()
+    assert await service.flush(END) == FlushResult(sent=1) and port.checked_at == [END]

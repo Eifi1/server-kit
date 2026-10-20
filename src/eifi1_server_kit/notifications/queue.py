@@ -39,8 +39,9 @@ the test push, kastlan's overdue mail (its markers).
 
 from __future__ import annotations
 
+import inspect
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
@@ -162,7 +163,12 @@ class FlushPort(Protocol):
         """Re-run the plan (:func:`~.delivery.plan_delivery`) for this person, type and
         channel: ``True`` sends, ``False`` drops (``"unwanted"``: the switch went off, the
         account was deactivated), and a datetime holds the push again until then (the
-        quiet hours moved: :func:`~.timing.quiet_hours_end`)."""
+        quiet hours moved: :func:`~.timing.quiet_hours_end`).
+
+        0.17.0: a port whose ``still_wanted`` also takes a keyword ``now: datetime | None =
+        None`` gets the flush's own ``now``, to judge quiet hours at the moment the flush
+        claimed for (a retried or late tick, a test) instead of the wall clock; a port
+        without it is called as before."""
 
     async def send_push(self, user_id: int, payload: PushPayload) -> bool:
         """Push to this person's devices that don't mute the type
@@ -313,7 +319,10 @@ class QueueService:
         now: datetime,
     ) -> None:
         ids = [item.id for item in items]
-        wanted = await self.port.still_wanted(user_id, type_id, channel)
+        if _takes_now(self.port.still_wanted):
+            wanted = await self.port.still_wanted(user_id, type_id, channel, now=now)  # type: ignore[call-arg]
+        else:
+            wanted = await self.port.still_wanted(user_id, type_id, channel)
         if wanted is False:
             await self.queue.drop(ids, "unwanted")
             tally.dropped += len(ids)
@@ -338,6 +347,15 @@ class QueueService:
     async def purge(self, now: datetime) -> int:
         """Delete the sent and dropped rows older than :data:`QUEUE_RETENTION`."""
         return await self.queue.purge(now - QUEUE_RETENTION)
+
+
+def _takes_now(method: Callable[..., object]) -> bool:
+    """Whether a port's ``still_wanted`` takes ``now`` (0.17.0), by keyword or ``**``."""
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (parameter.name == "now" and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY)
+        for parameter in inspect.signature(method).parameters.values()
+    )
 
 
 def _order(item: QueueItem) -> tuple[datetime, int]:

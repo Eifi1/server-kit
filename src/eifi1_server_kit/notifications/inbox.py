@@ -14,7 +14,8 @@ Layer 2 (0.16, §10.1 rule 5): the app implements :class:`InboxStore` over its t
 ``eifi1_server_kit.notifications.router.inbox_router`` (the ``fastapi`` extra) answers the
 three routes, so a second app keeps an inbox without writing them. keksdose may keep its
 own routes: the wire is the same. The rows are the ACCOUNT's, never a company's: no RLS
-(kastlan's ``company_id`` names the company, and opening a row in another switches first).
+(kastlan's ``company_id`` names the company, and opening a row in another switches first:
+:attr:`InboxItem.company_id` carries it to the bell, 0.17.0).
 """
 
 from __future__ import annotations
@@ -63,6 +64,9 @@ class InboxItem(BaseModel):
     #: The company the row is about, by name, where the app's rows carry one (kastlan,
     #: 0.16); ``None`` elsewhere. The list shows it beside the row.
     company: str | None = None
+    #: The same company by its id (0.17.0), so the bell switches to it exactly before
+    #: opening the row (kastlan: two companies may share a name); ``None`` elsewhere.
+    company_id: int | str | None = None
 
 
 class InboxResponse(BaseModel):

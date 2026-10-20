@@ -69,6 +69,7 @@ async def test_a_page_of_the_inbox_newest_first_with_the_unread_count(store: InM
         second = (await client.get(URL, params={"limit": 2, "offset": 2})).json()
     assert [item["title"] for item in first["items"]] == ["AG", "#3"]
     assert first["items"][0]["company"] == "Muster AG" and first["items"][1]["company"] is None
+    assert first["items"][0]["company_id"] == 3 and first["items"][1]["company_id"] is None
     assert [item["title"] for item in second["items"]] == ["#2", "#1"]
     assert first["unread_count"] == second["unread_count"] == 4, "over every row, not the page"
 

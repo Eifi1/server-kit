@@ -5,16 +5,22 @@ from __future__ import annotations
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from eifi1_server_kit.auth import AuthError, AuthErrorCode
+from eifi1_server_kit.auth import AuthError, AuthErrorCode, LoginRequest
 from eifi1_server_kit.billing import BillingError, BillingErrorCode, PaddleError, PlanLimitError
 from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.dev_switch import DevSwitchError
-from eifi1_server_kit.errors import CONTRACT_ERRORS, contract_error_response, install_contract_error_handlers
+from eifi1_server_kit.errors import (
+    CONTRACT_ERRORS,
+    contract_error_response,
+    install_contract_error_handlers,
+    validation_error_response,
+)
 from eifi1_server_kit.feedback import (
     CrashCategoryNotAssignableError,
     FeedbackError,
@@ -33,7 +39,14 @@ from eifi1_server_kit.uploads import (
     UploadRejectedError,
     UploadTooLargeError,
 )
-from eifi1_server_kit.user_admin import AccountError, AccountErrorCode, RosterQueryError
+from eifi1_server_kit.user_admin import (
+    AccountError,
+    AccountErrorCode,
+    DeletionRequest,
+    EmailChangeConfirm,
+    EmailChangeRequest,
+    RosterQueryError,
+)
 
 RAISED: dict[str, tuple[Exception, int]] = {
     "forbidden": (FeedbackForbiddenError("Not your report"), 403),
@@ -201,3 +214,139 @@ async def test_the_handler_answers_a_stray_exception_as_a_server_error() -> None
     """Registered by hand on something that is not a kit refusal, it does not invent a 4xx."""
     response = await contract_error_response(None, RuntimeError("boom"))  # type: ignore[arg-type]
     assert response.status_code == 500 and response.body == b'{"detail":"boom"}'
+
+
+# --- 0.17.0: a 422 never echoes the body ------------------------------------------------
+
+SECRET = "hunter2-" + "x" * 200  # past bcrypt's 72 bytes: a too-long password, still a secret
+
+
+def _validating_app(*, own_handler: str | None = None, **install: bool) -> FastAPI:
+    """The four bodies that carry a password or a token, behind ``install_contract_error_handlers``.
+
+    ``own_handler`` is ``"before"`` / ``"after"`` for an app that registers its own
+    ``RequestValidationError`` handler before or after the kit's call."""
+    app = FastAPI()
+
+    async def own(_request: Request, _exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": "the app's own"})
+
+    if own_handler == "before":
+        app.add_exception_handler(RequestValidationError, own)
+    install_contract_error_handlers(app, **install)
+    if own_handler == "after":
+        app.add_exception_handler(RequestValidationError, own)
+
+    @app.post("/auth/login")
+    async def login(body: LoginRequest) -> None: ...
+
+    @app.post("/auth/me/email")
+    async def email(body: EmailChangeRequest) -> None: ...
+
+    @app.post("/auth/me/email/confirm")
+    async def confirm(body: EmailChangeConfirm) -> None: ...
+
+    @app.post("/auth/me/deletion")
+    async def deletion(body: DeletionRequest) -> None: ...
+
+    @app.get("/items/{item_id}")
+    async def item(item_id: int) -> None: ...
+
+    return app
+
+
+async def _post(app: FastAPI, path: str, **kwargs: object) -> tuple[int, str, object]:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.request("POST" if path.startswith("/auth") else "GET", path, **kwargs)  # type: ignore[arg-type]
+    return response.status_code, response.text, response.json()
+
+
+async def test_a_too_long_password_is_refused_without_echoing_it() -> None:
+    status, text, body = await _post(
+        _validating_app(), "/auth/login", json={"email": "ada@example.com", "password": SECRET}
+    )
+    assert status == 422
+    assert SECRET not in text and "hunter2" not in text and "ada@example.com" not in text
+    [error] = body["detail"]  # type: ignore[index]
+    assert set(error) == {"type", "loc", "msg"}
+    assert (error["type"], error["loc"]) == ("value_error", ["body", "password"])
+    assert error["msg"].startswith("Value error, Password must be at most 72 bytes")
+
+
+async def test_a_malformed_body_echoes_none_of_its_values() -> None:
+    app = _validating_app()
+    # A too-long password, an unknown field beside it (extra="forbid"), and a missing one.
+    status, text, body = await _post(
+        app, "/auth/me/email", json={"password": SECRET, "new_emial": "ada@example.com", "note": "sk-live-123"}
+    )
+    assert status == 422
+    for value in (SECRET, "hunter2", "ada@example.com", "sk-live-123"):
+        assert value not in text
+    assert sorted((error["type"], tuple(error["loc"])) for error in body["detail"]) == [  # type: ignore[index]
+        ("extra_forbidden", ("body", "new_emial")),
+        ("extra_forbidden", ("body", "note")),
+        ("missing", ("body", "new_email")),
+        ("value_error", ("body", "password")),
+    ]
+    for error in body["detail"]:  # type: ignore[index]
+        assert set(error) == {"type", "loc", "msg"} and error["msg"]
+    # A token past its 256 characters, a wrong-typed password, a body that is no object.
+    token = "tok_" + "y" * 300
+    status, text, _ = await _post(app, "/auth/me/email/confirm", json={"token": token})
+    assert status == 422 and token not in text and "url" not in text and "ctx" not in text
+    status, text, _ = await _post(app, "/auth/me/deletion", json={"password": ["hunter2"], "confirm_email": SECRET})
+    assert status == 422 and "hunter2" not in text
+    status, text, _ = await _post(app, "/auth/login", json=["hunter2", SECRET])
+    assert status == 422 and "hunter2" not in text
+    # JSON that does not parse: FastAPI's json_invalid, its position kept.
+    status, text, body = await _post(
+        app, "/auth/login", content=b'{"password": "hunter2"', headers={"content-type": "application/json"}
+    )
+    assert status == 422 and "hunter2" not in text
+    assert body["detail"][0]["type"] == "json_invalid"  # type: ignore[index]
+    # Every route, not only bodies: a path parameter is answered the same way.
+    status, text, body = await _post(app, "/items/secret-path-value")
+    assert status == 422 and "secret-path-value" not in text
+    assert body["detail"][0]["loc"] == ["path", "item_id"]  # type: ignore[index]
+
+
+async def test_an_apps_own_validation_handler_is_kept_whichever_comes_first() -> None:
+    for order in ("before", "after"):
+        status, _, body = await _post(_validating_app(own_handler=order), "/auth/login", json={})
+        assert (status, body) == (400, {"detail": "the app's own"}), order
+
+
+async def test_redaction_can_be_switched_off() -> None:
+    status, text, _ = await _post(
+        _validating_app(redact_validation_errors=False),
+        "/auth/login",
+        json={"email": "ada@example.com", "password": SECRET},
+    )
+    assert status == 422 and SECRET in text  # FastAPI's own answer, input and all
+
+
+async def test_a_bare_starlette_app_gets_no_validation_handler() -> None:
+    app = Starlette()
+    install_contract_error_handlers(app)
+    assert RequestValidationError not in app.exception_handlers
+
+
+async def test_the_redacting_handler_drops_input_ctx_and_url() -> None:
+    exc = RequestValidationError(
+        [
+            {
+                "type": "string_too_long",
+                "loc": ("body", "token"),
+                "msg": "String should have at most 256 characters",
+                "input": "tok_secret",
+                "ctx": {"max_length": 256},
+                "url": "https://errors.pydantic.dev/2/v/string_too_long",
+            }
+        ]
+    )
+    response = await validation_error_response(None, exc)  # type: ignore[arg-type]
+    assert response.status_code == 422
+    assert response.body == (
+        b'{"detail":[{"type":"string_too_long","loc":["body","token"],'
+        b'"msg":"String should have at most 256 characters"}]}'
+    )

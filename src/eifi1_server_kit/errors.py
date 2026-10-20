@@ -38,11 +38,24 @@ one that names something (:class:`~eifi1_server_kit.user_admin.AccountError`: ka
 
 kastlan routes its refusals through ``DomainError`` and may keep mapping kit errors
 there; the installer is the same answer without the mapping.
+
+**A 422 never echoes the request** (0.17.0). FastAPI's own ``RequestValidationError``
+answer puts each error's ``input`` (and ``ctx``, and pydantic's ``url``) in the body — so
+a too-long password in ``LoginRequest``, ``EmailChangeRequest`` or ``DeletionRequest``, a
+malformed ``EmailChangeConfirm`` token, any body's values came back in the 422 and landed
+in request and response logs. On a FastAPI app the installer also registers
+:func:`validation_error_response`: FastAPI's same shape, ``{"detail": [{"type", "loc",
+"msg"}, ...]}``, without ``input``, ``ctx`` or ``url``, for every route — no app has to
+take bodies untyped and parse them by hand. An app's own ``RequestValidationError``
+handler is kept: registered before the call, the kit leaves it alone; registered after,
+it replaces the kit's as any later registration does. ``redact_validation_errors=False``
+keeps FastAPI's echoing answer.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING, cast
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -66,10 +79,14 @@ from eifi1_server_kit.uploads import UploadRejectedError
 from eifi1_server_kit.user_admin.errors import AccountError
 from eifi1_server_kit.user_admin.roster import RosterQueryError
 
+if TYPE_CHECKING:
+    from fastapi.exceptions import RequestValidationError
+
 __all__ = [
     "CONTRACT_ERRORS",
     "contract_error_response",
     "install_contract_error_handlers",
+    "validation_error_response",
 ]
 
 #: Every kit exception base that carries a ``status_code``; subclasses are covered by MRO.
@@ -120,12 +137,43 @@ async def contract_error_response(_request: Request, exc: Exception) -> Response
     )
 
 
-def install_contract_error_handlers(app: Starlette) -> None:
+async def validation_error_response(_request: Request, exc: Exception) -> Response:
+    """FastAPI's 422, ``{"detail": [{"type", "loc", "msg"}, ...]}``, with no error's
+    ``input``, ``ctx`` or ``url`` — the ``RequestValidationError`` handler
+    :func:`install_contract_error_handlers` registers on a FastAPI app (0.17.0), for an app
+    that registers it itself.
+
+    ``loc`` names the field (``["body", "password"]``) and ``msg`` is pydantic's or the
+    validator's own words — so a validator of the app's that writes the value into its
+    message still echoes it there; the kit's never do.
+    """
+    errors = cast("RequestValidationError", exc).errors()
+    detail = [{"type": error["type"], "loc": list(error["loc"]), "msg": error["msg"]} for error in errors]
+    return JSONResponse({"detail": detail}, status_code=422)
+
+
+def _is_fastapi(app: Starlette) -> bool:
+    return any(cls.__module__.split(".")[0] == "fastapi" for cls in type(app).__mro__)
+
+
+def install_contract_error_handlers(app: Starlette, *, redact_validation_errors: bool = True) -> None:
     """Answer every uncaught kit refusal at its contract status, beside any ``ValueError`` handler.
 
     Call it while building the app, before the first request (Starlette builds its
     middleware stack, handlers included, once). Works on a FastAPI app — it is a
     Starlette one.
+
+    On a FastAPI app it also answers every request validation error with
+    :func:`validation_error_response` — FastAPI's 422 without the request's values
+    (0.17.0) — unless the app registered its own ``RequestValidationError`` handler
+    before the call (kept) or after it (replaces the kit's), or passes
+    ``redact_validation_errors=False``.
     """
     for error in CONTRACT_ERRORS:
         app.add_exception_handler(error, contract_error_response)
+    if redact_validation_errors and _is_fastapi(app):
+        from fastapi.exception_handlers import request_validation_exception_handler
+        from fastapi.exceptions import RequestValidationError
+
+        if app.exception_handlers.get(RequestValidationError) in (None, request_validation_exception_handler):
+            app.add_exception_handler(RequestValidationError, validation_error_response)
