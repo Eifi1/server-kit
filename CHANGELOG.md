@@ -10,6 +10,44 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.16.1] (2026-10-20)
+
+server-kit 0.16.1: the apps' 0.46 adoption findings (keksdose, kastlan, Kurvenschmiede). A
+**patch**: nothing breaking, no name removed or renamed, and an app needs no code change to
+take it. One behaviour an app's tests may notice: `PATCH /auth/me` with an unknown device zone
+now answers 200 (the zone dropped) where 0.16.0 answered a 422 — re-pin such a test (ui-kit's
+`docs/adopt-0.46.md`, the server-kit 0.16.1 rows).
+
+### Fixed
+
+* **errors:** no validation 422 echoes what was sent. FastAPI's default answer repeats each
+  error's `input` (and `ctx`, `url`), so passwords and tokens (login, e-mail change, deletion,
+  confirm) reached the answer and the logs. On a FastAPI app `install_contract_error_handlers`
+  now answers 422s as `{"detail": [{"type", "loc", "msg"}, ...]}` only;
+  `redact_validation_errors=False` opts out, and an app's own `RequestValidationError`
+  handler wins.
+* **notifications:** push bodies are parsed without echoing secrets (keksdose S1):
+  `parse_push_body(model, body)` and `parse_push_replace(body)` validate an untyped body and
+  raise `PushBodyInvalidError` (422 `push_body_invalid`, the failing fields named, no value, no
+  chained `ValidationError`), so neither `old_auth` nor a key reaches the answer or a traceback.
+* **auth:** an unknown or malformed device zone is dropped on `PATCH /auth/me`
+  (`ProfileUpdate`), as `RegisterRequest` does, so a browser with newer tzdata keeps saving the
+  rest (Kurvenschmiede S2).
+* **user_admin:** `AdminUserRow` no longer inherits `device_timezone`: a person's zone never
+  reaches the admin roster (Kurvenschmiede S1).
+
+### Added
+
+* **notifications:** `InboxItem.company_id` (kastlan N7); `FlushPort.still_wanted` may take a
+  keyword `now=`, and the flush passes its own `now` to a port that does (keksdose N8; a port
+  without it is called as before).
+* **errors:** `validation_error_response`, the redacting 422 handler the installer registers.
+
+### Docs
+
+* **notifications:** the unsubscribe key takes a dedicated secret (keksdose S2).
+* **feedback:** the alerts docstring says kastlan awaits the alert inside `filed`.
+
 ## [0.16.0] (2026-10-19)
 
 server-kit 0.16.0: the backend half of round 0.46 (ui-kit 0.46), from the 0.45 build reviews
