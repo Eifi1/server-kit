@@ -239,7 +239,7 @@ def test_a_flush_claims_one_row_or_more() -> None:
 
 
 async def test_a_port_that_takes_now_gets_the_flushs_now() -> None:
-    """N8 (0.16.1): ``still_wanted(..., now=)`` judges quiet hours at the flush's own time."""
+    """N8 (0.17.0): ``still_wanted(..., now=)`` judges quiet hours at the flush's own time."""
     service, queue, port = _service()
     await service.hold_push(7, "scan_done", "scan:1", _push("a", "b", "c"), not_before=END, now=NOW)
     await service.queue_mail(RECEIVED, 7, "fb:1", {}, now=NOW)
@@ -250,7 +250,7 @@ async def test_a_port_that_takes_now_gets_the_flushs_now() -> None:
 
 
 class _PortWithoutNow(RecordingFlushPort):
-    """A port written before 0.16.1: ``still_wanted`` takes no ``now``."""
+    """A port written before 0.17.0: ``still_wanted`` takes no ``now``."""
 
     async def still_wanted(self, user_id: int, type_id: str, channel: QueueChannel) -> bool | datetime:  # type: ignore[override]
         return False

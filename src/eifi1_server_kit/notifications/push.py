@@ -25,7 +25,7 @@ the kit answers the parts every app must get the same:
   browser's service worker re-registers on ``pushsubscriptionchange`` (ui-kit
   ``handlePushSubscriptionChange``), proving the device by the old endpoint and its
   ``auth`` secret (:func:`push_auth_matches`), not by a session a worker cannot send.
-* **A bad body is never echoed** (0.16.1, keksdose S1): FastAPI's own 422 puts each
+* **A bad body is never echoed** (0.17.0, keksdose S1): FastAPI's own 422 puts each
   error's ``input`` in the answer — for :class:`PushReplaceIn` that is ``old_auth``, the
   proof that redirects a person's pushes; for :class:`PushSubscriptionIn` the new
   ``keys.auth`` and ``p256dh``; for :class:`PushUnregisterIn` the endpoint, a capability.
@@ -176,7 +176,7 @@ class PushReplaceIn(BaseModel):
       update under its bypass with an explicit endpoint filter — this route only.
     * **Never log or echo the body**: its 422 answers a plain detail, never the input (a
       validation echo would hand ``old_auth`` back) — take the body untyped and parse it
-      with :func:`parse_push_replace` (0.16.1). A leaked row's ``keys.auth`` is enough to
+      with :func:`parse_push_replace` (0.17.0). A leaked row's ``keys.auth`` is enough to
       redirect that person's future pushes.
     * Rate-limit it as the other unauthenticated routes.
     """
@@ -192,7 +192,7 @@ class PushReplaceIn(BaseModel):
 def parse_push_body[M: BaseModel](model: type[M], body: object) -> M:
     """``body`` validated as ``model`` — a push route's body taken untyped
     (``body: Annotated[Any, Body()]``) so FastAPI never answers it with a 422 that echoes
-    the secret inside (0.16.1, keksdose S1).
+    the secret inside (0.17.0, keksdose S1).
 
     A body that is no valid ``model`` raises :class:`~.errors.PushBodyInvalidError` (422,
     ``push_body_invalid``) naming the failing fields, with no value and no chained

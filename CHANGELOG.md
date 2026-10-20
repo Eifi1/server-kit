@@ -10,13 +10,16 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
-## [0.16.1] (2026-10-20)
+## [0.17.0] (2026-10-20)
 
-server-kit 0.16.1: the apps' 0.46 adoption findings (keksdose, kastlan, Kurvenschmiede). A
-**patch**: nothing breaking, no name removed or renamed, and an app needs no code change to
-take it. One behaviour an app's tests may notice: `PATCH /auth/me` with an unknown device zone
-now answers 200 (the zone dropped) where 0.16.0 answered a 422 — re-pin such a test (ui-kit's
-`docs/adopt-0.46.md`, the server-kit 0.16.1 rows).
+server-kit 0.17.0: the apps' 0.46 adoption findings (keksdose, kastlan, Kurvenschmiede). A
+**minor** only because it adds public names (`parse_push_body`, `parse_push_replace`,
+`PushBodyInvalidError`, …), which the policy reserves for a minor — **nothing breaking**: no
+name removed or renamed, and an app needs no code change to take it. A stale `timezone` is
+still accepted and ignored in 0.17 (refused from 0.18, not 0.17 as 0.16.0 said). One
+behaviour an app's tests may notice: `PATCH /auth/me` with an unknown device zone now answers
+200 (the zone dropped) where 0.16.0 answered a 422 — re-pin such a test (ui-kit's
+`docs/adopt-0.46.md`, the server-kit 0.17.0 rows).
 
 ### Fixed
 
@@ -86,8 +89,8 @@ may notice without code are under **Changed**. Per-app steps: ui-kit's `docs/ado
   answer carries no zone; `UserResponse` / `ProfileUpdate` have no `timezone` either. A
   `timezone` sent anyway — a stale 0.45 bundle's picker or its quiet hours' first entry, to
   `PATCH /notifications/settings`, keksdose's `/push/settings` shim (through
-  `QuietHoursUpdate`) or `PATCH /auth/me` — is **ignored in 0.16** (dropped before the checks,
-  never written) **and refused from 0.17** as any unknown field (`extra="forbid"`, a 422): the
+  `QuietHoursUpdate`) or `PATCH /auth/me` — is **ignored in 0.16 and 0.17** (dropped before the checks,
+  never written) **and refused from 0.18** as any unknown field (`extra="forbid"`, a 422): the
   PWA keeps old bundles for days (keksdose S2/S3). Quiet hours read `effective_zone(user.device_timezone)` (below); an app moves its stored
   settings zone to `users.device_timezone` in the bump's migration.
 

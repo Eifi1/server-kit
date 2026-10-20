@@ -216,7 +216,7 @@ class RecordingFlushPort:
     """A :class:`~.queue.FlushPort` that records. ``wanted`` answers
     :meth:`still_wanted` per ``(user_id, type_id, channel)`` (``True`` when absent);
     ``sends_ok`` is what every send answers; ``checked_at`` records the flush's ``now``
-    each :meth:`still_wanted` got (0.16.1)."""
+    each :meth:`still_wanted` got (0.17.0)."""
 
     wanted: dict[tuple[int, str, str], bool | datetime] = field(default_factory=dict)
     sends_ok: bool = True

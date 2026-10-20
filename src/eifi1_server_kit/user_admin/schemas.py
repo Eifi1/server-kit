@@ -114,12 +114,12 @@ class AdminUserRow(UserResponse):
     company's list never names another company (§3.2). Attributes and counts, never
     content (keksdose's roster rule).
 
-    The person's device zone (``UserResponse.device_timezone``) is NOT on the row (0.16.1):
+    The person's device zone (``UserResponse.device_timezone``) is NOT on the row (0.17.0):
     it is where their device last was — their own data, a location signal the roster has
     no use for. The row reads an account that has it and never answers it.
     """
 
-    #: Never read, never answered, not in the schema (0.16.1): see above.
+    #: Never read, never answered, not in the schema (0.17.0): see above.
     device_timezone: SkipJsonSchema[Annotated[None, BeforeValidator(_discard)]] = Field(default=None, exclude=True)
     #: ``None``: never signed in (or not since the column shipped) — "never", not "0
     #: days ago". kastlan's comes from its session rows, account-wide (§3.2).

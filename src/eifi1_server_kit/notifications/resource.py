@@ -42,8 +42,8 @@ the app" column sends ``{app}`` alone, and coupling there would flip push with i
 
 **The zone is the account's** (§10.3, 0.16; amended 2026-10-20, Marcel: automatic only):
 the zone of the device last used (``users.device_timezone``, ``effective_zone``), never a
-field of this resource. **A ``timezone`` in the PATCH is ignored in 0.16, refused from
-0.17**: a stale 0.45 bundle (its zone picker, its quiet hours' first entry) still sends
+field of this resource. **A ``timezone`` in the PATCH is ignored in 0.16 and 0.17,
+refused from 0.18**: a stale 0.45 bundle (its zone picker, its quiet hours' first entry) still sends
 one, here and to keksdose's ``/push/settings`` shim, and the PWA keeps old bundles for days.
 :class:`NotificationSettingsUpdate` and :class:`QuietHoursUpdate` drop it before the
 checks, so it is never in ``model_fields_set`` and ``apply_patch`` never writes it.
@@ -88,8 +88,8 @@ SETTINGS_SKIP: tuple[str, ...] = ("types",)
 
 
 def _drop_stale_timezone(data: object) -> object:
-    """The input without ``timezone``: a 0.45 bundle's zone, ignored in 0.16 and refused
-    as an unknown field from 0.17 (§10.3, automatic only)."""
+    """The input without ``timezone``: a 0.45 bundle's zone, ignored in 0.16 and 0.17 and
+    refused as an unknown field from 0.18 (§10.3, automatic only)."""
     if isinstance(data, dict) and "timezone" in data:
         return {key: value for key, value in data.items() if key != "timezone"}
     return data
@@ -163,7 +163,7 @@ class NotificationSettingsUpdate(BaseModel):
     (422). A type the registry knows but this
     account doesn't receive is :func:`apply_switches_patch`'s
     :class:`~.errors.NotificationTypeError`. Unknown fields are a 422 — except
-    ``timezone``, which a stale 0.45 bundle sends: ignored in 0.16, refused from 0.17.
+    ``timezone``, which a stale 0.45 bundle sends: ignored in 0.16 and 0.17, refused from 0.18.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -199,7 +199,7 @@ class NotificationSettingsUpdate(BaseModel):
 class QuietHoursUpdate(BaseModel):
     """The quiet hours in the ``PATCH``: ``HH:MM`` bounds; ``null`` clears each. No zone:
     it is the account's (§10.3, automatic only). A ``timezone`` (a stale 0.45 bundle's, also
-    through keksdose's ``/push/settings`` shim) is ignored in 0.16, refused from 0.17."""
+    through keksdose's ``/push/settings`` shim) is ignored in 0.16 and 0.17, refused from 0.18."""
 
     model_config = ConfigDict(extra="forbid")
 

@@ -335,8 +335,8 @@ def test_the_account_answers_its_devices_zone_and_no_pick() -> None:
 
 
 def test_a_stale_zone_pick_is_ignored_in_0_16_and_the_device_report_is_never_null() -> None:
-    """A 0.45 bundle's picker still sends ``{timezone}``: ignored for one release (never
-    written), refused as unknown from 0.17."""
+    """A 0.45 bundle's picker still sends ``{timezone}``: ignored in 0.16 and 0.17 (never
+    written), refused as unknown from 0.18."""
     stale = ProfileUpdate.model_validate({"timezone": "Europe/Zurich", "locale": "en"})
     assert stale.model_fields_set == {"locale"}
     assert "timezone" not in stale.model_dump()
@@ -351,7 +351,7 @@ def test_a_stale_zone_pick_is_ignored_in_0_16_and_the_device_report_is_never_nul
 
 @pytest.mark.parametrize("name", ["Mars/Olympus", "Europe", "../etc/passwd", "Europe/" + "x" * 60, "", 42])
 def test_a_report_drops_a_zone_this_server_does_not_know_as_sign_up_does(name: object) -> None:
-    """0.16.1 (Kurvenschmiede round 048): a browser whose tzdata is newer than the server's
+    """0.17.0 (Kurvenschmiede round 048): a browser whose tzdata is newer than the server's
     names a zone this server doesn't know. Refusing it failed the report on every start
     (silently: the client swallows it), so it is dropped — left unset, never written — as
     ``RegisterRequest`` drops it; the rest of the PATCH still applies."""

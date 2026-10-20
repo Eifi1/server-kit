@@ -12,7 +12,7 @@ works, and a copy in a request log costs little. It is not a one-time token
     key  = HMAC-SHA256(<the app's unsubscribe secret>, "eifi1-notifications-unsubscribe")
 
 **Pass a dedicated unsubscribe secret** — its own setting (keksdose
-``KEKSDOSE_UNSUBSCRIBE_SECRET``), never the JWT secret (0.16.1, aligned with
+``KEKSDOSE_UNSUBSCRIBE_SECRET``), never the JWT secret (0.17.0, aligned with
 ``docs/adopt-0.46.md``): a link outlives every session, so the secret it hangs on must
 rotate on its own, and a session secret's rotation must not end every mailed link. No
 secret configured means no notification mail. The kit takes whatever ``secret`` the app

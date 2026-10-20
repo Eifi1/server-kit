@@ -65,7 +65,7 @@ def test_marking_read_takes_some_ids_or_all() -> None:
 
 
 def test_a_row_names_its_company_by_id_too() -> None:
-    """0.16.1 (kastlan N7): the bell switches to the row's company by id, not by name."""
+    """0.17.0 (kastlan N7): the bell switches to the row's company by id, not by name."""
     item = InboxItem.model_validate(
         {
             "id": 5,

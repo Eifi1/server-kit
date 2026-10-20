@@ -216,7 +216,7 @@ async def test_the_handler_answers_a_stray_exception_as_a_server_error() -> None
     assert response.status_code == 500 and response.body == b'{"detail":"boom"}'
 
 
-# --- 0.16.1: a 422 never echoes the body ------------------------------------------------
+# --- 0.17.0: a 422 never echoes the body ------------------------------------------------
 
 SECRET = "hunter2-" + "x" * 200  # past bcrypt's 72 bytes: a too-long password, still a secret
 

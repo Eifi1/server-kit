@@ -64,7 +64,7 @@ def test_the_admin_row_is_the_core_plus_the_admin_columns() -> None:
 
 
 def test_the_admin_row_never_carries_the_persons_device_zone() -> None:
-    """0.16.1 (Kurvenschmiede round 048): ``UserResponse.device_timezone`` is where the
+    """0.17.0 (Kurvenschmiede round 048): ``UserResponse.device_timezone`` is where the
     person's device last was — their own data, a location signal the roster has no use
     for. The row reads an account (or an ORM row) that has it and never answers it."""
     row = AdminUserRow.model_validate(SimpleNamespace(**_user(device_timezone="Asia/Tokyo")))

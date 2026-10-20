@@ -335,7 +335,7 @@ def test_the_replace_routes_rules_are_in_its_docstring() -> None:
         assert rule in doc, rule
 
 
-# ── parsing a body that carries a secret, without echoing it (0.16.1) ────────
+# ── parsing a body that carries a secret, without echoing it (0.17.0) ────────
 
 
 SECRET = "s3cr3t-auth-never-echoed"

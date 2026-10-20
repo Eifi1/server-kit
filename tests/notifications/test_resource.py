@@ -182,7 +182,7 @@ class LegacySettingsShim(DigestUpdate, QuietHoursUpdate):
 @pytest.mark.parametrize("model", [KeksdoseUpdate, KastlanUpdate, KurvenschmiedeUpdate, LegacySettingsShim])
 def test_a_stale_bundles_timezone_is_ignored_in_0_16(model: type[Any]) -> None:
     """A 0.45 bundle still sends ``{timezone}`` (its picker, its quiet hours' first entry):
-    accepted and dropped for one release, never written; refused as unknown from 0.17."""
+    accepted and dropped in 0.16 and 0.17, never written; refused as unknown from 0.18."""
     body = model.model_validate({"timezone": "Europe/Zurich"})
     assert body.model_fields_set == set()
     assert "timezone" not in body.model_dump()

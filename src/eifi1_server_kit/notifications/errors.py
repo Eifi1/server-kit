@@ -89,7 +89,7 @@ class PushEndpointTakenError(NotificationError):
 
 
 class PushBodyInvalidError(NotificationError):
-    """A push route's body that is no valid model (0.16.1, keksdose S1): 422 ``{"detail":
+    """A push route's body that is no valid model (0.17.0, keksdose S1): 422 ``{"detail":
     …, "code": "push_body_invalid", "fields": ["old_auth", …]}``. Raised by
     :func:`~.push.parse_push_body` and :func:`~.push.parse_push_replace` in place of
     FastAPI's own 422, whose ``input`` would echo the body — ``old_auth``, ``keys.auth``,

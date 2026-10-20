@@ -39,7 +39,7 @@ one that names something (:class:`~eifi1_server_kit.user_admin.AccountError`: ka
 kastlan routes its refusals through ``DomainError`` and may keep mapping kit errors
 there; the installer is the same answer without the mapping.
 
-**A 422 never echoes the request** (0.16.1). FastAPI's own ``RequestValidationError``
+**A 422 never echoes the request** (0.17.0). FastAPI's own ``RequestValidationError``
 answer puts each error's ``input`` (and ``ctx``, and pydantic's ``url``) in the body — so
 a too-long password in ``LoginRequest``, ``EmailChangeRequest`` or ``DeletionRequest``, a
 malformed ``EmailChangeConfirm`` token, any body's values came back in the 422 and landed
@@ -140,7 +140,7 @@ async def contract_error_response(_request: Request, exc: Exception) -> Response
 async def validation_error_response(_request: Request, exc: Exception) -> Response:
     """FastAPI's 422, ``{"detail": [{"type", "loc", "msg"}, ...]}``, with no error's
     ``input``, ``ctx`` or ``url`` — the ``RequestValidationError`` handler
-    :func:`install_contract_error_handlers` registers on a FastAPI app (0.16.1), for an app
+    :func:`install_contract_error_handlers` registers on a FastAPI app (0.17.0), for an app
     that registers it itself.
 
     ``loc`` names the field (``["body", "password"]``) and ``msg`` is pydantic's or the
@@ -165,7 +165,7 @@ def install_contract_error_handlers(app: Starlette, *, redact_validation_errors:
 
     On a FastAPI app it also answers every request validation error with
     :func:`validation_error_response` — FastAPI's 422 without the request's values
-    (0.16.1) — unless the app registered its own ``RequestValidationError`` handler
+    (0.17.0) — unless the app registered its own ``RequestValidationError`` handler
     before the call (kept) or after it (replaces the kit's), or passes
     ``redact_validation_errors=False``.
     """

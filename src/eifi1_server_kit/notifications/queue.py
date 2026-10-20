@@ -165,7 +165,7 @@ class FlushPort(Protocol):
         account was deactivated), and a datetime holds the push again until then (the
         quiet hours moved: :func:`~.timing.quiet_hours_end`).
 
-        0.16.1: a port whose ``still_wanted`` also takes a keyword ``now: datetime | None =
+        0.17.0: a port whose ``still_wanted`` also takes a keyword ``now: datetime | None =
         None`` gets the flush's own ``now``, to judge quiet hours at the moment the flush
         claimed for (a retried or late tick, a test) instead of the wall clock; a port
         without it is called as before."""
@@ -350,7 +350,7 @@ class QueueService:
 
 
 def _takes_now(method: Callable[..., object]) -> bool:
-    """Whether a port's ``still_wanted`` takes ``now`` (0.16.1), by keyword or ``**``."""
+    """Whether a port's ``still_wanted`` takes ``now`` (0.17.0), by keyword or ``**``."""
     return any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         or (parameter.name == "now" and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY)
