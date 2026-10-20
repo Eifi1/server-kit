@@ -25,6 +25,17 @@ the kit answers the parts every app must get the same:
   browser's service worker re-registers on ``pushsubscriptionchange`` (ui-kit
   ``handlePushSubscriptionChange``), proving the device by the old endpoint and its
   ``auth`` secret (:func:`push_auth_matches`), not by a session a worker cannot send.
+* **A bad body is never echoed** (0.16.1, keksdose S1): FastAPI's own 422 puts each
+  error's ``input`` in the answer — for :class:`PushReplaceIn` that is ``old_auth``, the
+  proof that redirects a person's pushes; for :class:`PushSubscriptionIn` the new
+  ``keys.auth`` and ``p256dh``; for :class:`PushUnregisterIn` the endpoint, a capability.
+  Take the body untyped (``body: Annotated[Any, Body()]``) and parse it with
+  :func:`parse_push_replace` or :func:`parse_push_body`: a bad one raises
+  :class:`~.errors.PushBodyInvalidError`, a plain coded 422 naming the failing fields and
+  no value. (Malformed JSON stays FastAPI's ``json_invalid``, whose ``input`` is empty.)
+  The unsubscribe token travels in the path, typed plain ``str``: give it no pattern or
+  length, or a 422 would echo it — :func:`~.unsubscribe.read_unsubscribe_token` refuses a
+  bad one with a 400 that echoes nothing.
 """
 
 from __future__ import annotations
@@ -36,8 +47,9 @@ import re
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from eifi1_server_kit.notifications.errors import PushBodyInvalidError
 from eifi1_server_kit.notifications.registry import TYPE_ID_PATTERN
 
 __all__ = [
@@ -58,6 +70,8 @@ __all__ = [
     "PushSubscriptionKeys",
     "PushTestResponse",
     "PushUnregisterIn",
+    "parse_push_body",
+    "parse_push_replace",
     "push_auth_matches",
     "push_gone_expired",
     "push_outcome",
@@ -161,8 +175,9 @@ class PushReplaceIn(BaseModel):
       answers 404. An app whose table is FORCE RLS (keksdose) runs the lookup and the
       update under its bypass with an explicit endpoint filter — this route only.
     * **Never log or echo the body**: its 422 answers a plain detail, never the input (a
-      validation echo would hand ``old_auth`` back). A leaked row's ``keys.auth`` is
-      enough to redirect that person's future pushes.
+      validation echo would hand ``old_auth`` back) — take the body untyped and parse it
+      with :func:`parse_push_replace` (0.16.1). A leaked row's ``keys.auth`` is enough to
+      redirect that person's future pushes.
     * Rate-limit it as the other unauthenticated routes.
     """
 
@@ -172,6 +187,36 @@ class PushReplaceIn(BaseModel):
     old_auth: str = Field(min_length=1, max_length=256)
     #: The browser's new subscription, as on registering.
     subscription: PushSubscriptionIn
+
+
+def parse_push_body[M: BaseModel](model: type[M], body: object) -> M:
+    """``body`` validated as ``model`` — a push route's body taken untyped
+    (``body: Annotated[Any, Body()]``) so FastAPI never answers it with a 422 that echoes
+    the secret inside (0.16.1, keksdose S1).
+
+    A body that is no valid ``model`` raises :class:`~.errors.PushBodyInvalidError` (422,
+    ``push_body_invalid``) naming the failing fields, with no value and no chained
+    :class:`~pydantic.ValidationError` (whose text carries the input) — so neither the
+    answer nor a logged traceback holds ``old_auth`` or a key. Log nothing of the body
+    either."""
+    try:
+        return model.model_validate(body)
+    except ValidationError as exc:
+        fields = dict.fromkeys(".".join(str(part) for part in error["loc"]) or "body" for error in exc.errors())
+    raise PushBodyInvalidError(fields)
+
+
+def parse_push_replace(body: object) -> PushReplaceIn:
+    """:class:`PushReplaceIn` from ``POST /notifications/devices/replace``'s untyped body:
+    :func:`parse_push_body` for the replace route, whose ``old_auth`` must never come back
+    in a 422::
+
+        @router.post("/notifications/devices/replace", response_model=PushDeviceResponse)
+        async def replace(body: Annotated[Any, Body()]) -> PushDeviceResponse:
+            request = parse_push_replace(body)  # PushBodyInvalidError → plain 422
+            ...
+    """
+    return parse_push_body(PushReplaceIn, body)
 
 
 def push_auth_matches(stored: str, given: str) -> bool:

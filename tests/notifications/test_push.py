@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from eifi1_server_kit.errors import contract_error_response
 from eifi1_server_kit.mail import support_address
 from eifi1_server_kit.notifications import (
     PUSH_GONE_GRACE,
@@ -19,6 +20,8 @@ from eifi1_server_kit.notifications import (
     PUSH_TEST_TYPE,
     PUSH_TIMEOUT,
     PUSH_TTL,
+    NotificationError,
+    PushBodyInvalidError,
     PushData,
     PushDeviceResponse,
     PushDeviceUpdate,
@@ -31,6 +34,8 @@ from eifi1_server_kit.notifications import (
     PushTestResponse,
     PushUnregisterIn,
     digest_tag,
+    parse_push_body,
+    parse_push_replace,
     push_auth_matches,
     push_gone_expired,
     push_outcome,
@@ -328,3 +333,78 @@ def test_the_replace_routes_rules_are_in_its_docstring() -> None:
     doc = PushReplaceIn.__doc__ or ""
     for rule in ("PUSH_GONE_GRACE", "inactive", "demo", "sign out everywhere", "erasure", "No RLS", "Never log"):
         assert rule in doc, rule
+
+
+# ── parsing a body that carries a secret, without echoing it (0.16.1) ────────
+
+
+SECRET = "s3cr3t-auth-never-echoed"
+
+
+async def _answer(error: Exception) -> dict[str, Any]:
+    response = await contract_error_response(None, error)  # type: ignore[arg-type]
+    assert response.status_code == 422
+    return dict(json.loads(bytes(response.body)))
+
+
+def test_a_replace_body_is_parsed_into_the_model() -> None:
+    body = parse_push_replace(
+        {
+            "old_endpoint": ENDPOINT,
+            "old_auth": KEYS["auth"],
+            "subscription": {"endpoint": ENDPOINT + "-n", "keys": KEYS},
+        }
+    )
+    assert isinstance(body, PushReplaceIn) and body.old_auth == KEYS["auth"]
+
+
+@pytest.mark.parametrize(
+    ("body", "fields"),
+    [
+        (
+            {"old_endpoint": "", "old_auth": SECRET, "subscription": {"endpoint": ENDPOINT, "keys": KEYS}},
+            ["old_endpoint"],
+        ),
+        (
+            {"old_endpoint": ENDPOINT, "old_auth": SECRET, "subscription": {"endpoint": "http://x", "keys": KEYS}},
+            ["subscription.endpoint"],
+        ),
+        ({"old_endpoint": ENDPOINT, "old_auth": SECRET * 20, "subscription": None}, ["old_auth", "subscription"]),
+        ([SECRET], ["body"]),
+        (SECRET, ["body"]),
+        (None, ["body"]),
+    ],
+)
+async def test_a_bad_replace_body_is_a_plain_coded_422_that_never_echoes_it(body: object, fields: list[str]) -> None:
+    with pytest.raises(PushBodyInvalidError) as caught:
+        parse_push_replace(body)
+    error = caught.value
+    assert isinstance(error, NotificationError) and error.__cause__ is None and error.__context__ is None
+    answer = await _answer(error)
+    assert answer == {"detail": PushBodyInvalidError.default_detail, "code": "push_body_invalid", "fields": fields}
+    assert SECRET not in json.dumps(answer) and SECRET not in repr(error)
+
+
+@pytest.mark.parametrize(
+    ("model", "body"),
+    [
+        (PushSubscriptionIn, {"endpoint": "http://x", "keys": {"p256dh": SECRET, "auth": SECRET}}),
+        (PushSubscriptionIn, {"endpoint": ENDPOINT, "keys": {"p256dh": "", "auth": SECRET}}),
+        (PushUnregisterIn, {"endpoint": SECRET * 200}),
+    ],
+)
+async def test_every_push_body_with_a_secret_parses_without_an_echo(model: type[Any], body: object) -> None:
+    with pytest.raises(PushBodyInvalidError) as caught:
+        parse_push_body(model, body)
+    answer = await _answer(caught.value)
+    assert answer["code"] == "push_body_invalid" and SECRET not in json.dumps(answer)
+    assert SECRET not in str(caught.value)
+    assert parse_push_body(PushUnregisterIn, {"endpoint": ENDPOINT}) == PushUnregisterIn(endpoint=ENDPOINT)
+
+
+def test_the_no_echo_rule_is_in_the_module_docstring() -> None:
+    from eifi1_server_kit.notifications import push
+
+    doc = push.__doc__ or ""
+    for word in ("parse_push_replace", "parse_push_body", "Body()", "input"):
+        assert word in doc, word

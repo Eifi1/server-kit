@@ -16,7 +16,8 @@ write fire nothing; a loop's service is built with ``alerts=None`` (Kurvenschmie
 ``feedback_loop``), and keksdose's and kastlan's loops write past the service. A demo
 cannot file or rework and its crash is not stored, so it fires nothing.
 
-**The app delivers after the commit** — kastlan in a background task, Kurvenschmiede
+**The app delivers after the commit** — kastlan awaits it inside ``filed``, after the
+commit (its repository commits before the service calls ``filed``), Kurvenschmiede
 through ``send_after_commit``, keksdose through its notification plan (inbox row and push
 in the transaction, the mail after the commit, a crash's mail queued) — to
 :func:`admin_alert_recipients` of its admins: keksdose every active ADMIN, kastlan the

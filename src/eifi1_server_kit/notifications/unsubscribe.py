@@ -9,11 +9,15 @@ works, and a copy in a request log costs little. It is not a one-time token
     v1.<data>.<mac>
     data = base64url("<user_id>:<type id>")              # no padding
     mac  = base64url(HMAC-SHA256(key, "v1." + data))
-    key  = HMAC-SHA256(<the app's signing secret>, "eifi1-notifications-unsubscribe")
+    key  = HMAC-SHA256(<the app's unsubscribe secret>, "eifi1-notifications-unsubscribe")
 
-**The key is derived from the secret each app already signs with** (Marcel, 2026-10-13),
-so nothing new is provisioned, and the derivation keeps it apart from every other use of
-that secret. Rotating the secret ends old links; the page then says to use Settings. ``v1``
+**Pass a dedicated unsubscribe secret** — its own setting (keksdose
+``KEKSDOSE_UNSUBSCRIBE_SECRET``), never the JWT secret (0.16.1, aligned with
+``docs/adopt-0.46.md``): a link outlives every session, so the secret it hangs on must
+rotate on its own, and a session secret's rotation must not end every mailed link. No
+secret configured means no notification mail. The kit takes whatever ``secret`` the app
+passes and derives the key from it, which keeps it apart from any other use of that
+value. Rotating the secret ends old links; the page then says to use Settings. ``v1``
 leaves room for another key.
 
 The routes, ``POST /notifications/unsubscribe/{token}`` and ``…/{token}/all``, answer no
@@ -58,7 +62,7 @@ class UnsubscribeClaim:
 def _secret_bytes(secret: str | bytes) -> bytes:
     raw = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
     if not raw:
-        raise ValueError("the unsubscribe key is derived from the app's signing secret, which is never empty")
+        raise ValueError("the unsubscribe key is derived from the app's unsubscribe secret, which is never empty")
     return raw
 
 
@@ -68,7 +72,7 @@ def _b64(raw: bytes) -> str:
 
 def unsubscribe_key(secret: str | bytes) -> bytes:
     """The token's key: HMAC-SHA256 of ``eifi1-notifications-unsubscribe`` under the app's
-    signing secret (its JWT secret). 32 bytes."""
+    dedicated unsubscribe secret (its own setting, not the JWT secret). 32 bytes."""
     return hmac.new(_secret_bytes(secret), _KEY_CONTEXT, hashlib.sha256).digest()
 
 

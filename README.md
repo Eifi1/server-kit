@@ -246,6 +246,18 @@ fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "
 `Retry-After`). See
 [the refusals](#the-refusals).
 
+On a FastAPI app it also registers `validation_error_response` for `RequestValidationError`
+(0.16.1): FastAPI's 422 shape, `{"detail": [{"type", "loc", "msg"}, ...]}`, without each
+error's `input`, `ctx` or `url` — so a too-long password in `LoginRequest`,
+`EmailChangeRequest` or `DeletionRequest`, an `EmailChangeConfirm` token, any body's values
+no longer come back in the 422 or land in request and response logs. Every route, no app
+code. An app's own `RequestValidationError` handler wins: registered before the call the
+kit leaves it in place, registered after it replaces the kit's;
+`install_contract_error_handlers(app, redact_validation_errors=False)` keeps FastAPI's
+echoing answer. The push routes' `parse_push_body` / `parse_push_replace` (0.16.1) stay
+valid — their coded `push_body_invalid` 422 is unchanged — and are no longer needed just to
+keep `old_auth` out of a 422.
+
 ### `eifi1_server_kit.translation_review`
 
 The wire shapes (`TranslationReviewsResponse`, `TranslationReviewBatch`,
@@ -1160,13 +1172,13 @@ off the event loop, its mailer). keksdose is the source
 | Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE`; per device (0.16) `device_receives(muted_types, type_id)`, `read_muted_types(types, stored)`, `apply_muted_types(types, muted)` |
 | Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `quiet_hours_end(start, end, zone, now)`, `effective_zone(device_timezone, fallback=DEFAULT_ZONE)`, `local_today(zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
 | A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day)`), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
-| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse` (`muted_types`), `PushDeviceUpdate(muted_types)`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type, inbox=True)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `push_gone_expired(gone_at, now, *, grace=PUSH_GONE_GRACE)`, `vapid_subject(support_address)`; `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE`, `PUSH_GONE_GRACE` (7 days) |
+| Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse` (`muted_types`), `PushDeviceUpdate(muted_types)`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type, inbox=True)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `push_gone_expired(gone_at, now, *, grace=PUSH_GONE_GRACE)`, `vapid_subject(support_address)`; `parse_push_body(model, body)`, `parse_push_replace(body)` (0.16.1: a bad body is a plain 422 that never echoes `old_auth` or a key); `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE`, `PUSH_GONE_GRACE` (7 days) |
 | Unsubscribe | `unsubscribe_token(secret, user_id, type_id)`, `read_unsubscribe_token(secret, token)` → `UnsubscribeClaim(user_id, type_id)`, `unsubscribe_key(secret)` |
 | The inbox | `InboxItem` (`company`, 0.16), `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days); layer 2 (0.16): `InboxStore` (`add`, `page`, `mark_read`, `clear`, `prune`), `NewInboxItem`, `INBOX_PAGE_DEFAULT`, `INBOX_PAGE_MAX` |
-| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted`, `send_push`, `send_mail`), `QueueService(queue, port)` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
+| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted` — 0.16.1: gets the flush's `now=` when it takes one —, `send_push`, `send_mail`), `QueueService(queue, port)` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
 | Routes (`notifications.router`, the `fastapi` extra) | `InboxDeps(store=, current_user_id=, guards=())`, `inbox_router(deps, *, prefix="/notifications/inbox")`; `notifications_jobs_router(service, require_jobs_token, *, now=utc_now, prefix="/ops/notifications")` → `POST /flush` |
 | Testing (`notifications.testing`) | `InMemoryInboxStore`, `InMemoryNotificationQueue` (`commit`, `rollback`, `commits`), `RecordingFlushPort` |
-| Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `NotificationChannelError` (422, `notification_channel_not_offered`, `types`, `channel`; 0.16), `PushEndpointTakenError` (409, `push_endpoint_taken`), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
+| Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `NotificationChannelError` (422, `notification_channel_not_offered`, `types`, `channel`; 0.16), `PushEndpointTakenError` (409, `push_endpoint_taken`), `PushBodyInvalidError` (422, `push_body_invalid`, `fields`; 0.16.1), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
 
 **The types are the app's**: a registry built once, the one list — the `GET` answers every
 type the account receives, in its order, and the card draws what it answers. A type
@@ -1229,8 +1241,8 @@ else counts a failure, and 10 in a row reap it
 (`should_reap(count, limit=…)` takes the app's own limit). TTL 24 h and
 timeout 10 s, passed explicitly. The VAPID subject is `mailto:` the support address.
 
-**One-click unsubscribe**: `v1.<data>.<mac>`, signed with a key derived from the app's
-existing signing secret, not stored, never expiring; it names one account and one type
+**One-click unsubscribe**: `v1.<data>.<mac>`, signed with a key derived from a dedicated
+unsubscribe secret the app passes (its own setting, not the JWT secret), not stored, never expiring; it names one account and one type
 and can only turn that e-mail off. A bad token is a 400; a GET never unsubscribes. The
 mail half is `mail.MailUnsubscribe`.
 
@@ -1436,6 +1448,9 @@ from eifi1_server_kit.errors import install_contract_error_handlers
 
 install_contract_error_handlers(app)  # FastAPI or Starlette; before, after or without a ValueError handler
 ```
+
+On FastAPI it also answers every validation 422 without the request's values (0.16.1,
+[above](#eifi1_server_kiterrors)) unless the app has its own `RequestValidationError` handler.
 
 Starlette picks a handler along the exception's MRO, so `FeedbackForbiddenError` reaches
 the `FeedbackError` handler before the `ValueError` one, whichever was registered first;

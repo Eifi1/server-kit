@@ -81,6 +81,7 @@ class InMemoryInboxStore:
                 created_at=row.created_at,
                 read_at=row.read_at,
                 company=self.companies.get(row.company_id) if row.company_id is not None else None,
+                company_id=row.company_id,
             )
             for row in mine[offset : offset + limit]
         ]
@@ -214,14 +215,19 @@ class InMemoryNotificationQueue:
 class RecordingFlushPort:
     """A :class:`~.queue.FlushPort` that records. ``wanted`` answers
     :meth:`still_wanted` per ``(user_id, type_id, channel)`` (``True`` when absent);
-    ``sends_ok`` is what every send answers."""
+    ``sends_ok`` is what every send answers; ``checked_at`` records the flush's ``now``
+    each :meth:`still_wanted` got (0.16.1)."""
 
     wanted: dict[tuple[int, str, str], bool | datetime] = field(default_factory=dict)
     sends_ok: bool = True
     pushes: list[tuple[int, PushPayload]] = field(default_factory=list)
     mails: list[tuple[int, str, list[QueueItem], str]] = field(default_factory=list)
+    checked_at: list[datetime | None] = field(default_factory=list)
 
-    async def still_wanted(self, user_id: int, type_id: str, channel: QueueChannel) -> bool | datetime:
+    async def still_wanted(
+        self, user_id: int, type_id: str, channel: QueueChannel, *, now: datetime | None = None
+    ) -> bool | datetime:
+        self.checked_at.append(now)
         return self.wanted.get((user_id, type_id, channel), True)
 
     async def send_push(self, user_id: int, payload: PushPayload) -> bool:

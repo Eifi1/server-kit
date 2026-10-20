@@ -16,6 +16,7 @@ __all__ = [
     "NotificationChannelError",
     "NotificationError",
     "NotificationTypeError",
+    "PushBodyInvalidError",
     "PushEndpointTakenError",
     "UnsubscribeTokenError",
 ]
@@ -85,6 +86,25 @@ class PushEndpointTakenError(NotificationError):
         "This browser's push endpoint is registered to another account. "
         "Turn notifications off and on again to register a fresh one."
     )
+
+
+class PushBodyInvalidError(NotificationError):
+    """A push route's body that is no valid model (0.16.1, keksdose S1): 422 ``{"detail":
+    …, "code": "push_body_invalid", "fields": ["old_auth", …]}``. Raised by
+    :func:`~.push.parse_push_body` and :func:`~.push.parse_push_replace` in place of
+    FastAPI's own 422, whose ``input`` would echo the body — ``old_auth``, ``keys.auth``,
+    an endpoint — back into the answer and every log that keeps it. ``fields`` names the
+    failing locations only (``"body"`` for a body that is no object), never a value."""
+
+    status_code = 422
+    code = "push_body_invalid"
+    default_detail = "This request body is not valid"
+    extra: Mapping[str, object]
+
+    def __init__(self, fields: Iterable[str] = (), detail: str | None = None) -> None:
+        self.fields = tuple(fields)
+        self.extra = {"fields": list(self.fields)}
+        super().__init__(detail)
 
 
 class UnsubscribeTokenError(NotificationError):
