@@ -359,9 +359,9 @@ class ProfileUpdate(BaseModel):
     ``device_timezone``, the device's report (never ``null``), an IANA name ``zoneinfo``
     knows; one it doesn't know (a browser's tzdata newer than the server's), or any value
     that isn't a name, is **dropped** — left unset, never written — as
-    :class:`RegisterRequest` drops it (0.17.0; ``null`` stays a 422). There is no pick: a ``timezone`` field — a stale 0.45 bundle's
-    picker still sends one — is **ignored in 0.16 and 0.17** (dropped before the checks, never
-    written) **and refused from 0.18** as any unknown field is. A demo's zone is ignored, as
+    :class:`RegisterRequest` drops it (0.17.0; ``null`` stays a 422). There is no pick: a ``timezone`` field — only a stale ≤0.45 bundle's
+    picker still sends one — is **a 422 from 0.18** as any unknown field is (ignored in 0.16
+    and 0.17). A demo's zone is ignored, as
     its locale and appearance are in Kurvenschmiede::
 
         apply_patch(user, body, not_nullable=PROFILE_NOT_NULLABLE, skip=PROFILE_ZONE_FIELDS)
@@ -402,9 +402,6 @@ class ProfileUpdate(BaseModel):
     @classmethod
     def _refuse_explicit_nulls(cls, data: object) -> object:
         if isinstance(data, dict):
-            if "timezone" in data:
-                # A 0.45 bundle's zone pick: ignored in 0.16 and 0.17, refused as unknown from 0.18.
-                data = {key: value for key, value in data.items() if key != "timezone"}
             for name in PROFILE_NOT_NULLABLE:
                 if name in data and data[name] is None:
                     raise ValueError(f"{name} cannot be null; leave it out to keep it")

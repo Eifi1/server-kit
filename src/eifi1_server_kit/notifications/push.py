@@ -32,7 +32,13 @@ the kit answers the parts every app must get the same:
   Take the body untyped (``body: Annotated[Any, Body()]``) and parse it with
   :func:`parse_push_replace` or :func:`parse_push_body`: a bad one raises
   :class:`~.errors.PushBodyInvalidError`, a plain coded 422 naming the failing fields and
-  no value. (Malformed JSON stays FastAPI's ``json_invalid``, whose ``input`` is empty.)
+  no value. Give the route ``openapi_extra=documented_body(model)`` (0.18): an ``Any``
+  body is documented as ``{}``, and this puts the model's schema back in OpenAPI.
+  **One push route answers two 422 shapes**, and neither echoes the body: a body that
+  isn't valid JSON is refused by FastAPI before :func:`parse_push_body` runs, as
+  ``json_invalid`` in the redacted validation shape (``{"detail": [{type, loc, msg}]}``,
+  ``install_contract_error_handlers``); a JSON body the model refuses is
+  ``{detail, code: "push_body_invalid", fields}``. A client tells them apart by ``code``.
   The unsubscribe token travels in the path, typed plain ``str``: give it no pattern or
   length, or a 422 would echo it — :func:`~.unsubscribe.read_unsubscribe_token` refuses a
   bad one with a 400 that echoes nothing.
@@ -45,6 +51,7 @@ import hmac
 import json
 import re
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -70,6 +77,7 @@ __all__ = [
     "PushSubscriptionKeys",
     "PushTestResponse",
     "PushUnregisterIn",
+    "documented_body",
     "parse_push_body",
     "parse_push_replace",
     "push_auth_matches",
@@ -189,6 +197,35 @@ class PushReplaceIn(BaseModel):
     subscription: PushSubscriptionIn
 
 
+def _inline_defs(node: object, defs: dict[str, Any]) -> object:
+    """``node`` with every ``#/$defs/…`` reference replaced by its definition."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            return _inline_defs(defs[ref.removeprefix("#/$defs/")], defs)
+        return {key: _inline_defs(value, defs) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_inline_defs(value, defs) for value in node]
+    return node
+
+
+def documented_body(model: type[BaseModel]) -> dict[str, Any]:
+    """The ``openapi_extra`` of a route that takes its body untyped (0.18, keksdose
+    ``_documented_body``): FastAPI documents ``Annotated[Any, Body()]`` as ``{}``, so the
+    model's schema is given here as the required JSON request body, its nested models
+    inlined — no route types them, so there is no component to point at. Parsing stays
+    :func:`parse_push_body`'s, so a bad body still echoes nothing::
+
+        @router.post("/notifications/devices", status_code=204,
+                     openapi_extra=documented_body(PushSubscriptionIn))
+        async def register(body: Annotated[Any, Body()]) -> None:
+            subscription = parse_push_body(PushSubscriptionIn, body)
+    """
+    schema = model.model_json_schema()
+    defs = schema.pop("$defs", {})
+    return {"requestBody": {"required": True, "content": {"application/json": {"schema": _inline_defs(schema, defs)}}}}
+
+
 def parse_push_body[M: BaseModel](model: type[M], body: object) -> M:
     """``body`` validated as ``model`` — a push route's body taken untyped
     (``body: Annotated[Any, Body()]``) so FastAPI never answers it with a 422 that echoes
@@ -198,7 +235,9 @@ def parse_push_body[M: BaseModel](model: type[M], body: object) -> M:
     ``push_body_invalid``) naming the failing fields, with no value and no chained
     :class:`~pydantic.ValidationError` (whose text carries the input) — so neither the
     answer nor a logged traceback holds ``old_auth`` or a key. Log nothing of the body
-    either."""
+    either. A body that isn't valid JSON never gets here: FastAPI refuses it first, in the
+    redacted validation shape (``json_invalid``), so the route answers two 422 shapes, both
+    without the body (module docstring)."""
     try:
         return model.model_validate(body)
     except ValidationError as exc:
@@ -211,7 +250,8 @@ def parse_push_replace(body: object) -> PushReplaceIn:
     :func:`parse_push_body` for the replace route, whose ``old_auth`` must never come back
     in a 422::
 
-        @router.post("/notifications/devices/replace", response_model=PushDeviceResponse)
+        @router.post("/notifications/devices/replace", response_model=PushDeviceResponse,
+                     openapi_extra=documented_body(PushReplaceIn))
         async def replace(body: Annotated[Any, Body()]) -> PushDeviceResponse:
             request = parse_push_replace(body)  # PushBodyInvalidError → plain 422
             ...

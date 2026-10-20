@@ -180,25 +180,16 @@ class LegacySettingsShim(DigestUpdate, QuietHoursUpdate):
 
 
 @pytest.mark.parametrize("model", [KeksdoseUpdate, KastlanUpdate, KurvenschmiedeUpdate, LegacySettingsShim])
-def test_a_stale_bundles_timezone_is_ignored_in_0_16(model: type[Any]) -> None:
+@pytest.mark.parametrize(
+    "sent",
+    [{"timezone": "Europe/Zurich"}, {"timezone": None}, {"timezone": "Europe/Zurich", "quiet_hours_start": "22:00"}],
+)
+def test_a_stale_bundles_timezone_is_refused_from_0_18(model: type[Any], sent: dict[str, Any]) -> None:
     """A 0.45 bundle still sends ``{timezone}`` (its picker, its quiet hours' first entry):
-    accepted and dropped in 0.16 and 0.17, never written; refused as unknown from 0.18."""
-    body = model.model_validate({"timezone": "Europe/Zurich"})
-    assert body.model_fields_set == set()
-    assert "timezone" not in body.model_dump()
-    row = _row()
-    skip = () if model is LegacySettingsShim else SETTINGS_SKIP
-    assert apply_patch(row, body, not_nullable=skip, skip=skip) == {}
-    assert "timezone" not in row
-
-
-def test_a_stale_timezone_rides_beside_the_real_fields() -> None:
-    sent = {"timezone": "Europe/Zurich", "quiet_hours_start": "22:00"}
-    body = KeksdoseUpdate.model_validate(sent)
-    assert body.model_fields_set == {"quiet_hours_start"}
-    assert sent == {"timezone": "Europe/Zurich", "quiet_hours_start": "22:00"}, "the input is not changed"
-    with pytest.raises(ValidationError, match="Extra inputs"):
-        KeksdoseUpdate.model_validate({"timezone": "Europe/Zurich", "colour": "teal"})
+    ignored in 0.16 and 0.17, refused from 0.18 as any unknown field is (a 422)."""
+    with pytest.raises(ValidationError, match="Extra inputs") as caught:
+        model.model_validate(sent)
+    assert ("timezone",) in [error["loc"] for error in caught.value.errors()]
 
 
 def test_nulls_clear_the_quiet_hours() -> None:
