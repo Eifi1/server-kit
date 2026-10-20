@@ -30,6 +30,7 @@ from datetime import datetime
 from typing import Annotated, Any, Self
 
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from eifi1_server_kit.auth.schemas import (
     DEFAULT_LOCALE,
@@ -99,6 +100,10 @@ def _dict_or_empty(value: object) -> object:
     return {} if value is None else value
 
 
+def _discard(_value: object) -> None:
+    return None
+
+
 class AdminUserRow(UserResponse):
     """One row of ``GET /admin/users`` (§3.2): the auth contract's ``UserResponse`` core —
     with its derived ``display_name`` and ``name_incomplete`` — plus what the admin page
@@ -108,8 +113,14 @@ class AdminUserRow(UserResponse):
     Kurvenschmiede's owned counts; kastlan's companies only in the PLATFORM list — a
     company's list never names another company (§3.2). Attributes and counts, never
     content (keksdose's roster rule).
+
+    The person's device zone (``UserResponse.device_timezone``) is NOT on the row (0.16.1):
+    it is where their device last was — their own data, a location signal the roster has
+    no use for. The row reads an account that has it and never answers it.
     """
 
+    #: Never read, never answered, not in the schema (0.16.1): see above.
+    device_timezone: SkipJsonSchema[Annotated[None, BeforeValidator(_discard)]] = Field(default=None, exclude=True)
     #: ``None``: never signed in (or not since the column shipped) — "never", not "0
     #: days ago". kastlan's comes from its session rows, account-wide (§3.2).
     last_login_at: datetime | None = None

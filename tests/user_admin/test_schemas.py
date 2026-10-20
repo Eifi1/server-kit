@@ -63,6 +63,18 @@ def test_the_admin_row_is_the_core_plus_the_admin_columns() -> None:
     assert dumped["translation_review_locales"] == [] and dumped["translation_review_areas"] is None
 
 
+def test_the_admin_row_never_carries_the_persons_device_zone() -> None:
+    """0.16.1 (Kurvenschmiede round 048): ``UserResponse.device_timezone`` is where the
+    person's device last was — their own data, a location signal the roster has no use
+    for. The row reads an account (or an ORM row) that has it and never answers it."""
+    row = AdminUserRow.model_validate(SimpleNamespace(**_user(device_timezone="Asia/Tokyo")))
+    assert "device_timezone" not in row.model_dump()
+    assert "device_timezone" not in row.model_dump_json()
+    assert row.device_timezone is None
+    assert "device_timezone" not in AdminUserRow.model_json_schema()["properties"]
+    assert "device_timezone" not in AdminUserRow.model_json_schema(mode="serialization")["properties"]
+
+
 def test_the_admin_row_reads_an_orm_row() -> None:
     """keksdose's columns: a NULL locale list reads as none."""
     orm = SimpleNamespace(
