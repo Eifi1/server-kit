@@ -33,7 +33,7 @@ jobs:
       # `before` and checks its tip's range only. No .versionrc: the Conventional Commits
       # defaults, as in the hook. Move this pin with scripts/sync-commit-rules.py's.
       - name: Commit messages — Conventional Commits
-        uses: Eifi1/shared-workflows/actions/commit-check@63f04f830933b8bf1fa92d854344c256f13a500c # v1.3.0
+        uses: Eifi1/shared-workflows/actions/commit-check@b4f160070fe9a80273925839ae60db80f1674747 # v1.3.1
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
