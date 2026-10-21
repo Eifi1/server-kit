@@ -199,8 +199,8 @@ class FeedbackReplyResponse(FeedbackPublicReplyResponse):
 
     #: The status before the move: the admin view only (``None`` elsewhere).
     status_from: FeedbackStatus | None = None
-    #: A rework entry's one file (§10.3); ``None`` for a reply. The admin's and the
-    #: author's views only — never the public detail.
+    #: The entry's one file: a rework's (§10.3) or, since 0.18, an admin reply's (§12);
+    #: ``None`` for none. The admin's and the author's views only — never the public detail.
     attachment_url: str | None = None
 
 
@@ -258,17 +258,29 @@ def _trimmed(value: object) -> object:
 
 class FeedbackReplyCreate(BaseModel):
     """``POST /feedback/{id}/replies`` (§9.7), admin only: the answer, 1–:data:`REPLY_MAX`
-    characters after trimming, and the status it moves the report to, if any."""
+    characters after trimming, the status it moves the report to, if any, and since 0.18
+    (§12) at most one file — one of this app's attachment URLs (:attr:`attachment_url_policy`,
+    else 422), kept in the entry's ``attachment_url`` as a rework's is."""
 
     model_config = ConfigDict(extra="forbid")
 
+    #: Which URL may be named. Narrow it in the app's subclass; the service checks its own
+    #: policy too.
+    attachment_url_policy: ClassVar[AttachmentUrlPolicy] = DEFAULT_ATTACHMENT_URL_POLICY
+
     body: str = Field(min_length=1, max_length=REPLY_MAX)
     status: FeedbackStatus | None = None
+    attachment_url: str | None = Field(default=None, max_length=MAX_SCREENSHOT_URL_LENGTH)
 
     @field_validator("body", mode="before")
     @classmethod
     def _trim(cls, value: object) -> object:
         return _trimmed(value)
+
+    @field_validator("attachment_url")
+    @classmethod
+    def _attachment_url_is_ours(cls, value: str | None) -> str | None:
+        return None if value is None else cls.attachment_url_policy.validate_url(value)
 
 
 class FeedbackReworkCreate(BaseModel):
@@ -298,16 +310,28 @@ class FeedbackReworkCreate(BaseModel):
 
 class FeedbackCommentCreate(BaseModel):
     """``POST /feedback/{id}/comments`` (§9.8): plain text, 1–:data:`COMMENT_MAX`
-    characters after trimming, no files."""
+    characters after trimming, and since 0.18 (§12) at most one file — one of this app's
+    attachment URLs (:attr:`attachment_url_policy`, else 422). The file is shown with the
+    comment to whoever reads its body."""
 
     model_config = ConfigDict(extra="forbid")
 
+    #: Which URL may be named. Narrow it in the app's subclass; the service checks its own
+    #: policy too.
+    attachment_url_policy: ClassVar[AttachmentUrlPolicy] = DEFAULT_ATTACHMENT_URL_POLICY
+
     body: str = Field(min_length=1, max_length=COMMENT_MAX)
+    attachment_url: str | None = Field(default=None, max_length=MAX_SCREENSHOT_URL_LENGTH)
 
     @field_validator("body", mode="before")
     @classmethod
     def _trim(cls, value: object) -> object:
         return _trimmed(value)
+
+    @field_validator("attachment_url")
+    @classmethod
+    def _attachment_url_is_ours(cls, value: str | None) -> str | None:
+        return None if value is None else cls.attachment_url_policy.validate_url(value)
 
 
 class FeedbackCommentHide(BaseModel):
@@ -334,6 +358,9 @@ class FeedbackCommentResponse(BaseModel):
     body: str | None
     hidden: bool = False
     created_at: datetime
+    #: The comment's one file (0.18, §12), shown with its body: ``None`` when it has none,
+    #: and, like ``body``, when hidden, but for its writer and an admin.
+    attachment_url: str | None = None
 
 
 class FeedbackVoteResponse(BaseModel):

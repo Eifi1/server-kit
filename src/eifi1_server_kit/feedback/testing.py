@@ -154,6 +154,8 @@ class MemoryCommentRow:
     staff: bool = False
     hidden_at: datetime | None = None
     hidden_by: int | None = None
+    #: Its one file (0.18, §12).
+    attachment_url: str | None = None
 
 
 def _newest_first[RowT: FeedbackRow](rows: Collection[RowT]) -> list[RowT]:
@@ -168,7 +170,8 @@ class InMemoryFeedbackRepository:
     RLS would; ``demo_authors`` are the demo accounts, whose reports :meth:`count_by_status`
     leaves out (0.15); ``now`` stamps ``created_at`` and ``updated_at``. ``policy`` is the app's,
     whose prefix finds a body's rework lines in :meth:`urls_named_except`; with ``replies``
-    (0.13) it reads the rework entries' files there too, as an app's query joins them.
+    (0.13) it reads the entries' files there too, and with ``comments`` (0.18) the
+    comments', as an app's query joins them.
 
     A :class:`~eifi1_server_kit.feedback.PublicFeedbackRepository` too: :meth:`public_page`
     counts in ``votes`` and ``comments`` (the fake stores), as an app's SQL joins its tables.
@@ -278,12 +281,12 @@ class InMemoryFeedbackRepository:
                     body=row.body,
                     policy=self.policy,
                 )
+        # Since 0.18 (§12) every entry's and comment's file counts, on any report: the
+        # erasure has cleared the person's own before it asks.
         if self.replies is not None:
-            urls |= {
-                entry.attachment_url
-                for entry in self.replies.rows.values()
-                if entry.feedback_id not in row_ids and entry.attachment_url
-            }
+            urls |= {entry.attachment_url for entry in self.replies.rows.values() if entry.attachment_url}
+        if self.comments is not None:
+            urls |= {comment.attachment_url for comment in self.comments.rows.values() if comment.attachment_url}
         return urls
 
     async def public_page(
@@ -418,6 +421,7 @@ class InMemoryCommentStore:
             user_id=new.user_id,
             body=new.body,
             created_at=self.now(),
+            attachment_url=new.attachment_url,
         )
         self.rows[row.id] = row
         self.added.append((row, actor))
@@ -951,17 +955,28 @@ async def check_comment_store(
     author: FeedbackActor,
     other: FeedbackActor,
     admin: FeedbackActor,
+    policy: AttachmentUrlPolicy = DEFAULT_ATTACHMENT_URL_POLICY,
+    attachment_url: str | None = None,
 ) -> None:
     """Does the app's comment store keep the port's promises (§9.8)? Raises
     :class:`AssertionError` naming the first that fails. ``feedback_id`` is an existing
     report WITHOUT comments; ``clear_hidden_by(admin.id)`` clears that account's hides on
-    the whole test database."""
+    the whole test database.
+
+    Since 0.18 (§12) the first comment carries a file: ``attachment_url`` where given — one
+    ``author`` uploaded in the app's test, for a store that claims it (Kurvenschmiede) —
+    else one under ``policy``'s prefix; it must read back, and the erasure's ``apply``
+    must clear it."""
     token = secrets.token_hex(8)
-    first = await store.add(NewFeedbackComment(feedback_id, author.id, f"Same here ({token})"), actor=author)
+    url = attachment_url or f"{policy.prefix}check{token}.png"
+    first = await store.add(
+        NewFeedbackComment(feedback_id, author.id, f"Same here ({token})", attachment_url=url), actor=author
+    )
     second = await store.add(NewFeedbackComment(feedback_id, other.id, f"And here ({token})"), actor=other)
     third = await store.add(NewFeedbackComment(feedback_id, author.id, f"Still ({token})"), actor=author)
     _check(len({first.id, second.id, third.id}) == 3, "add: each comment has its own id, set by the flush")
     _check(not first.staff and first.hidden_at is None and first.hidden_by is None, "add: not staff, not hidden")
+    _check(first.attachment_url == url and second.attachment_url is None, "add: attachment_url reads back")
     order = [comment.id for comment in await store.for_report(feedback_id)]
     _check(order == [first.id, second.id, third.id], "for_report: the report's comments, oldest first")
     found = await store.get(feedback_id, second.id)
@@ -982,6 +997,9 @@ async def check_comment_store(
     )
     mine = {comment.id for comment in await store.by_author(author.id)}
     _check({first.id, third.id} <= mine and second.id not in mine, "by_author: the comments that person wrote")
+    await store.apply(first, {"user_id": None, "attachment_url": None}, actor=None)
+    erased = await store.get(feedback_id, first.id)
+    _check(erased is not None and erased.attachment_url is None, "apply: attachment_url reads back")
     await store.delete(third)
     _check(await store.get(feedback_id, third.id) is None, "delete: gone")
 
@@ -1126,7 +1144,8 @@ def assert_public_view(payload: Any, *, policy: AttachmentUrlPolicy = DEFAULT_AT
     ``title``) or a comment (``staff``) and may carry only that list's keys — never
     ``user_id``, ``user_email``, ``context``, ``public``, ``filed_private``,
     ``status_from``, a file column — and no string anywhere may hold ``policy.prefix``:
-    no attachment URL or key. A CRASH is never in it.
+    no attachment URL or key, but for a comment's own ``attachment_url`` (0.18, §12),
+    which must be one of ``policy``'s URLs or null. A CRASH is never in it.
     """
     if hasattr(payload, "model_dump"):
         payload = payload.model_dump(mode="json")
@@ -1140,7 +1159,10 @@ def assert_public_view(payload: Any, *, policy: AttachmentUrlPolicy = DEFAULT_AT
     _check(not extra, f"a public {kind} carries {extra}")
     _check(payload.get("category") != FeedbackCategory.CRASH.value, "a CRASH report is never public")
     for key, value in payload.items():
-        if isinstance(value, str):
+        if kind == "comment" and key == "attachment_url":
+            # A comment's own file (0.18, §12): this app's URL, or nothing.
+            _check(value is None or policy.is_own_url(value), f"a public {kind}'s {key} names an attachment URL")
+        elif isinstance(value, str):
             _check(policy.prefix not in value, f"a public {kind}'s {key} names an attachment URL")
         elif isinstance(value, list):
             for item in value:

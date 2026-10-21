@@ -160,9 +160,11 @@ class FeedbackRepository[RowT: FeedbackRow](Protocol):
         """The erasure's rows (2.15)."""
 
     async def urls_named_except(self, row_ids: Collection[int]) -> set[str]:
-        """Every attachment URL the rows outside row_ids name, in a column or the body
-        (feedback_attachment_urls), and the ``attachment_url`` of their rework entries
-        (0.13): the erasure's shared-key check."""
+        """The erasure's shared-key check: every attachment URL the rows outside row_ids
+        name, in a column or the body (feedback_attachment_urls), and — since 0.18 (§12),
+        on EVERY report, row_ids' included — every entry's ``attachment_url`` (a rework's,
+        an admin reply's) and every comment's. The erasure clears the person's own entries
+        and comments before it asks, so what is left names a file somebody else still shows."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +194,12 @@ class AttachmentStorage(Protocol):
         "anyone who can see the report". Public feedback shows other people a report,
         never its files: no key reaches them (``public_body``), and a store that serves
         any signed-in user (keksdose, kastlan) stays safe only because of that.
+
+        **Amended in 0.18** (§12): "a report naming it" includes its entries, so the
+        author reads the file an admin replied with; and a file a VISIBLE comment names is
+        read by anyone who sees that comment's report for its comments (§9.9) — the one
+        file public feedback shows other people, because its writer posted it to be seen.
+        Hidden, it is back to its writer and an admin.
         """
 
 
@@ -241,7 +249,8 @@ class FeedbackReplyRow(Protocol):
 
 class FeedbackCommentRow(Protocol):
     """One comment (§9.8): ``feedback_comments``, read-only. ``user_id`` is ``None`` once
-    its writer is erased; ``hidden_at`` is set while an admin hides it."""
+    its writer is erased; ``hidden_at`` is set while an admin hides it; ``attachment_url``
+    (0.18, §12, a nullable ``VARCHAR(500)``) is its one file."""
 
     @property
     def id(self) -> int: ...
@@ -259,11 +268,14 @@ class FeedbackCommentRow(Protocol):
     def hidden_at(self) -> datetime | None: ...
     @property
     def hidden_by(self) -> int | None: ...
+    @property
+    def attachment_url(self) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class NewFeedbackReply:
-    """An entry to insert (§9.7, §10.3): a reply, or a ``rework`` with its one file. The
+    """An entry to insert (§9.7, §10.3): a reply or a ``rework``, each with at most one
+    file (a reply's since 0.18, §12). The
     store adds ``created_at`` (``server_default now()``) unless one is given — the
     migration's explicit stamp — and the app its own columns (kastlan's ``company_id``,
     keksdose's ``notified_at``)."""
@@ -280,11 +292,15 @@ class NewFeedbackReply:
 
 @dataclass(frozen=True, slots=True)
 class NewFeedbackComment:
-    """A comment to insert (§9.8): never ``staff``, never hidden."""
+    """A comment to insert (§9.8): never ``staff``, never hidden; since 0.18 (§12) with at
+    most one file, already checked against the app's policy. Where the app records who
+    uploaded a file (Kurvenschmiede), its store's ``add`` claims it as the writer's and
+    refuses another person's."""
 
     feedback_id: int
     user_id: int
     body: str
+    attachment_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,7 +375,8 @@ class FeedbackCommentStore[CommentRowT: FeedbackCommentRow](Protocol):
         comment; erased writers left out (for ``feedback_recipients``)."""
 
     async def add(self, new: NewFeedbackComment, *, actor: FeedbackActor) -> CommentRowT:
-        """Insert and flush. Fires ``feedback_comment``, sent after the commit."""
+        """Insert and flush, ``attachment_url`` included (0.18). Fires ``feedback_comment``,
+        sent after the commit."""
 
     async def get(self, feedback_id: int, comment_id: int) -> CommentRowT | None:
         """The comment, when it belongs to that report; else None."""
@@ -368,7 +385,7 @@ class FeedbackCommentStore[CommentRowT: FeedbackCommentRow](Protocol):
         self, comment: CommentRowT, changes: Mapping[str, Any], *, actor: FeedbackActor | None
     ) -> CommentRowT:
         """Assign and flush: ``hidden_at`` / ``hidden_by`` (a hide), or the erasure's
-        ``body`` / ``user_id`` (``actor=None``)."""
+        ``body`` / ``user_id`` / ``attachment_url`` (``actor=None``)."""
 
     async def delete(self, comment: CommentRowT) -> None:
         """Delete it (its writer's own) and flush."""
