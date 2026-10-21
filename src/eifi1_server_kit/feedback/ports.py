@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 # The clock is layer 2's, shared with the translation review since 0.10 (§6.2.1); the
 # same objects, re-exported here under the names 0.9 gave them.
@@ -37,6 +37,7 @@ __all__ = [
     "AttachmentStorage",
     "Clock",
     "FeedbackActor",
+    "FeedbackCommentFilePurge",
     "FeedbackCommentRow",
     "FeedbackCommentStore",
     "FeedbackReplyRow",
@@ -388,13 +389,29 @@ class FeedbackCommentStore[CommentRowT: FeedbackCommentRow](Protocol):
         ``body`` / ``user_id`` / ``attachment_url`` (``actor=None``)."""
 
     async def delete(self, comment: CommentRowT) -> None:
-        """Delete it (its writer's own) and flush."""
+        """Delete it (its writer's own) and flush. A store whose files hang on the comment
+        (Kurvenschmiede's ``comment_id``) takes the file with it here."""
 
     async def by_author(self, user_id: int) -> Sequence[CommentRowT]:
         """The erasure's comments: those ``user_id`` wrote, hidden ones included."""
 
     async def clear_hidden_by(self, user_id: int) -> int:
         """Set ``hidden_by`` NULL where it is ``user_id`` (the erasure); how many rows."""
+
+
+@runtime_checkable
+class FeedbackCommentFilePurge(Protocol):
+    """0.18 (§12.6 (2)): what becomes of a deleted comment's file is the app's to decide.
+    A :class:`FeedbackCommentStore` that ALSO has ``purge_files`` is handed the keys
+    :meth:`~eifi1_server_kit.feedback.FeedbackService.delete_comment` answers: the bare
+    key of the comment's file, when no report, entry or comment still names it (the
+    erasure's shared-key check, ``urls_named_except``). Called after ``delete`` flushed,
+    before the commit, never with an empty list: arm an after-commit delete (keksdose's
+    purge) or delete after the app's one commit. A store without it keeps the file as an
+    unattached upload, as before 0.18 (the app's sweep, if it has one)."""
+
+    async def purge_files(self, keys: Sequence[str]) -> None:
+        """The deleted comment's keys nothing names any more; never empty."""
 
 
 class FeedbackVoteStore(Protocol):

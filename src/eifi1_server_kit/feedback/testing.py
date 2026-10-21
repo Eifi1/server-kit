@@ -633,9 +633,17 @@ async def check_repository(
     author: FeedbackActor,
     other: FeedbackActor,
     demo: FeedbackActor | None = None,
+    replies: FeedbackReplyStore[Any] | None = None,
+    comments: FeedbackCommentStore[Any] | None = None,
 ) -> None:
     """Does the app's repository keep the port's promises (§2.14)? Raises
     :class:`AssertionError` naming the first that fails.
+
+    With ``replies`` and ``comments`` (0.18, §12; the app's stores on the same session) it
+    checks ``urls_named_except``'s 0.18 rule as well: an entry's file — a rework entry
+    ``author`` writes on their own report — and a comment's — one ``other`` writes there —
+    are named although that report is among ``row_ids``. Each file is uploaded by its
+    writer first, for a store that claims it (Kurvenschmiede).
 
     For two existing accounts that are not admins. It files through ``storage`` as
     ``author`` first, since an app's ``add`` may claim only the author's own unfiled
@@ -736,6 +744,31 @@ async def check_repository(
     named = await repository.urls_named_except(authors)
     _check(picture in named, "urls_named_except: a URL another row's body names")
     _check(document not in named, "urls_named_except: not a URL only the excepted rows name")
+    if replies is not None:
+        entry_file = await _url(storage, policy, _png(f"{token}-entry"), "image/png", uploader=author)
+        await replies.add(
+            NewFeedbackReply(
+                feedback_id=bare.id,
+                author_id=author.id,
+                body=f"Still broken ({token})",
+                kind=FeedbackEntryKind.REWORK,
+                attachment_url=entry_file,
+            ),
+            actor=author,
+        )
+        _check(
+            entry_file in await repository.urls_named_except(authors),
+            "urls_named_except: an entry's file on an excepted report (0.18: every report's entries)",
+        )
+    if comments is not None:
+        comment_file = await _url(storage, policy, _png(f"{token}-comment"), "image/png", uploader=other)
+        await comments.add(
+            NewFeedbackComment(bare.id, other.id, f"Here too ({token})", attachment_url=comment_file), actor=other
+        )
+        _check(
+            comment_file in await repository.urls_named_except(authors),
+            "urls_named_except: a comment's file, on any report (0.18)",
+        )
     by_author = {row.id for row in await repository.by_author(author.id)}
     _check(set(authors) <= by_author, "by_author: the author's rows")
     _check(all(row.user_id == author.id for row in await repository.by_author(author.id)), "by_author: only theirs")

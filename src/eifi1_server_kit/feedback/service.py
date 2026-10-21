@@ -72,6 +72,7 @@ from eifi1_server_kit.feedback.ports import (
     AttachmentStorage,
     Clock,
     FeedbackActor,
+    FeedbackCommentFilePurge,
     FeedbackCommentRow,
     FeedbackCommentStore,
     FeedbackReplyRow,
@@ -902,15 +903,29 @@ class FeedbackService[RowT: FeedbackRow]:
             row = await store.apply(row, changes, actor=actor)
         return self._comment_view(actor, row, await self._names([row.user_id]), model)
 
-    async def delete_comment(self, actor: FeedbackActor, feedback_id: int, comment_id: int) -> None:
+    async def delete_comment(self, actor: FeedbackActor, feedback_id: int, comment_id: int) -> tuple[str, ...]:
         """Its writer deletes their own comment (§9.8), a hard delete; anyone else — an
-        admin too, who hides instead — gets 404 "Comment not found". Refused for a demo."""
+        admin too, who hides instead — gets 404 "Comment not found". Refused for a demo.
+
+        0.18 (§12.6 (2)): answers the bare key of the comment's file when nothing else
+        names it any more — no report's columns or body, no entry, no other comment
+        (``urls_named_except`` over every report, asked after the delete) — else ``()``;
+        a store that is a :class:`~eifi1_server_kit.feedback.FeedbackCommentFilePurge` is
+        handed the same keys. Keep or purge: the app decides."""
         refuse_demo(actor.is_demo, "feedback")
         store = self._comment_store()
         row = await store.get(feedback_id, comment_id)
         if row is None or row.user_id is None or row.user_id != actor.id:
             raise FeedbackNotFoundError("Comment not found")
+        url = row.attachment_url
         await store.delete(row)
+        if not url:
+            return ()
+        others = await self.repository.urls_named_except(())
+        keys = tuple(attachment_keys_to_purge({url}, others, policy=self.policy))
+        if keys and isinstance(store, FeedbackCommentFilePurge):
+            await store.purge_files(keys)
+        return keys
 
     async def _tally(self, actor: FeedbackActor, feedback_id: int) -> FeedbackVoteResponse:
         votes, voted = (await self._vote_store().counts([feedback_id], viewer_id=actor.id)).get(feedback_id, (0, False))

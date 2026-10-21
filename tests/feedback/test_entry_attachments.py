@@ -11,6 +11,7 @@ is shown with the comment to whoever reads its body, and goes with it when it is
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 import pytest
@@ -21,6 +22,7 @@ from eifi1_server_kit.feedback import (
     UUID32_SHA12_KEY_PATTERN,
     AttachmentUrlPolicy,
     FeedbackCommentCreate,
+    FeedbackCommentFilePurge,
     FeedbackCommentHide,
     FeedbackEntryKind,
     FeedbackReplyCreate,
@@ -182,6 +184,70 @@ async def test_a_file_an_admin_replied_with_on_the_erased_authors_report_is_kept
     row.attachment_urls = [OTHER_FILE]
     erased = await world.service.erase_author(AUTHOR.id, [AUTHOR.email])
     assert erased.keys == (), "the admin's reply and the member's comment still name both"
+
+
+# --- a deleted comment's file: the app decides (§12.6 (2)) --------------------------------------
+
+
+async def test_deleting_a_comment_answers_its_files_key_unless_another_entry_names_it(world: World) -> None:
+    """keksdose and Kurvenschmiede build reviews (round 0.47): the delete answers the keys
+    nothing names any more, by the erasure's shared-key check; keeping the file is the
+    app's choice too."""
+    world.repository.replies = world.replies
+    row = await world.file()
+    alone = await world.service.comment(MEMBER, row.id, FeedbackCommentCreate(body="x", attachment_url=FILE))
+    shared = await world.service.comment(MEMBER, row.id, FeedbackCommentCreate(body="y", attachment_url=OTHER_FILE))
+    await world.service.reply(ADMIN, row.id, FeedbackReplyCreate(body="same file", attachment_url=OTHER_FILE))
+    plain = await world.service.comment(MEMBER, row.id, FeedbackCommentCreate(body="text"))
+    assert await world.service.delete_comment(MEMBER, row.id, alone.id) == ("aaaaaaaaaaaa.png",)
+    assert await world.service.delete_comment(MEMBER, row.id, shared.id) == (), "the admin's reply still names it"
+    assert await world.service.delete_comment(MEMBER, row.id, plain.id) == ()
+    assert world.comments.rows == {}
+
+
+async def test_a_comment_store_with_purge_files_is_handed_the_keys(world: World) -> None:
+    purged: list[tuple[str, ...]] = []
+
+    class Purging(InMemoryCommentStore):
+        async def purge_files(self, keys: Sequence[str]) -> None:
+            assert all(comment.attachment_url != FILE for comment in self.rows.values()), "after the delete"
+            purged.append(tuple(keys))
+
+    store = Purging()
+    assert isinstance(store, FeedbackCommentFilePurge)
+    assert not isinstance(InMemoryCommentStore(), FeedbackCommentFilePurge), "keeping the file is the default"
+    world.comments = world.repository.comments = world.service.comment_store = store
+    row = await world.file()
+    first = await world.service.comment(MEMBER, row.id, FeedbackCommentCreate(body="x", attachment_url=FILE))
+    twice = await world.service.comment(MEMBER, row.id, FeedbackCommentCreate(body="y", attachment_url=OTHER_FILE))
+    await world.service.comment(AUTHOR, row.id, FeedbackCommentCreate(body="z", attachment_url=OTHER_FILE))
+    plain = await world.service.comment(MEMBER, row.id, FeedbackCommentCreate(body="text"))
+    await world.service.delete_comment(MEMBER, row.id, first.id)
+    await world.service.delete_comment(MEMBER, row.id, twice.id)
+    await world.service.delete_comment(MEMBER, row.id, plain.id)
+    assert purged == [("aaaaaaaaaaaa.png",)], "only a key nothing names; never an empty call"
+
+
+async def test_the_delete_route_hands_the_purge_the_key() -> None:
+    from tests.feedback.test_router_public import BASE
+    from tests.feedback.test_router_public import World as RouterWorld
+
+    world = RouterWorld()
+    purged: list[tuple[str, ...]] = []
+
+    async def purge_files(keys: Sequence[str]) -> None:
+        purged.append(tuple(keys))
+
+    world.comments.purge_files = purge_files  # type: ignore[attr-defined]
+    async with world.client:
+        row = await world.file()
+        made = await world.request(
+            "POST", f"{BASE}/{row['id']}/comments", MEMBER, json={"body": "This?", "attachment_url": OTHER_FILE}
+        )
+        assert made.status_code == 201, made.text
+        gone = await world.request("DELETE", f"{BASE}/{row['id']}/comments/{made.json()['id']}", MEMBER)
+        assert gone.status_code == 204
+    assert purged == [("bbbbbbbbbbbb.pdf",)], "the report's body names its own file, not this one"
 
 
 # --- the fakes and the conformance check --------------------------------------------------------
