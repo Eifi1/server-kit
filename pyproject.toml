@@ -49,9 +49,12 @@ Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonizatio
 [dependency-groups]
 dev = [
     # The tests drive the CORS middleware through a real FastAPI app beside Starlette's
-    # CORSMiddleware, the same way keksdose's own test does. Held to keksdose's range
-    # (<0.137) so the kit is tested against what the strictest app can install.
-    "fastapi>=0.115.0,<0.143",
+    # CORSMiddleware, the same way keksdose's own test does. Capped at the newest release
+    # the kit's full check has passed on (0.157, round 0.48): kastlan and Kurvenschmiede
+    # pin no ceiling (they lock 0.141.1 and 0.143.0), keksdose caps itself at <0.137, so
+    # the lock below sits at or past the newest version any app runs. Raise it after a
+    # green `scripts/check.sh` on the next release, never past one that has not run.
+    "fastapi>=0.115.0,<0.158",
     # The `mail` and `billing` extras, so ResendClient and PaddleClient are tested against
     # httpx's MockTransport — and the client FastAPI's tests drive an app with.
     "httpx>=0.28.0",
