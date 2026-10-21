@@ -10,6 +10,43 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.18.0] (2026-10-21)
+
+server-kit 0.18.0: the backend half of round 0.47 (ui-kit 0.47), from the 0.46 build reviews
+(keksdose N12/N13, S4) and keksdose live #447 (feedback §12). A **minor** that **breaks**
+(under **⚠ BREAKING CHANGES**): a sent `timezone` is refused, as 0.16 and 0.17 announced, and
+an app with public comments adds one nullable column. Per-app steps: ui-kit's
+`docs/adopt-0.47.md`, the server-kit 0.18 section.
+
+### ⚠ BREAKING CHANGES
+
+* **notifications, auth:** a sent `timezone` is a 422, as announced (ignored in 0.16 and
+  0.17): on `PATCH /notifications/settings`, keksdose's `/push/settings` shim and
+  `PATCH /auth/me`, as any unknown field. Only a stale ≤0.45 bundle still sends one.
+* **feedback:** `FeedbackCommentRow` requires `attachment_url`: an app with comments adds a
+  nullable `VARCHAR(500)` column. `check_comment_store` writes a comment with a file.
+
+### Added
+
+* **notifications:** `documented_body(model)`, the `openapi_extra` that puts an untyped
+  `Annotated[Any, Body()]` push body back into OpenAPI from its model (nested models inlined).
+* **feedback:** an attachment on an admin reply and on a public comment (§12): one
+  `attachment_url` on `FeedbackReplyCreate` and `FeedbackCommentCreate`, answered on
+  `FeedbackCommentResponse`; `FeedbackDeps.reply_model` / `comment_model` to narrow
+  `attachment_url_policy` in a subclass. A comment's file is shown to whoever reads its text
+  and purged with an erased author's comment.
+* **feedback:** `delete_comment` answers the keys of the deleted comment's file that nothing
+  else names and hands them to a comment store that is a `FeedbackCommentFilePurge`
+  (`purge_files(keys)`, before the commit) — keep or purge, the app decides.
+* **feedback:** `check_repository(…, replies=, comments=)` checks that `urls_named_except`
+  names every entry's and comment's file, on the excepted reports too (keksdose S4).
+
+### Docs
+
+* **notifications:** a push route's two 422 shapes: `push_body_invalid` from
+  `parse_push_body` / `parse_push_replace`, and FastAPI's redacted `json_invalid` for a body
+  that isn't JSON; neither echoes the body.
+
 ## [0.17.0] (2026-10-20)
 
 server-kit 0.17.0: the apps' 0.46 adoption findings (keksdose, kastlan, Kurvenschmiede). A
