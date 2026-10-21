@@ -989,19 +989,24 @@ async def check_comment_store(
     other: FeedbackActor,
     admin: FeedbackActor,
     policy: AttachmentUrlPolicy = DEFAULT_ATTACHMENT_URL_POLICY,
-    attachment_url: str | None = None,
+    attachment_url: str,
 ) -> None:
     """Does the app's comment store keep the port's promises (§9.8)? Raises
     :class:`AssertionError` naming the first that fails. ``feedback_id`` is an existing
     report WITHOUT comments; ``clear_hidden_by(admin.id)`` clears that account's hides on
     the whole test database.
 
-    Since 0.18 (§12) the first comment carries a file: ``attachment_url`` where given — one
-    ``author`` uploaded in the app's test, for a store that claims it (Kurvenschmiede) —
-    else one under ``policy``'s prefix; it must read back, and the erasure's ``apply``
-    must clear it."""
+    Since 0.18 (§12) the first comment carries a file: ``attachment_url``, required since
+    0.19 — one ``author`` uploaded in the app's test where the store claims it
+    (Kurvenschmiede), else any URL of the app's — and it must be one of ``policy``'s URLs
+    (pass the app's own policy). It must read back, and the erasure's ``apply`` must clear
+    it. That ``apply`` is the check's last word on the file: it asserts only that the
+    comment's ``attachment_url`` reads back ``None``, so a store may delete the file there
+    (Kurvenschmiede does) or keep it as an unattached upload (keksdose) — the app's test
+    asserts which."""
+    _check(policy.is_own_url(attachment_url), "attachment_url: one of policy's URLs (pass the app's policy=)")
     token = secrets.token_hex(8)
-    url = attachment_url or f"{policy.prefix}check{token}.png"
+    url = attachment_url
     first = await store.add(
         NewFeedbackComment(feedback_id, author.id, f"Same here ({token})", attachment_url=url), actor=author
     )

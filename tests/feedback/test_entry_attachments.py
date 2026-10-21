@@ -253,8 +253,13 @@ async def test_the_delete_route_hands_the_purge_the_key() -> None:
 # --- the fakes and the conformance check --------------------------------------------------------
 
 
+COMMENT_FILE = "/api/v1/feedback/attachments/same.png"
+
+
 async def test_the_comment_fake_passes_its_check_with_a_file() -> None:
-    await check_comment_store(InMemoryCommentStore(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN)
+    await check_comment_store(
+        InMemoryCommentStore(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN, attachment_url=COMMENT_FILE
+    )
     urls: list[str | None] = []
 
     class Recording(InMemoryCommentStore):
@@ -262,15 +267,46 @@ async def test_the_comment_fake_passes_its_check_with_a_file() -> None:
             urls.append(new.attachment_url)
             return await super().add(new, actor=actor)
 
-    await check_comment_store(
-        Recording(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN, policy=AttachmentUrlPolicy(prefix="/x/")
-    )
-    assert any((url or "").startswith("/x/check") for url in urls), "the app's own prefix"
     stored = "/api/v1/app-files/abc.png"
     await check_comment_store(
-        Recording(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN, attachment_url=stored
+        Recording(),
+        feedback_id=1,
+        author=AUTHOR,
+        other=STRANGER,
+        admin=ADMIN,
+        policy=AttachmentUrlPolicy(prefix="/api/v1/app-files/"),
+        attachment_url=stored,
     )
     assert stored in urls
+
+
+async def test_the_comment_check_needs_a_file_of_the_apps_policy() -> None:
+    """0.19 (keksdose N3): the file is required — a made-up URL under the policy's prefix
+    tested no upload, and one outside the app's key pattern was a URL its routes refuse —
+    and it must be one of ``policy``'s URLs, so a forgotten ``policy=`` fails too."""
+    with pytest.raises(TypeError, match="attachment_url"):
+        await check_comment_store(  # type: ignore[call-arg]
+            InMemoryCommentStore(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN
+        )
+    with pytest.raises(AssertionError, match="attachment_url: one of policy's URLs"):
+        await check_comment_store(
+            InMemoryCommentStore(),
+            feedback_id=1,
+            author=AUTHOR,
+            other=STRANGER,
+            admin=ADMIN,
+            attachment_url="/api/v1/app-files/abc.png",
+        )
+    with pytest.raises(AssertionError, match="attachment_url: one of policy's URLs"):
+        await check_comment_store(
+            InMemoryCommentStore(),
+            feedback_id=1,
+            author=AUTHOR,
+            other=STRANGER,
+            admin=ADMIN,
+            policy=KASTLAN,
+            attachment_url=COMMENT_FILE,
+        )
 
 
 async def test_a_comment_store_that_loses_the_file_fails_its_check() -> None:
@@ -279,7 +315,9 @@ async def test_a_comment_store_that_loses_the_file_fails_its_check() -> None:
             return await super().add(dataclasses.replace(new, attachment_url=None), actor=actor)
 
     with pytest.raises(AssertionError, match="add: attachment_url reads back"):
-        await check_comment_store(Dropping(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN)
+        await check_comment_store(
+            Dropping(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN, attachment_url=COMMENT_FILE
+        )
 
     class Sticky(InMemoryCommentStore):
         async def apply(self, comment: MemoryCommentRow, changes: Any, *, actor: Any) -> MemoryCommentRow:
@@ -288,7 +326,9 @@ async def test_a_comment_store_that_loses_the_file_fails_its_check() -> None:
             )
 
     with pytest.raises(AssertionError, match="apply: attachment_url reads back"):
-        await check_comment_store(Sticky(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN)
+        await check_comment_store(
+            Sticky(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=ADMIN, attachment_url=COMMENT_FILE
+        )
 
 
 # --- over HTTP ----------------------------------------------------------------------------------
