@@ -357,7 +357,14 @@ async def test_the_public_fakes_pass_their_checks() -> None:
     stored = "/api/v1/app-files/abc.png"
     await check_reply_store(Recording(), feedback_id=3, admin=admin, attachment_url=stored)
     assert stored in urls
-    await check_comment_store(comments, feedback_id=1, author=AUTHOR, other=STRANGER, admin=admin)
+    await check_comment_store(
+        comments,
+        feedback_id=1,
+        author=AUTHOR,
+        other=STRANGER,
+        admin=admin,
+        attachment_url="/api/v1/feedback/attachments/a.png",
+    )
     await check_vote_store(votes, feedback_id=1, voter=AUTHOR, other=STRANGER)
     repository, votes, _ = _public_fakes()
     await check_public_repository(repository, votes=votes, author=AUTHOR, other=STRANGER)
@@ -452,7 +459,14 @@ async def test_a_broken_comment_or_vote_store_fails_its_check() -> None:
             return super().tally(ids, include_hidden=True)
 
     with pytest.raises(AssertionError, match="visible only"):
-        await check_comment_store(CountsHidden(), feedback_id=1, author=AUTHOR, other=STRANGER, admin=AUTHOR)
+        await check_comment_store(
+            CountsHidden(),
+            feedback_id=1,
+            author=AUTHOR,
+            other=STRANGER,
+            admin=AUTHOR,
+            attachment_url="/api/v1/feedback/attachments/a.png",
+        )
 
     class Doubles(InMemoryVoteStore):
         async def put(self, feedback_id: int, user_id: int) -> None:

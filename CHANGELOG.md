@@ -10,6 +10,33 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.19.0] (2026-10-21)
+
+server-kit 0.19.0: the backend half of round 0.48 (ui-kit 0.48), from the 0.47 build reviews
+(keksdose N3). A **minor** that **breaks** only a test helper (under **⚠ BREAKING
+CHANGES**): `check_comment_store` needs the app's `attachment_url`. No route, model or column
+changes. Per-app steps: ui-kit's `docs/adopt-0.48.md`, the server-kit 0.19 section.
+
+### ⚠ BREAKING CHANGES
+
+* **feedback (testing):** `check_comment_store(…, attachment_url=)` is required and must be
+  one of the `policy=`'s URLs (pass the app's own policy): the old default under the
+  policy's prefix tested no real upload and could be one the app's routes refuse.
+  keksdose and Kurvenschmiede already pass it; kastlan doesn't call it.
+
+### Changed
+
+* **deps:** the lock takes pydantic 2.14.1 (pydantic-core 2.50.1), pydantic-settings 2.16.1,
+  ruff 0.17.1 and starlette 1.9.0; fastapi is tested up to 0.157 (lock 0.157.0) with the dev
+  cap `<0.158`, past the newest version any app runs (Kurvenschmiede 0.143.0).
+
+### Docs
+
+* **feedback:** what `check_comment_store` asserts when the erasure's `apply` deletes the
+  file: only that the comment's `attachment_url` reads back `None` — a store may delete the
+  file there (Kurvenschmiede) or keep it as an unattached upload (keksdose); the app's test
+  asserts which.
+
 ## [0.18.0] (2026-10-21)
 
 server-kit 0.18.0: the backend half of round 0.47 (ui-kit 0.47), from the 0.46 build reviews
