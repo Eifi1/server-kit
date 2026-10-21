@@ -48,7 +48,8 @@ FEEDBACK_ANSWERED = "feedback_answered"
 #: The notification type a visible comment fires, to the same people (9.11).
 FEEDBACK_COMMENT = "feedback_comment"
 
-#: A comment's body, after trimming: 1–4000 characters, plain text, no files (9.8).
+#: A comment's body, after trimming: 1–4000 characters, plain text (9.8); its one file, since
+#: 0.18, is a field of its own (§12), never a URL in the text.
 COMMENT_MAX = 4000
 #: A reply's body, after trimming: 1–8000 characters (9.7).
 REPLY_MAX = 8000
@@ -81,9 +82,10 @@ PUBLIC_REPORT_FIELDS: frozenset[str] = frozenset(
     }
 )
 #: What a comment says to anyone (9.10); ``body`` is null when hidden, but for its writer
-#: and an admin.
+#: and an admin. ``attachment_url`` (0.18, §12): the comment's own file, posted to be seen
+#: with it, null when hidden as ``body`` is — the one attachment URL a public answer carries.
 PUBLIC_COMMENT_FIELDS: frozenset[str] = frozenset(
-    {"id", "author_name", "mine", "staff", "body", "hidden", "created_at"}
+    {"id", "author_name", "mine", "staff", "body", "hidden", "created_at", "attachment_url"}
 )
 #: What a reply or rework entry says in the public detail (9.10, §10.3): ``kind`` carried,
 #: never ``status_from``, never ``attachment_url``.

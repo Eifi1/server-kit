@@ -6,12 +6,14 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Annotated, Any
 
+import httpx
 import pytest
-from pydantic import ValidationError
+from fastapi import Body, FastAPI
+from pydantic import BaseModel, ValidationError
 
-from eifi1_server_kit.errors import contract_error_response
+from eifi1_server_kit.errors import contract_error_response, install_contract_error_handlers
 from eifi1_server_kit.mail import support_address
 from eifi1_server_kit.notifications import (
     PUSH_GONE_GRACE,
@@ -34,6 +36,7 @@ from eifi1_server_kit.notifications import (
     PushTestResponse,
     PushUnregisterIn,
     digest_tag,
+    documented_body,
     parse_push_body,
     parse_push_replace,
     push_auth_matches,
@@ -406,5 +409,90 @@ def test_the_no_echo_rule_is_in_the_module_docstring() -> None:
     from eifi1_server_kit.notifications import push
 
     doc = push.__doc__ or ""
-    for word in ("parse_push_replace", "parse_push_body", "Body()", "input"):
+    for word in ("parse_push_replace", "parse_push_body", "Body()", "input", "documented_body", "two 422 shapes"):
         assert word in doc, word
+
+
+# --- the untyped bodies, documented again (N12) and their two 422 shapes (N13) -------------
+
+
+def _push_app() -> FastAPI:
+    app = FastAPI()
+    install_contract_error_handlers(app)
+
+    @app.post("/devices", status_code=204, openapi_extra=documented_body(PushSubscriptionIn))
+    async def register(body: Annotated[Any, Body()]) -> None:
+        parse_push_body(PushSubscriptionIn, body)
+
+    @app.post("/devices/replace", status_code=204, openapi_extra=documented_body(PushReplaceIn))
+    async def replace(body: Annotated[Any, Body()]) -> None:
+        parse_push_replace(body)
+
+    @app.post("/devices/unregister", status_code=204, openapi_extra=documented_body(PushUnregisterIn))
+    async def unregister(body: Annotated[Any, Body()]) -> None:
+        parse_push_body(PushUnregisterIn, body)
+
+    return app
+
+
+def _no_refs(node: object) -> bool:
+    if isinstance(node, dict):
+        return "$ref" not in node and "$defs" not in node and all(_no_refs(value) for value in node.values())
+    if isinstance(node, list):
+        return all(_no_refs(value) for value in node)
+    return True
+
+
+@pytest.mark.parametrize(
+    ("path", "model"),
+    [("/devices", PushSubscriptionIn), ("/devices/replace", PushReplaceIn), ("/devices/unregister", PushUnregisterIn)],
+)
+def test_an_untyped_push_body_is_documented_from_its_model(path: str, model: type[BaseModel]) -> None:
+    """``Annotated[Any, Body()]`` alone documents the body as ``{}``; ``documented_body``
+    gives OpenAPI the model's schema again, its nested models inlined."""
+    body = _push_app().openapi()["paths"][path]["post"]["requestBody"]
+    assert body["required"] is True
+    schema = body["content"]["application/json"]["schema"]
+    assert schema["title"] == model.__name__
+    assert set(schema["properties"]) == set(model.model_fields)
+    assert set(schema["required"]) == {name for name, field in model.model_fields.items() if field.is_required()}
+    assert _no_refs(schema), "no component points anywhere: no route types the model"
+
+
+def test_a_documented_body_inlines_every_nested_model() -> None:
+    schema = documented_body(PushReplaceIn)["requestBody"]["content"]["application/json"]["schema"]
+    subscription = schema["properties"]["subscription"]
+    assert subscription["title"] == "PushSubscriptionIn"
+    assert subscription["properties"]["keys"]["title"] == "PushSubscriptionKeys"
+    assert subscription["properties"]["keys"]["required"] == ["p256dh", "auth"]
+    assert documented_body(PushReplaceIn) == documented_body(PushReplaceIn), "a fresh dict per call"
+    assert documented_body(PushReplaceIn) is not documented_body(PushReplaceIn)
+
+
+def test_a_documented_body_keeps_a_list_of_nested_models() -> None:
+    class Batch(BaseModel):
+        devices: list[PushUnregisterIn]
+        tags: list[str] = []
+
+    schema = documented_body(Batch)["requestBody"]["content"]["application/json"]["schema"]
+    assert schema["properties"]["devices"]["items"]["title"] == "PushUnregisterIn"
+    assert _no_refs(schema)
+
+
+async def test_one_push_route_answers_two_422_shapes_and_neither_echoes() -> None:
+    """A body that isn't JSON is refused by FastAPI before ``parse_push_body``, in the
+    redacted validation shape; a JSON body the model refuses is ``push_body_invalid``."""
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_push_app()), base_url="http://test") as client:
+        broken = await client.post(
+            "/devices/replace",
+            content=b'{"old_auth": "' + SECRET.encode() + b'",',
+            headers={"content-type": "application/json"},
+        )
+        refused = await client.post("/devices/replace", json={"old_endpoint": ENDPOINT, "old_auth": SECRET})
+        fine = await client.post("/devices/unregister", json={"endpoint": ENDPOINT})
+    assert broken.status_code == refused.status_code == 422
+    assert [error["type"] for error in broken.json()["detail"]] == ["json_invalid"]
+    assert all(set(error) == {"type", "loc", "msg"} for error in broken.json()["detail"])
+    assert refused.json()["code"] == "push_body_invalid" and refused.json()["fields"] == ["subscription"]
+    assert SECRET not in broken.text and SECRET not in refused.text
+    assert fine.status_code == 204

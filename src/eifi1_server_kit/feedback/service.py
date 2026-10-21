@@ -72,6 +72,7 @@ from eifi1_server_kit.feedback.ports import (
     AttachmentStorage,
     Clock,
     FeedbackActor,
+    FeedbackCommentFilePurge,
     FeedbackCommentRow,
     FeedbackCommentStore,
     FeedbackReplyRow,
@@ -456,7 +457,9 @@ class FeedbackService[RowT: FeedbackRow]:
         admin's) and **rework entries** (an author's, §10.3) un-named and scrubbed (kept),
         each rework file taken off its entry and joining ``keys``
         (:func:`~eifi1_server_kit.feedback.anonymise_reply`), and ``hidden_by`` cleared
-        where it was them.
+        where it was them. Since 0.18 (§12) an admin reply's file goes as a rework's, and a
+        comment's file is taken off the comment and joins ``keys``; the entries and comments
+        are written BEFORE the shared-key check, which then counts every file still named.
         """
         needles = list(identifiers)
         rows = await self.repository.by_author(user_id)
@@ -469,6 +472,16 @@ class FeedbackService[RowT: FeedbackRow]:
                 erased_urls |= scrubbed.urls
                 await self.reply_store.apply(reply, scrubbed.changes)
                 replies += 1
+        comments = votes = 0
+        if self.comment_store is not None:
+            for comment in await self.comment_store.by_author(user_id):
+                changes: dict[str, Any] = {"body": scrub_text(comment.body, needles), "user_id": None}
+                if comment.attachment_url:
+                    changes["attachment_url"] = None
+                    erased_urls.add(comment.attachment_url)
+                await self.comment_store.apply(comment, changes, actor=None)
+                comments += 1
+            await self.comment_store.clear_hidden_by(user_id)
         for row in rows:
             result = anonymise_feedback(
                 title=row.title,
@@ -486,14 +499,6 @@ class FeedbackService[RowT: FeedbackRow]:
         if erased_urls:
             others = await self.repository.urls_named_except(erased_ids)
             keys = tuple(attachment_keys_to_purge(erased_urls, others, policy=self.policy))
-        comments = votes = 0
-        if self.comment_store is not None:
-            for comment in await self.comment_store.by_author(user_id):
-                await self.comment_store.apply(
-                    comment, {"body": scrub_text(comment.body, needles), "user_id": None}, actor=None
-                )
-                comments += 1
-            await self.comment_store.clear_hidden_by(user_id)
         if self.vote_store is not None:
             votes = await self.vote_store.delete_by_author(user_id)
         return ErasedFeedback(reports=len(erased_ids), keys=keys, comments=comments, votes=votes, replies=replies)
@@ -707,6 +712,8 @@ class FeedbackService[RowT: FeedbackRow]:
             body=comment.body if privileged else public_text(comment.body, policy=self.policy),
             hidden=hidden,
             created_at=comment.created_at,
+            # Its own file, posted to be seen with it (§12); gone with the body when hidden.
+            attachment_url=comment.attachment_url,
         )
 
     # --- public feedback: the flows (§9.6–§9.9) ----------------------------------------
@@ -717,12 +724,16 @@ class FeedbackService[RowT: FeedbackRow]:
         ``feedback_answered``); with a ``status`` the report moves by
         :func:`~eifi1_server_kit.feedback.plan_reply` — the reply first, the report last.
         With ``status`` REWORK it is how an admin sends any report back (§10.3): still a
-        reply, and it notifies. Answers the report; :meth:`admin_view` makes it the answer
-        with its replies."""
+        reply, and it notifies. Since 0.18 (§12) it may carry one file, checked against
+        :attr:`policy` (422) before anything is read or written, kept in the entry's
+        ``attachment_url`` and shown to the admin and the author, never the public.
+        Answers the report; :meth:`admin_view` makes it the answer with its replies."""
         refuse_demo(actor.is_demo, "feedback")
         if not actor.is_admin:
             raise FeedbackForbiddenError("Insufficient role")
         store = self._reply_store()
+        if payload.attachment_url is not None:
+            self.policy.validate_url(payload.attachment_url)
         row = await self.repository.get(feedback_id, viewer=actor)
         if row is None:
             raise FeedbackNotFoundError()
@@ -734,6 +745,7 @@ class FeedbackService[RowT: FeedbackRow]:
                 body=payload.body,
                 status_from=plan.status_from,
                 status_to=plan.status_to,
+                attachment_url=payload.attachment_url,
             ),
             actor=actor,
         )
@@ -847,13 +859,19 @@ class FeedbackService[RowT: FeedbackRow]:
     ) -> CommentT:
         """A comment (§9.8): refused for a demo; the window charged before the work
         (429); 404 unless the actor sees the report for its comments; on any status, never
-        on a CRASH. The store's ``add`` fires ``feedback_comment``."""
+        on a CRASH. Since 0.18 (§12) it may carry one file, checked against :attr:`policy`
+        (422). The store's ``add`` fires ``feedback_comment``."""
         refuse_demo(actor.is_demo, "feedback")
         _throttle(limiter, actor.id, COMMENTS_THROTTLED_DETAIL)
         store = self._comment_store()
+        if payload.attachment_url is not None:
+            self.policy.validate_url(payload.attachment_url)
         await self._seen(actor, feedback_id, commenting=True)
         row = await store.add(
-            NewFeedbackComment(feedback_id=feedback_id, user_id=actor.id, body=payload.body), actor=actor
+            NewFeedbackComment(
+                feedback_id=feedback_id, user_id=actor.id, body=payload.body, attachment_url=payload.attachment_url
+            ),
+            actor=actor,
         )
         return self._comment_view(actor, row, await self._names([actor.id]), model)
 
@@ -885,15 +903,29 @@ class FeedbackService[RowT: FeedbackRow]:
             row = await store.apply(row, changes, actor=actor)
         return self._comment_view(actor, row, await self._names([row.user_id]), model)
 
-    async def delete_comment(self, actor: FeedbackActor, feedback_id: int, comment_id: int) -> None:
+    async def delete_comment(self, actor: FeedbackActor, feedback_id: int, comment_id: int) -> tuple[str, ...]:
         """Its writer deletes their own comment (§9.8), a hard delete; anyone else — an
-        admin too, who hides instead — gets 404 "Comment not found". Refused for a demo."""
+        admin too, who hides instead — gets 404 "Comment not found". Refused for a demo.
+
+        0.18 (§12.6 (2)): answers the bare key of the comment's file when nothing else
+        names it any more — no report's columns or body, no entry, no other comment
+        (``urls_named_except`` over every report, asked after the delete) — else ``()``;
+        a store that is a :class:`~eifi1_server_kit.feedback.FeedbackCommentFilePurge` is
+        handed the same keys. Keep or purge: the app decides."""
         refuse_demo(actor.is_demo, "feedback")
         store = self._comment_store()
         row = await store.get(feedback_id, comment_id)
         if row is None or row.user_id is None or row.user_id != actor.id:
             raise FeedbackNotFoundError("Comment not found")
+        url = row.attachment_url
         await store.delete(row)
+        if not url:
+            return ()
+        others = await self.repository.urls_named_except(())
+        keys = tuple(attachment_keys_to_purge({url}, others, policy=self.policy))
+        if keys and isinstance(store, FeedbackCommentFilePurge):
+            await store.purge_files(keys)
+        return keys
 
     async def _tally(self, actor: FeedbackActor, feedback_id: int) -> FeedbackVoteResponse:
         votes, voted = (await self._vote_store().counts([feedback_id], viewer_id=actor.id)).get(feedback_id, (0, False))

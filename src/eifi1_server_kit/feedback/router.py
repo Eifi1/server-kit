@@ -153,6 +153,11 @@ class FeedbackDeps[RowT: FeedbackRow]:
     #: ``POST /{feedback_id}/rework``'s body (§10.3): subclass it to narrow its
     #: ``attachment_url_policy``; the service checks ``policy`` either way.
     rework_model: type[FeedbackReworkCreate] = FeedbackReworkCreate
+    #: ``POST /{feedback_id}/replies``'s and ``POST /{feedback_id}/comments``' bodies
+    #: (0.18, §12: each with one file): subclass them to narrow ``attachment_url_policy``;
+    #: the service checks ``policy`` either way.
+    reply_model: type[FeedbackReplyCreate] = FeedbackReplyCreate
+    comment_model: type[FeedbackCommentCreate] = FeedbackCommentCreate
     comment_response_model: type[FeedbackCommentResponse] = FeedbackCommentResponse
     public_item_model: type[FeedbackPublicListItem] = FeedbackPublicListItem
     public_response_model: type[FeedbackPublicResponse] = FeedbackPublicResponse
@@ -329,6 +334,7 @@ def feedback_router[RowT: FeedbackRow](
         _public_routes(router, deps, Service)
 
     if deps.replies is not None:
+        reply_model = deps.reply_model
 
         @router.post(
             "/{feedback_id}/replies",
@@ -338,12 +344,12 @@ def feedback_router[RowT: FeedbackRow](
         )
         async def create_reply(
             feedback_id: int,
-            payload: FeedbackReplyCreate,
+            payload: reply_model,  # type: ignore[valid-type]
             actor: Annotated[FeedbackActor, Depends(deps.actor)],
             service: Service,
         ) -> FeedbackResponse:
-            """An admin's answer, with the status it moves the report to, if any: the
-            report comes back with its replies."""
+            """An admin's answer, with the status it moves the report to, if any, and at
+            most one file: the report comes back with its replies."""
             row = await service.reply(actor, feedback_id, payload)
             return (await answer(actor, service, [(row, None)]))[0]
 
@@ -389,6 +395,7 @@ def _public_routes(router: APIRouter, deps: FeedbackDeps[Any], Service: Any) -> 
     item_model = deps.public_item_model
     detail_model = deps.public_response_model
     comment_model = deps.comment_response_model
+    comment_create_model = deps.comment_model
     Actor = Annotated[FeedbackActor, Depends(deps.actor)]  # noqa: N806
 
     @router.get("/public", response_model=list[item_model])  # type: ignore[valid-type]
@@ -427,9 +434,13 @@ def _public_routes(router: APIRouter, deps: FeedbackDeps[Any], Service: Any) -> 
         dependencies=[Depends(deps.demo_guard("feedback"))],
     )
     async def create_comment(
-        feedback_id: int, payload: FeedbackCommentCreate, request: Request, actor: Actor, service: Service
+        feedback_id: int,
+        payload: comment_create_model,  # type: ignore[valid-type]
+        request: Request,
+        actor: Actor,
+        service: Service,
     ) -> FeedbackCommentResponse:
-        """Comment on a report one sees."""
+        """Comment on a report one sees, with at most one file."""
         result: FeedbackCommentResponse = await service.comment(
             actor, feedback_id, payload, limiter=deps.limiters(request).comment, model=comment_model
         )

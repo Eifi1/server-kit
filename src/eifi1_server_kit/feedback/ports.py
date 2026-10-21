@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 # The clock is layer 2's, shared with the translation review since 0.10 (§6.2.1); the
 # same objects, re-exported here under the names 0.9 gave them.
@@ -37,6 +37,7 @@ __all__ = [
     "AttachmentStorage",
     "Clock",
     "FeedbackActor",
+    "FeedbackCommentFilePurge",
     "FeedbackCommentRow",
     "FeedbackCommentStore",
     "FeedbackReplyRow",
@@ -160,9 +161,11 @@ class FeedbackRepository[RowT: FeedbackRow](Protocol):
         """The erasure's rows (2.15)."""
 
     async def urls_named_except(self, row_ids: Collection[int]) -> set[str]:
-        """Every attachment URL the rows outside row_ids name, in a column or the body
-        (feedback_attachment_urls), and the ``attachment_url`` of their rework entries
-        (0.13): the erasure's shared-key check."""
+        """The erasure's shared-key check: every attachment URL the rows outside row_ids
+        name, in a column or the body (feedback_attachment_urls), and — since 0.18 (§12),
+        on EVERY report, row_ids' included — every entry's ``attachment_url`` (a rework's,
+        an admin reply's) and every comment's. The erasure clears the person's own entries
+        and comments before it asks, so what is left names a file somebody else still shows."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +195,12 @@ class AttachmentStorage(Protocol):
         "anyone who can see the report". Public feedback shows other people a report,
         never its files: no key reaches them (``public_body``), and a store that serves
         any signed-in user (keksdose, kastlan) stays safe only because of that.
+
+        **Amended in 0.18** (§12): "a report naming it" includes its entries, so the
+        author reads the file an admin replied with; and a file a VISIBLE comment names is
+        read by anyone who sees that comment's report for its comments (§9.9) — the one
+        file public feedback shows other people, because its writer posted it to be seen.
+        Hidden, it is back to its writer and an admin.
         """
 
 
@@ -241,7 +250,8 @@ class FeedbackReplyRow(Protocol):
 
 class FeedbackCommentRow(Protocol):
     """One comment (§9.8): ``feedback_comments``, read-only. ``user_id`` is ``None`` once
-    its writer is erased; ``hidden_at`` is set while an admin hides it."""
+    its writer is erased; ``hidden_at`` is set while an admin hides it; ``attachment_url``
+    (0.18, §12, a nullable ``VARCHAR(500)``) is its one file."""
 
     @property
     def id(self) -> int: ...
@@ -259,11 +269,14 @@ class FeedbackCommentRow(Protocol):
     def hidden_at(self) -> datetime | None: ...
     @property
     def hidden_by(self) -> int | None: ...
+    @property
+    def attachment_url(self) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class NewFeedbackReply:
-    """An entry to insert (§9.7, §10.3): a reply, or a ``rework`` with its one file. The
+    """An entry to insert (§9.7, §10.3): a reply or a ``rework``, each with at most one
+    file (a reply's since 0.18, §12). The
     store adds ``created_at`` (``server_default now()``) unless one is given — the
     migration's explicit stamp — and the app its own columns (kastlan's ``company_id``,
     keksdose's ``notified_at``)."""
@@ -280,11 +293,15 @@ class NewFeedbackReply:
 
 @dataclass(frozen=True, slots=True)
 class NewFeedbackComment:
-    """A comment to insert (§9.8): never ``staff``, never hidden."""
+    """A comment to insert (§9.8): never ``staff``, never hidden; since 0.18 (§12) with at
+    most one file, already checked against the app's policy. Where the app records who
+    uploaded a file (Kurvenschmiede), its store's ``add`` claims it as the writer's and
+    refuses another person's."""
 
     feedback_id: int
     user_id: int
     body: str
+    attachment_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,7 +376,8 @@ class FeedbackCommentStore[CommentRowT: FeedbackCommentRow](Protocol):
         comment; erased writers left out (for ``feedback_recipients``)."""
 
     async def add(self, new: NewFeedbackComment, *, actor: FeedbackActor) -> CommentRowT:
-        """Insert and flush. Fires ``feedback_comment``, sent after the commit."""
+        """Insert and flush, ``attachment_url`` included (0.18). Fires ``feedback_comment``,
+        sent after the commit."""
 
     async def get(self, feedback_id: int, comment_id: int) -> CommentRowT | None:
         """The comment, when it belongs to that report; else None."""
@@ -368,16 +386,32 @@ class FeedbackCommentStore[CommentRowT: FeedbackCommentRow](Protocol):
         self, comment: CommentRowT, changes: Mapping[str, Any], *, actor: FeedbackActor | None
     ) -> CommentRowT:
         """Assign and flush: ``hidden_at`` / ``hidden_by`` (a hide), or the erasure's
-        ``body`` / ``user_id`` (``actor=None``)."""
+        ``body`` / ``user_id`` / ``attachment_url`` (``actor=None``)."""
 
     async def delete(self, comment: CommentRowT) -> None:
-        """Delete it (its writer's own) and flush."""
+        """Delete it (its writer's own) and flush. A store whose files hang on the comment
+        (Kurvenschmiede's ``comment_id``) takes the file with it here."""
 
     async def by_author(self, user_id: int) -> Sequence[CommentRowT]:
         """The erasure's comments: those ``user_id`` wrote, hidden ones included."""
 
     async def clear_hidden_by(self, user_id: int) -> int:
         """Set ``hidden_by`` NULL where it is ``user_id`` (the erasure); how many rows."""
+
+
+@runtime_checkable
+class FeedbackCommentFilePurge(Protocol):
+    """0.18 (§12.6 (2)): what becomes of a deleted comment's file is the app's to decide.
+    A :class:`FeedbackCommentStore` that ALSO has ``purge_files`` is handed the keys
+    :meth:`~eifi1_server_kit.feedback.FeedbackService.delete_comment` answers: the bare
+    key of the comment's file, when no report, entry or comment still names it (the
+    erasure's shared-key check, ``urls_named_except``). Called after ``delete`` flushed,
+    before the commit, never with an empty list: arm an after-commit delete (keksdose's
+    purge) or delete after the app's one commit. A store without it keeps the file as an
+    unattached upload, as before 0.18 (the app's sweep, if it has one)."""
+
+    async def purge_files(self, keys: Sequence[str]) -> None:
+        """The deleted comment's keys nothing names any more; never empty."""
 
 
 class FeedbackVoteStore(Protocol):

@@ -23,7 +23,9 @@ from eifi1_server_kit.feedback import (
 )
 from eifi1_server_kit.feedback.testing import (
     InMemoryAttachmentStorage,
+    InMemoryCommentStore,
     InMemoryFeedbackRepository,
+    InMemoryReplyStore,
     MemoryFeedbackRow,
     _png,
     actor,
@@ -113,6 +115,58 @@ async def test_check_repository_fails_on_a_repository_that_misses_the_bodys_urls
 
     with pytest.raises(AssertionError, match="urls_named_except: a URL another row's body names"):
         await _check(ColumnsOnly(emails=EMAILS, policy=POLICY))
+
+
+async def _check_with_stores(repository: InMemoryFeedbackRepository) -> None:
+    await check_repository(
+        repository,
+        storage=InMemoryAttachmentStorage(),
+        policy=POLICY,
+        author=AUTHOR,
+        other=STRANGER,
+        replies=repository.replies,
+        comments=repository.comments,
+    )
+
+
+def _with_stores(kind: type[InMemoryFeedbackRepository]) -> InMemoryFeedbackRepository:
+    return kind(emails=EMAILS, policy=POLICY, replies=InMemoryReplyStore(), comments=InMemoryCommentStore())
+
+
+async def test_check_repository_checks_the_018_shared_key_rule_with_the_stores() -> None:
+    """keksdose build review S4 (round 0.47): since 0.18 (§12) ``urls_named_except`` names
+    every entry's and comment's file on EVERY report. A repository that kept 0.17's
+    ``not_in(row_ids)`` on the entries, or never reads the comments, passed the check."""
+    await _check_with_stores(_with_stores(InMemoryFeedbackRepository))
+
+    class OldRule(InMemoryFeedbackRepository):
+        async def urls_named_except(self, row_ids: Collection[int]) -> set[str]:
+            entries, comments = self.replies, self.comments
+            assert entries is not None and comments is not None
+            urls = {
+                entry.attachment_url
+                for entry in entries.rows.values()
+                if entry.attachment_url and entry.feedback_id not in row_ids
+            }
+            self.replies = None
+            try:
+                return urls | await super().urls_named_except(row_ids)
+            finally:
+                self.replies = entries
+
+    with pytest.raises(AssertionError, match="urls_named_except: an entry's file on an excepted report"):
+        await _check_with_stores(_with_stores(OldRule))
+
+    class NoComments(InMemoryFeedbackRepository):
+        async def urls_named_except(self, row_ids: Collection[int]) -> set[str]:
+            comments, self.comments = self.comments, None
+            try:
+                return await super().urls_named_except(row_ids)
+            finally:
+                self.comments = comments
+
+    with pytest.raises(AssertionError, match="urls_named_except: a comment's file"):
+        await _check_with_stores(_with_stores(NoComments))
 
 
 async def test_check_repository_fails_on_a_crash_lookup_that_keeps_settled_rows() -> None:
