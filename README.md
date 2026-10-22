@@ -33,6 +33,15 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
   signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
+## Compatibility with ui-kit
+
+The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
+package with its own version and changelog. **server-kit 0.19 ↔ ui-kit 0.49**: that ui-kit
+release is tested against this release's API export (the ui-kit showcase's Server kit pages
+and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
+checks the vocabularies the ui-kit writes a second time in TypeScript against
+`server-kit-api.json`).
+
 ## Layering
 
 | Layer | What | Status |
