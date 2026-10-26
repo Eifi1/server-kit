@@ -181,11 +181,22 @@ def test_the_apps_values_come_back_in_its_own_spelling() -> None:
 
 
 def test_the_validator_keeps_today_and_whether_it_was_named() -> None:
-    cleared = validate_dev_switch(DevSwitchRequest.model_validate({"today": None}), roles=ROLES)
+    cleared = validate_dev_switch(DevSwitchRequest.model_validate({"today": None}), roles=ROLES, clock=True)
     assert (cleared.sets_today, cleared.today) == (True, None)
-    moved = validate_dev_switch(DevSwitchRequest.model_validate({"role": "admin", "today": "2026-12-31"}), roles=ROLES)
+    moved = validate_dev_switch(
+        DevSwitchRequest.model_validate({"role": "admin", "today": "2026-12-31"}), roles=ROLES, clock=True
+    )
     assert (moved.role, moved.today, moved.sets_today) == ("ADMIN", dt.date(2026, 12, 31), True)
     assert validate_dev_switch(DevSwitchRequest(role="MEMBER"), roles=ROLES).sets_today is False
+
+
+@pytest.mark.parametrize("today", ["2026-10-31", None])
+def test_without_a_clock_any_today_is_a_422(today: str | None) -> None:
+    """As a plan for an app without plans (kastlan's 0.51 review): on 0.19 the field was
+    refused as unknown, and an app that has not wired the clock must not answer 200 to it."""
+    with pytest.raises(DevSwitchError) as caught:
+        validate_dev_switch(DevSwitchRequest.model_validate({"role": "ADMIN", "today": today}), roles=ROLES)
+    assert (caught.value.status_code, caught.value.code) == (422, DevSwitchErrorCode.DEV_SWITCH_NO_CLOCK)
 
 
 # --- the dev clock -----------------------------------------------------------------------
@@ -221,8 +232,9 @@ def test_the_gate_is_asked_only_when_there_is_an_override() -> None:
     assert asked == [True]
 
 
-def test_the_real_date_defaults_to_the_servers() -> None:
-    assert effective_today(None, gate=True) == dt.date.today()
+def test_the_real_date_is_the_apps_own_and_has_no_default() -> None:
+    with pytest.raises(TypeError):
+        effective_today(None, gate=True)  # type: ignore[call-arg]
 
 
 def test_an_unknown_role_is_a_422() -> None:
@@ -284,7 +296,7 @@ def _app(settings: _Settings, *, local: bool, production: bool, user: _User) -> 
 
     @router.post(DEV_SWITCH_PATH)
     async def dev_switch(body: DevSwitchRequest, me: Annotated[_User, Depends(_current_user)]) -> DevSwitchAnswer:
-        body = validate_dev_switch(body, roles=ROLES, plans=PLANS)
+        body = validate_dev_switch(body, roles=ROLES, plans=PLANS, clock=True)
         if body.role == "CUSTOMER" and me.owns_work:
             raise DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED, "Sign in as the seed's customer")
         if body.role is not None:

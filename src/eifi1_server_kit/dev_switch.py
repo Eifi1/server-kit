@@ -115,7 +115,8 @@ services set ``KEKSDOSE_DB_SOCKET_DIR``; KS ``deployment is Deployment.PRODUCTIO
   ``/auth/switch-role`` (a held role) stays as it is.
 
 **The dev clock** (0.20, keksdose dev #640): ``{today: "2026-10-31"}`` sets the date the
-server takes for today, ``{today: null}`` takes it back. The app keeps the override where
+server takes for today, ``{today: null}`` takes it back. An app that keeps one says so with
+``validate_dev_switch(…, clock=True)``; without it a ``today`` is refused (422). The app keeps the override where
 it keeps its other local state (a settings row, a column on the user, a process-wide
 variable for a one-user dev server) and answers it in :class:`DevSwitchAnswer`; every path
 that asks for today — scheduled and recurring items, month ends, the forecast — asks
@@ -247,6 +248,8 @@ class DevSwitchErrorCode(enum.StrEnum):
     #: The app's own invariant refuses the switch (KS: CUSTOMER for an account that owns
     #: work): 409, with the app's detail.
     DEV_SWITCH_REFUSED = "dev_switch_refused"
+    #: A ``today`` for an app that keeps no dev clock (0.20): 422.
+    DEV_SWITCH_NO_CLOCK = "dev_switch_no_clock"
 
 
 #: Each code's status.
@@ -255,6 +258,7 @@ DEV_SWITCH_ERROR_STATUS: Mapping[DevSwitchErrorCode, int] = {
     DevSwitchErrorCode.DEV_SWITCH_UNKNOWN_ROLE: 422,
     DevSwitchErrorCode.DEV_SWITCH_UNKNOWN_PLAN: 422,
     DevSwitchErrorCode.DEV_SWITCH_REFUSED: 409,
+    DevSwitchErrorCode.DEV_SWITCH_NO_CLOCK: 422,
 }
 
 #: The English ``detail`` of each code, for logs and API clients.
@@ -263,6 +267,7 @@ DEV_SWITCH_ERROR_DETAIL: Mapping[DevSwitchErrorCode, str] = {
     DevSwitchErrorCode.DEV_SWITCH_UNKNOWN_ROLE: "Not a role of this app",
     DevSwitchErrorCode.DEV_SWITCH_UNKNOWN_PLAN: "Not a plan of this app",
     DevSwitchErrorCode.DEV_SWITCH_REFUSED: "This switch is not possible for this account",
+    DevSwitchErrorCode.DEV_SWITCH_NO_CLOCK: "This app keeps no dev clock",
 }
 
 
@@ -365,7 +370,7 @@ def _match(value: str, offered: Collection[str]) -> str | None:
 
 
 def validate_dev_switch(
-    request: DevSwitchRequest, *, roles: Collection[str], plans: Collection[str] = ()
+    request: DevSwitchRequest, *, roles: Collection[str], plans: Collection[str] = (), clock: bool = False
 ) -> DevSwitchRequest:
     """``request`` with its role and plan in the app's own spelling, or a refusal: 422
     ``dev_switch_unknown_role`` / ``dev_switch_unknown_plan`` for a value the app doesn't
@@ -375,7 +380,15 @@ def validate_dev_switch(
     codes); an app without plans passes none, and every plan is then refused. Whether the
     caller may hold that role — KS's CUSTOMER for an account that owns work — stays the
     app's, with :attr:`DevSwitchErrorCode.DEV_SWITCH_REFUSED`.
+
+    ``clock`` (0.20): ``True`` when the app keeps the dev clock (:func:`effective_today`).
+    Without it a body that names ``today`` at all — a date or ``null`` — is refused, 422
+    ``dev_switch_no_clock``, as a plan is for an app without plans: before 0.20 the field did
+    not exist and ``extra="forbid"`` refused it, and an app that has not wired the clock must
+    not answer 200 to a switch it ignores (kastlan's 0.51 review).
     """
+    if request.sets_today and not clock:
+        raise DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_NO_CLOCK)
     role = request.role
     if role is not None:
         role = _match(role, roles)
@@ -402,11 +415,13 @@ def effective_today(
     override: dt.date | None,
     *,
     gate: bool | Callable[[], bool],
-    today: Callable[[], dt.date] = dt.date.today,
+    today: Callable[[], dt.date],
 ) -> dt.date:
     """The date the app takes for today: the dev switch's ``override`` while the gate is
-    open, else ``today()`` — the app's own real "today" (its time zone; default the server's
-    local date).
+    open, else ``today()`` — the app's own real "today", in its time zone (kastlan's
+    ``clock.local_today()``, Europe/Zurich). No default on purpose (kastlan's 0.51 review):
+    the server's own date is UTC on Cloud Run, the wrong day for a Zurich app from 22:00 or
+    23:00, and in a deployment, where the gate is shut, ``today()`` is all this ever reads.
 
     Every path that asks for today goes through this, so a stale override can never apply
     outside a local run: ``gate`` is the same predicate the route is mounted on
