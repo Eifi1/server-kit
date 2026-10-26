@@ -10,6 +10,33 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.20.0] (2026-10-26)
+
+server-kit 0.20.0: the backend half of round 0.51 (ui-kit 0.51), the dev clock behind ui-kit's
+`DevMenu` "Time" section (keksdose dev #640), shaped by the 0.51 build reviews (kastlan S2, S3).
+A **minor** with no breaking change to a name, but the dev switch's answer gains a field:
+a test that compares it whole adds `"today": None`. Per-app steps: ui-kit's
+`docs/adopt-0.51.md`, the server-kit 0.20 lines.
+
+### Added
+
+* **dev-switch:** the dev clock. `DevSwitchRequest.today` sets the date the server takes for
+  today in a local run, `{today: null}` takes it back, and `sets_today` tells that from a body
+  that leaves it out; `validate_dev_switch` keeps it as sent. `DevSwitchAnswer.today` gives it
+  to the client, which reads it at boot, before the first render.
+* **dev-switch:** `effective_today(override, *, gate, today)`, the one way to read it: the
+  override only while the gate is exactly `True`, else the app's own `today()`, which is
+  required (the server's date is UTC on Cloud Run), so an override left in a local database
+  reads as the real date anywhere else.
+* **dev-switch:** `validate_dev_switch(…, clock=False)` and the code `dev_switch_no_clock`
+  (422): an app that has not wired the clock refuses any `today`, as an app without plans
+  refuses every plan, instead of answering 200 to a switch it ignores.
+
+### Changed
+
+* **dev-switch:** `DevSwitchAnswer` carries `today` (`null` while no override is set), so the
+  `GET` / `POST /dev/switch` answer is `{role, plan, today}`.
+
 ## [0.19.0] (2026-10-21)
 
 server-kit 0.19.0: the backend half of round 0.48 (ui-kit 0.48), from the 0.47 build reviews

@@ -36,7 +36,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.19 ↔ ui-kit 0.49**: that ui-kit
+package with its own version and changelog. **server-kit 0.20 ↔ ui-kit 0.51**: that ui-kit
 release is tested against this release's API export (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
@@ -679,8 +679,9 @@ like billing's, and the writes are the app's.
 |---|---|
 | Settings | `DevSwitchSettings`: `dev_switch_enabled` (**False**; `<APP>_DEV_SWITCH_ENABLED`, set only in the local `.env`) |
 | The gate | `dev_switch_enabled(*, flag, local_run, production)` (true only for the flag AND the app's proof of a local run — a bool or a callable, asked only when it matters — AND not production; anything but real booleans shuts it), `assert_dev_switch_safe(*, flag, production)` → `DevSwitchUnsafeError` (a `RuntimeError`, at start), `require_dev_switch(gate)` (the route dependency: 404 unless `gate()` is `True`, the second lock behind the mount) |
-| The wire | `DevSwitchRequest` (`role`, `plan`, at least one; extra fields refused), `DevSwitchAnswer(role, plan)`, `validate_dev_switch(request, *, roles, plans=())` (the app's spelling back, compared without case; 422 otherwise), `DEV_SWITCH_PATH` (`/dev/switch`), `DEV_SWITCH_LOG_TAG` (`dev_switch`) |
-| Refusals | `DevSwitchError`, `DevSwitchErrorCode`: `dev_switch_disabled` 404, `dev_switch_unknown_role` / `dev_switch_unknown_plan` 422, `dev_switch_refused` 409 (the app's own invariant); `DEV_SWITCH_ERROR_STATUS`, `DEV_SWITCH_ERROR_DETAIL` |
+| The wire | `DevSwitchRequest` (`role`, `plan`, `today`, at least one; extra fields refused; `today: null` clears the override, left out it is unchanged — `sets_today` tells them apart), `DevSwitchAnswer(role, plan, today)`, `validate_dev_switch(request, *, roles, plans=(), clock=False)` (the app's spelling back, compared without case; 422 otherwise; `today` kept as sent with `clock=True`, refused without it), `DEV_SWITCH_PATH` (`/dev/switch`), `DEV_SWITCH_LOG_TAG` (`dev_switch`) |
+| The dev clock (0.20) | `effective_today(override, *, gate, today)`: the override while `gate` (the route's own predicate, or a callable) is exactly `True`, else the app's real `today()` — required, in the app's time zone (the server's own date is UTC on Cloud Run) — so an override left in a local database never applies in a deployment. The route passes `clock=True` to `validate_dev_switch`. Every path that asks for today asks this; the client takes today from `DevSwitchAnswer.today` while one is set (ui-kit's `DevMenu` "Time" section) |
+| Refusals | `DevSwitchError`, `DevSwitchErrorCode`: `dev_switch_disabled` 404, `dev_switch_unknown_role` / `dev_switch_unknown_plan` 422, `dev_switch_refused` 409 (the app's own invariant), `dev_switch_no_clock` 422 (a `today` for an app without `clock=True`); `DEV_SWITCH_ERROR_STATUS`, `DEV_SWITCH_ERROR_DETAIL` |
 
 **An environment name is never the gate** (§6.1). keksdose runs a hosted dev deployment
 (`keksdose-dev`) and its `metrics_environment` defaults to `"dev"`; kastlan's
@@ -1389,7 +1390,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.19.0/eifi1_server_kit-0.19.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.20.0/eifi1_server_kit-0.20.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
