@@ -125,7 +125,9 @@ that asks for today — scheduled and recurring items, month ends, the forecast 
         return effective_today(override, gate=lambda: dev_switch_on(settings), today=app_today)
 
 While it is set, the client takes "today" from the answer (``GET /dev/switch``), not from
-its own clock, so the dates it works out itself agree with the server's.
+its own clock, so the dates it works out itself agree with the server's — read at boot,
+before the first render (keksdose's 0.51 review): a reload that waits for the dev menu's own
+probe starts on the device clock until it answers.
 """
 
 from __future__ import annotations
