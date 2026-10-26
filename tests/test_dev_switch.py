@@ -5,6 +5,7 @@ only."""
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable
 from typing import Annotated
 
@@ -28,6 +29,7 @@ from eifi1_server_kit.dev_switch import (
     DevSwitchUnsafeError,
     assert_dev_switch_safe,
     dev_switch_enabled,
+    effective_today,
     require_dev_switch,
     validate_dev_switch,
 )
@@ -146,8 +148,26 @@ def test_the_body_refuses_nothing_and_anything_extra(body: dict[str, object]) ->
 
 
 def test_the_answer_says_what_is_in_effect() -> None:
-    assert DevSwitchAnswer(role="ADMIN").model_dump() == {"role": "ADMIN", "plan": None}
+    assert DevSwitchAnswer(role="ADMIN").model_dump() == {"role": "ADMIN", "plan": None, "today": None}
     assert DevSwitchAnswer(role="MEMBER", plan="pro").plan == "pro"
+    assert DevSwitchAnswer(role="MEMBER", today=dt.date(2026, 10, 31)).model_dump(mode="json")["today"] == "2026-10-31"
+
+
+def test_today_left_out_is_unchanged_and_null_clears_it() -> None:
+    """The dev clock (0.20): unlike a role or a plan, an override is taken back, so the
+    body tells "not named" from "named as null"."""
+    set_ = DevSwitchRequest.model_validate({"today": "2026-10-31"})
+    assert (set_.sets_today, set_.today) == (True, dt.date(2026, 10, 31))
+    cleared = DevSwitchRequest.model_validate({"today": None})
+    assert (cleared.sets_today, cleared.today) == (True, None)
+    role_only = DevSwitchRequest.model_validate({"role": "ADMIN"})
+    assert (role_only.sets_today, role_only.today) == (False, None)
+
+
+@pytest.mark.parametrize("today", ["31.10.2026", "2026-02-30", "tomorrow", 20261031.5])
+def test_today_is_a_real_date(today: object) -> None:
+    with pytest.raises(ValidationError):
+        DevSwitchRequest.model_validate({"today": today})
 
 
 # --- the validator -----------------------------------------------------------------------
@@ -158,6 +178,51 @@ def test_the_apps_values_come_back_in_its_own_spelling() -> None:
     assert (checked.role, checked.plan) == ("ADMIN", "pro")
     assert validate_dev_switch(DevSwitchRequest(role="MEMBER"), roles=ROLES) == DevSwitchRequest(role="MEMBER")
     assert validate_dev_switch(DevSwitchRequest(plan="free"), roles=(), plans=PLANS) == DevSwitchRequest(plan="free")
+
+
+def test_the_validator_keeps_today_and_whether_it_was_named() -> None:
+    cleared = validate_dev_switch(DevSwitchRequest.model_validate({"today": None}), roles=ROLES)
+    assert (cleared.sets_today, cleared.today) == (True, None)
+    moved = validate_dev_switch(DevSwitchRequest.model_validate({"role": "admin", "today": "2026-12-31"}), roles=ROLES)
+    assert (moved.role, moved.today, moved.sets_today) == ("ADMIN", dt.date(2026, 12, 31), True)
+    assert validate_dev_switch(DevSwitchRequest(role="MEMBER"), roles=ROLES).sets_today is False
+
+
+# --- the dev clock -----------------------------------------------------------------------
+
+REAL = dt.date(2026, 10, 26)
+OVERRIDE = dt.date(2026, 10, 31)
+
+
+def test_the_override_applies_only_while_the_gate_is_open() -> None:
+    assert effective_today(OVERRIDE, gate=True, today=lambda: REAL) == OVERRIDE
+    assert effective_today(OVERRIDE, gate=False, today=lambda: REAL) == REAL
+    assert effective_today(OVERRIDE, gate=lambda: True, today=lambda: REAL) == OVERRIDE
+    assert effective_today(OVERRIDE, gate=lambda: False, today=lambda: REAL) == REAL
+    assert effective_today(None, gate=True, today=lambda: REAL) == REAL
+
+
+@pytest.mark.parametrize("gate", [1, "true", None, object()])
+def test_the_clock_fails_closed_on_anything_but_true(gate: object) -> None:
+    assert effective_today(OVERRIDE, gate=gate, today=lambda: REAL) == REAL  # type: ignore[arg-type]
+    assert effective_today(OVERRIDE, gate=lambda: gate, today=lambda: REAL) == REAL  # type: ignore[arg-type,return-value]
+
+
+def test_the_gate_is_asked_only_when_there_is_an_override() -> None:
+    asked: list[bool] = []
+
+    def gate() -> bool:
+        asked.append(True)
+        return True
+
+    assert effective_today(None, gate=gate, today=lambda: REAL) == REAL
+    assert asked == []
+    assert effective_today(OVERRIDE, gate=gate, today=lambda: REAL) == OVERRIDE
+    assert asked == [True]
+
+
+def test_the_real_date_defaults_to_the_servers() -> None:
+    assert effective_today(None, gate=True) == dt.date.today()
 
 
 def test_an_unknown_role_is_a_422() -> None:
@@ -197,6 +262,7 @@ class _User:
         self.role = role
         self.plan = "free"
         self.owns_work = owns_work
+        self.today: dt.date | None = None
 
 
 def _current_user(request: Request) -> _User:
@@ -225,7 +291,9 @@ def _app(settings: _Settings, *, local: bool, production: bool, user: _User) -> 
             me.role = body.role
         if body.plan is not None:
             me.plan = body.plan
-        return DevSwitchAnswer(role=me.role, plan=me.plan)
+        if body.sets_today:
+            me.today = body.today
+        return DevSwitchAnswer(role=me.role, plan=me.plan, today=me.today)
 
     if on():
         app.include_router(router)
@@ -242,9 +310,18 @@ async def _post(app: FastAPI, body: object) -> tuple[int, object]:
 async def test_a_member_switches_to_admin_and_back_locally() -> None:
     user = _User("MEMBER")
     app = _app(_Settings(dev_switch_enabled=True), local=True, production=False, user=user)
-    assert await _post(app, {"role": "admin", "plan": "pro"}) == (200, {"role": "ADMIN", "plan": "pro"})
-    assert await _post(app, {"role": "MEMBER"}) == (200, {"role": "MEMBER", "plan": "pro"})
+    assert await _post(app, {"role": "admin", "plan": "pro"}) == (200, {"role": "ADMIN", "plan": "pro", "today": None})
+    assert await _post(app, {"role": "MEMBER"}) == (200, {"role": "MEMBER", "plan": "pro", "today": None})
     assert DEV_SWITCH_PATH not in str(app.openapi())
+
+
+async def test_the_dev_clock_is_set_kept_and_cleared_locally() -> None:
+    user = _User("MEMBER")
+    app = _app(_Settings(dev_switch_enabled=True), local=True, production=False, user=user)
+    assert await _post(app, {"today": "2026-10-31"}) == (200, {"role": "MEMBER", "plan": "free", "today": "2026-10-31"})
+    # A role switch leaves it where it is.
+    assert await _post(app, {"role": "ADMIN"}) == (200, {"role": "ADMIN", "plan": "free", "today": "2026-10-31"})
+    assert await _post(app, {"today": None}) == (200, {"role": "ADMIN", "plan": "free", "today": None})
 
 
 @pytest.mark.parametrize(
