@@ -269,7 +269,10 @@ class UserResponse(BaseModel):
     themselves; the kit formats from first and last name on screen, in the reader's
     language, and uses ``display_name`` only as a fallback (§3.2).
 
-    ``role`` is the app's vocabulary; narrow it to the app's enum in the subclass.
+    ``role`` is the app's vocabulary; narrow it to the app's enum in the subclass. Since
+    0.21 it may be ``None`` — always answered, ``null`` for an account that holds no role:
+    a kastlan user in no company (its ``MeResponse.role``). An app whose every account has
+    one narrows it as before (``role: UserRole``, keksdose), and its answer stays a string.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -281,7 +284,9 @@ class UserResponse(BaseModel):
     #: May be ``""`` on a migrated account until the name is completed (§3.3).
     last_name: str
     locale: str
-    role: str
+    #: The app's role, or ``None`` for an account that holds none (kastlan: in no company).
+    #: Required all the same: the key is always in the answer.
+    role: str | None
     is_active: bool
     email_verified: bool = False
     totp_enabled: bool = False

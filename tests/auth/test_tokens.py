@@ -43,6 +43,8 @@ def test_the_lifetimes_are_keksdoses() -> None:
     assert {
         ChallengeKind.TWO_FACTOR: timedelta(minutes=5),
         ChallengeKind.PASSWORD_CHANGE: timedelta(minutes=10),
+        ChallengeKind.WEBAUTHN_REGISTER: timedelta(minutes=5),
+        ChallengeKind.WEBAUTHN_AUTH: timedelta(minutes=5),
     } == CHALLENGE_LIFETIMES
 
 
@@ -138,6 +140,36 @@ def test_challenge_claims() -> None:
     change = challenge_claims(7, ChallengeKind.PASSWORD_CHANGE, now=NOW)
     assert change["type"] == "password_change"
     assert change["exp"] == int((NOW + timedelta(minutes=10)).timestamp())
+
+
+def test_the_passkey_ceremonies_are_keksdoses_and_kastlans_strings() -> None:
+    """keksdose ``passkey_service.py:78-79``, kastlan ``domain/services/tokens.py:25-26``."""
+    assert (ChallengeKind.WEBAUTHN_REGISTER.value, ChallengeKind.WEBAUTHN_AUTH.value) == (
+        "webauthn_register",
+        "webauthn_auth",
+    )
+    assert len(set(ChallengeKind)) == 4, "every challenge its own type"
+
+
+def test_a_passkey_challenge_carries_its_ceremony() -> None:
+    """kastlan's ``_webauthn_token``: ``{sub, type, challenge, iat, exp}``, iat to the microsecond."""
+    register = challenge_claims(7, ChallengeKind.WEBAUTHN_REGISTER, now=NOW, extra={"challenge": "q1"})
+    assert register == {
+        "sub": "7",
+        "type": "webauthn_register",
+        "challenge": "q1",
+        "iat": NOW.timestamp(),
+        "exp": int((NOW + timedelta(minutes=5)).timestamp()),
+    }
+    sign_in = challenge_claims("webauthn", ChallengeKind.WEBAUTHN_AUTH, now=NOW, extra={"challenge": "q2"})
+    assert (sign_in["sub"], sign_in["type"], sign_in["challenge"]) == ("webauthn", "webauthn_auth", "q2")
+    assert challenge_claims(7, ChallengeKind.TWO_FACTOR, now=NOW, extra={"totp_step": None})["totp_step"] is None
+
+
+@pytest.mark.parametrize("extra", [{"type": "access"}, {"exp": 0}, {"sub": "8"}, {"iat": 0}, {"email": "a@b.c"}])
+def test_a_challenges_extra_follows_the_access_tokens_rules(extra: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match=r"itself|no profile"):
+        challenge_claims(7, ChallengeKind.WEBAUTHN_AUTH, now=NOW, extra=extra)
 
 
 def test_no_cut_off_revokes_nothing() -> None:
