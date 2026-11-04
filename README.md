@@ -1435,7 +1435,29 @@ never on a path outside their repository (a build must not need anything beside 
 uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.20.0/eifi1_server_kit-0.20.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
+With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
+
+```toml
+[project]
+dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
+
+[tool.uv.sources]
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.20.0/eifi1_server_kit-0.20.0-py3-none-any.whl" }
+```
+
+**Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —
+the tag and the file name both carry the version — and lock that one package:
+
+```sh
+uv lock --upgrade-package eifi1-server-kit   # uv.lock: the new version and the new wheel's hash
+uv sync
+```
+
+Not a second `uv add "eifi1-server-kit… @ <new url>"`: it writes the dependency line again
+from the command, so the extras the command names are merged into the app's (uv 0.12.22
+turned `[billing,fastapi]` into `[billing,fastapi,mail]` for a `[mail]` copied from another
+app's line) and an app ends up installing what it never asked for. The URL edit leaves the
+extras exactly as the app wrote them.
 
 The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
 binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each
