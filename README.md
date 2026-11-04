@@ -351,6 +351,7 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
 | Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1 |
 | Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
@@ -367,6 +368,19 @@ signed-in endpoint answers 401 only about the session, never for a wrong input (
 kept its verification token in plaintext). Mail `raw`, store `digest`, look up by
 `hash_token(submitted)`, delete the row when it is redeemed, and delete the account's
 earlier rows when minting a new one.
+
+**A TOTP code is accepted once** (RFC 6238 §5.2; keksdose's audit AU-10, kastlan's reuse
+audit): a code stays valid for about 90 seconds, so without a record of the step it was
+accepted for, the same code signs in again. Keep the last accepted step on the account
+(`users.totp_last_step`, `NULL` until a code is accepted, cleared with the secret), and on
+every path that accepts a code — the sign-in, the setup's first code, the disable:
+
+```python
+matched = kit.totp_matched_step(secret, payload.code, now=datetime.now(UTC))
+if not kit.totp_step_accepted(matched, user.totp_last_step):  # wrong, malformed or spent: one answer
+    ...
+user.totp_last_step = matched  # same transaction; lock the row first (SELECT … FOR UPDATE)
+```
 
 **Per IP a hard limit, per address only a delay** (§5.2). A lock per address would let
 anyone lock a known user out by failing on purpose, so `LoginFailureThrottle` counts

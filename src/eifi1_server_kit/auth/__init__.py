@@ -13,6 +13,9 @@ the reference, cited ``file`` per rule.
   delay that never locks out;
 * :mod:`~eifi1_server_kit.auth.passwords` — :func:`absent_account_check`, the dummy hash an
   address with no account is checked against, so it costs what one with an account costs;
+* :mod:`~eifi1_server_kit.auth.totp` — the second factor's code: the time step it matches
+  (:func:`totp_matched_step`) and the replay rule, a step accepted once
+  (:func:`totp_step_accepted`);
 * :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes, with the account's text size
   and contrast (``docs/text-size-harmonization.md`` §6);
 * :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes.
@@ -116,6 +119,13 @@ from eifi1_server_kit.auth.tokens import (
     refresh_claims,
     token_is_revoked,
 )
+from eifi1_server_kit.auth.totp import (
+    TOTP_DIGITS,
+    TOTP_STEP_SECONDS,
+    TOTP_WINDOW,
+    totp_matched_step,
+    totp_step_accepted,
+)
 
 __all__ = [
     "ABSENT_ACCOUNT_SECRET_BYTES",
@@ -160,6 +170,9 @@ __all__ = [
     "RESET_TTL",
     "TAG_SEPARATOR",
     "TEXT_SIZES",
+    "TOTP_DIGITS",
+    "TOTP_STEP_SECONDS",
+    "TOTP_WINDOW",
     "VERIFICATION_RESEND_PER_RECIPIENT",
     "VERIFY_TTL",
     "AuthError",
@@ -209,5 +222,7 @@ __all__ = [
     "registration_decision",
     "tagged_variant",
     "token_is_revoked",
+    "totp_matched_step",
+    "totp_step_accepted",
     "verified_by_invitation",
 ]
