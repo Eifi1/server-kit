@@ -10,6 +10,110 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.21.0] (2026-11-04)
+
+server-kit 0.21.0: the backend half of round 0.55 (ui-kit 0.55) — kastlan's reuse audit of
+2026-11-02 (proposals 9–12: the TOTP replay rule, the startup guards, the throttle's 429 and
+the small ones), keksdose's audit item F-63 (2026-11-01), and a dependency audit for every
+backend's gate that blocks on high and critical, as the ui-kit's npm audit does. A **minor**:
+it adds public names, and **nothing breaking** — no name removed or renamed, and an app that
+does nothing keeps working as it did. One type widens: `UserResponse.role` becomes
+`str | None`, but stays required (always in the answer, `null` only for an account with no
+role); an app that narrows it to its enum (keksdose) keeps a required string, and an app that
+reads the kit's own class sees the `None` in mypy. What an app may notice without a code
+change: a refused mail's log line holds Resend's error name instead of its body, and
+`parse_sort` accepts `name.` where it answered 422. Per-app steps: ui-kit's
+`docs/adopt-0.55.md`, the server-kit 0.21 lines.
+
+### Security
+
+* **auth:** a TOTP code is accepted once (RFC 6238 §5.2; kastlan accepted one code twice in
+  its window, keksdose's AU-10). `totp_matched_step(secret, code, *, now, window=1)` answers
+  the time step a code matches, one either side of now, the latest match winning, every
+  step compared in constant time with the standard library's `hmac` (no pyotp); a malformed
+  code or a backup code is `None`, and an empty or non-base32 secret raises.
+  `totp_step_accepted(matched, last_step)` takes only a step after the account's last
+  accepted one. `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1.
+* **auth:** one 2FA challenge completes one sign-in (keksdose's AU-10, its second half).
+  `TOTP_STEP_CLAIM` (`"totp_step"`), `two_factor_challenge_claims(sub, *, last_step, now)`
+  (the five-minute challenge with the account's last accepted step in it) and
+  `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was
+  minted). A challenge without the claim reads as `None`; anything but an integer or `None`
+  there is spent. Read the step with the row locked.
+* **mail:** `ResendClient` logs no response body (kastlan's reuse audit, proposal 12). A
+  refused mail's line held `response.text[:500]`, and Resend's message can name the
+  recipient; it now holds the kind, the attempt, the status and Resend's error `name`
+  (`validation_error`), a name that is not a plain identifier left out too.
+
+### Added
+
+* **dev-switch:** `database_is_local(url, *, ports=LOCAL_DATABASE_PORTS,
+  socket_dirs=LOCAL_SOCKET_DIRS)`, the database half of the local-run proof (proposal 11).
+  The host alone is no proof: a `cloud-sql-proxy` to a deployment listens on 127.0.0.1 too
+  (kastlan's `feedback-db.sh` on 5433–5436, as the live database's role). Local is a
+  loopback host on a port the app's own Postgres listens on (5432; every tunnel the apps
+  start uses another), or a unix socket in `/run/postgresql`, `/var/run/postgresql` or
+  `/tmp`. No host, several hosts or ports, `0.0.0.0`, `/cloudsql`, SQLite and an
+  unparsable URL are not; `ports=` is the one explicit allow.
+* **settings:** `secret_problems(value, *, name="The secret", min_length=32,
+  placeholders=())`, the sentences for a startup log: not set, a placeholder
+  (`PLACEHOLDER_SECRET`, keksdose's `change[-_]?me` searched anywhere without case, or the
+  app's own public values), too short (`MIN_SECRET_LENGTH` 32). The value never reaches a
+  sentence (kastlan's `.env.example` placeholder passed its length check).
+* **auth:** `ChallengeKind.WEBAUTHN_REGISTER` (`"webauthn_register"`) and `WEBAUTHN_AUTH`
+  (`"webauthn_auth"`), the passkey ceremonies' strings keksdose and kastlan both sign, five
+  minutes each in `CHALLENGE_LIFETIMES`; `challenge_claims(…, extra=)` carries a ceremony's
+  `challenge` or the 2FA step, under the access token's rules.
+* **limiter:** `ThrottledError(detail, retry_after)` and `charge(limiter, key, detail)`, one
+  429 for every app's hand-raised throttle (proposal 10): FastAPI's own body,
+  `{"detail": <the app's sentence>}`, **no `code`** (Marcel, 2026-11-04), and `Retry-After`
+  in whole seconds; `detail` may be a function of those seconds. A `hit()` of `0.0` is a
+  refusal. In `CONTRACT_ERRORS`.
+* **mail:** `AccountNoticeKind.PASSKEY_ADDED_NOTICE` (`"passkey_added_notice"`), keksdose's
+  mail to an account when a passkey is added (F-63; AU-1).
+* **dependency_audit:** `python -m eifi1_server_kit.dependency_audit`, the dependency audit
+  for every backend's gate, standard library only: `uv audit --locked` over the whole lock,
+  each finding's severity from OSV (GitHub's rating, else the CVSS v3 score). High and
+  critical block (exit 1), moderate and low print a line and pass, no severity anywhere
+  counts as high; a report it cannot read, a missing `uv audit` or a bad flag exits 2,
+  never a pass. An app's exceptions are `--ignore-until-fixed ID=reason`, the reason
+  required and printed; `--project` names another lock's directory. It replaces pip-audit
+  in each app's `check:security:backend`.
+* **export:** a constant that is a plain number, string or boolean carries its `value` in
+  `server-kit-api.json` (`DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, which keksdose's
+  roster copies into TypeScript); a module that implements no ui-kit contract (the
+  dependency audit) has no `contract` key. Format version 1 still.
+
+### Changed
+
+* **auth:** `UserResponse.role` is `str | None`, still required: `null` for an account that
+  holds no role (a kastlan user in no company). A subclass that narrows it keeps a required
+  string; `AdminUserRow` inherits the `null`, which ui-kit's `UserRosterRow` already reads.
+* **limiter:** `retry_after_header` is never below `1`, a negative wait included (a `hit()`
+  answer never is).
+
+### Fixed
+
+* **user_admin:** `parse_sort` reads keksdose's grammar, `key[.asc|.desc]` split at the
+  first dot with `""` as no direction: `name.` is ascending and `-name.` descending, where
+  the kit refused them (F-63). Its docstring cites keksdose's `transactions_service`, not
+  the retired `domain/sorting.py`.
+
+### CI
+
+* **deps:** `scripts/check.sh` runs `python -m eifi1_server_kit.dependency_audit`: a high or
+  critical advisory in the lock fails the gate, CI's included, before Dependabot opens an
+  alert; below that a line each. `scripts/check-dependencies.py` keeps the alerts and the
+  update report before a push.
+
+### Docs
+
+* **readme:** an app moves to a new release by editing the wheel's URL in
+  `[tool.uv.sources]` and running `uv lock --upgrade-package eifi1-server-kit` — not a
+  second `uv add "… @ url"`, which writes the dependency line again and merges the extras it
+  names into the app's (kastlan's 0.51 adoption). kastlan's extras list gains `sync`.
+* **readme:** "The dependency audit": the command, the exit codes, the exception flag.
+
 ## [0.20.0] (2026-10-26)
 
 server-kit 0.20.0: the backend half of round 0.51 (ui-kit 0.51), the dev clock behind ui-kit's
