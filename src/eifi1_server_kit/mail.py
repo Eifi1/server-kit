@@ -120,6 +120,8 @@ _ONE_CLICK = "List-Unsubscribe=One-Click"
 #: An ``Idempotency-Key``: 1–256 characters (Resend's range; outside it is a 400
 #: ``invalid_idempotency_key``), printable ASCII with no space — one HTTP header value.
 _IDEMPOTENCY_KEY = re.compile(r"[!-~]{1,256}")
+#: What a Resend error ``name`` looks like (``validation_error``): only such a word is logged.
+_ERROR_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 def _language(tag: str) -> str:
@@ -656,7 +658,11 @@ class ResendClient:
     request that holds the key has the mail, and a job's next run tries again under the
     next day's key.
 
-    The log lines name the ``kind`` and Resend's answer, never the recipient.
+    **The log lines name the ``kind``, the status and Resend's error ``name``, never the
+    recipient** (0.21, kastlan ``infrastructure/email.py:100-138``): never Resend's body,
+    whose ``message`` can name the address it refused (``Invalid `to` field…``), and a log
+    is kept for 30 days. A ``name`` that is not a plain identifier (``validation_error``) is
+    left out too. The kastlan reuse audit (proposal 12) found 0.20's ``response.text[:500]``.
     """
 
     def __init__(
@@ -730,11 +736,24 @@ class ResendClient:
             return False
         if response.status_code < 400:
             return True
+        # The status and Resend's error name only: its message can name the recipient.
         logger.error(
             "Resend refused the %s mail (attempt %d): %s %s",
             kind,
             attempt,
             response.status_code,
-            response.text[:500],
+            _resend_error_name(response),
         )
         return None if response.status_code == 429 or response.status_code >= 500 else False
+
+
+def _resend_error_name(response: httpx.Response) -> str:
+    """Resend's error ``name`` (``validation_error``, ``rate_limit_exceeded``), never its
+    ``message`` (kastlan ``_resend_error_name``); ``""`` when the body has none, or one that
+    is not a plain identifier — whatever else it holds stays out of the log."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    name = body.get("name") if isinstance(body, dict) else None
+    return name if isinstance(name, str) and _ERROR_NAME.fullmatch(name) else ""

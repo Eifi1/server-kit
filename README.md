@@ -1132,7 +1132,9 @@ reports the round-0.38 migration made public, feedback §9.12).
 `ResendClient(api_key=, from_address=, timeout=10, client=None,
 reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
 under one `Idempotency-Key` — `MailMessage.idempotency_key` where the message has one,
-else a random `{kind}-{uuid}` — and never logs the recipient. A `409` (the key's first
+else a random `{kind}-{uuid}` — and never logs the recipient: a refusal's line holds the
+`kind`, the status and Resend's error `name` (`validation_error`), never Resend's body, whose
+`message` can name the address (0.21; 0.20 logged its first 500 characters). A `409` (the key's first
 request still running, or the key used with another body) is not sent and not retried.
 **Set `reply_to`** from the
 app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address)`, i.e.
