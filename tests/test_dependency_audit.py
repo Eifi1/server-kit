@@ -1,33 +1,19 @@
-"""The gate's dependency audit (scripts/audit_dependencies.py): high and critical block, as the
-ui-kit's ``npm audit --audit-level=high``; below that a line each; no severity is high; a
-report this script cannot read fails the step. Recorded from a probe project pinning
-urllib3 1.26.4 (uv 0.12.22, OSV, 2026-11-04), trimmed."""
+"""The dependency audit (``eifi1_server_kit.dependency_audit``, every backend's gate): high and critical
+block, as the ui-kit's ``npm audit --audit-level=high``; below that a line each; no severity
+is high; a report this module cannot read fails the step. Recorded from a probe project
+pinning urllib3 1.26.4 (uv 0.12.22, OSV, 2026-11-04), trimmed."""
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("audit_dependencies", ROOT / "scripts" / "audit_dependencies.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # its dataclasses look their module up while defined
-    spec.loader.exec_module(module)
-    return module
-
-
-audit_dependencies = _load()
+from eifi1_server_kit import dependency_audit as kit_audit
 
 URLLIB3 = {"name": "urllib3", "version": "1.26.4"}
 
@@ -132,7 +118,7 @@ def _osv(records: Mapping[str, Mapping[str, Any]] = OSV) -> tuple[list[str], Any
 def _run(uv: Uv, records: Mapping[str, Mapping[str, Any]] = OSV) -> tuple[int, list[str]]:
     lines: list[str] = []
     _, fetch = _osv(records)
-    code = audit_dependencies.audit(run=uv, fetch=fetch, out=lines.append)
+    code = kit_audit.audit(run=uv, fetch=fetch, out=lines.append)
     return code, lines
 
 
@@ -169,7 +155,7 @@ def test_a_moderate_finding_warns_and_passes() -> None:
 
 def test_a_pysec_finding_takes_its_ghsa_aliass_rating() -> None:
     asked, fetch = _osv()
-    verdict = audit_dependencies.judge(audit_dependencies.parse_report(_report(PYSEC))[0][0], fetch)
+    verdict = kit_audit.judge(kit_audit.parse_report(_report(PYSEC))[0][0], fetch)
     assert (verdict.severity, verdict.source) == ("MODERATE", "GitHub's rating, GHSA-g4mx-q9vg-27p4")
     assert asked == ["GHSA-g4mx-q9vg-27p4"], "GitHub's record first, one lookup"
 
@@ -240,7 +226,6 @@ def test_a_report_this_script_cannot_read_fails_the_step(stdout: str, code: int,
 
 
 def test_uv_missing_or_hanging_fails_the_step(monkeypatch: pytest.MonkeyPatch) -> None:
-    import subprocess
 
     def missing(*_args: object, **_kwargs: object) -> None:
         raise FileNotFoundError("uv")
@@ -251,19 +236,24 @@ def test_uv_missing_or_hanging_fails_the_step(monkeypatch: pytest.MonkeyPatch) -
     for broken, said in ((missing, "uv is not installed"), (hangs, "within 5 minutes")):
         monkeypatch.setattr(subprocess, "run", broken)
         lines: list[str] = []
-        assert audit_dependencies.audit(fetch=lambda _id: None, out=lines.append) == 2
+        assert kit_audit.audit(fetch=lambda _id: None, out=lines.append) == 2
         assert said in lines[0]
 
 
-def test_the_command_is_the_locked_audit_with_its_previews_and_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_command_is_the_locked_audit_with_its_previews_and_exceptions() -> None:
     uv = Uv(_report())
     _run(uv)
     assert uv.argv == [
         "uv", "audit", "--locked", "--preview-features", "audit-command,json-output", "--output-format", "json"
     ]  # fmt: skip
-    monkeypatch.setattr(audit_dependencies, "IGNORE_UNTIL_FIXED", {"GHSA-2xpw-w6gg-jr37": "dev only, no fix"})
-    _run(uv)
+    lines: list[str] = []
+    accepted = {"GHSA-2xpw-w6gg-jr37": "dev only, no fix"}
+    assert kit_audit.audit(ignore_until_fixed=accepted, run=uv, fetch=lambda _id: None, out=lines.append) == 0
     assert uv.argv[-2:] == ["--ignore-until-fixed", "GHSA-2xpw-w6gg-jr37"]
+    assert lines == [
+        "audit: accepted while unfixed GHSA-2xpw-w6gg-jr37 — dev only, no fix",
+        "audit: nothing high or critical (0 below it, 1 accepted)",
+    ], "an exception says why on every run"
 
 
 @pytest.mark.parametrize(
@@ -300,7 +290,7 @@ def test_an_adverse_status_blocks_only_when_quarantined_or_unreadable(status: ob
     ],
 )
 def test_the_cvss_v3_base_score(vector: str, score: float) -> None:
-    assert audit_dependencies.cvss3_base_score(vector) == score
+    assert kit_audit.cvss3_base_score(vector) == score
 
 
 @pytest.mark.parametrize(
@@ -313,14 +303,14 @@ def test_the_cvss_v3_base_score(vector: str, score: float) -> None:
     ],
 )
 def test_a_vector_that_is_not_v3_has_no_score(vector: str) -> None:
-    assert audit_dependencies.cvss3_base_score(vector) is None
+    assert kit_audit.cvss3_base_score(vector) is None
 
 
 @pytest.mark.parametrize(
     ("score", "rating"), [(9.0, "CRITICAL"), (7.0, "HIGH"), (6.9, "MEDIUM"), (4.0, "MEDIUM"), (3.9, "LOW"), (0.0, None)]
 )
 def test_the_rating_bands(score: float, rating: str | None) -> None:
-    assert audit_dependencies.cvss_rating(score) == rating
+    assert kit_audit.cvss_rating(score) == rating
 
 
 def test_osv_unreachable_or_garbled_is_no_record(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -332,10 +322,10 @@ def test_osv_unreachable_or_garbled_is_no_record(monkeypatch: pytest.MonkeyPatch
         raise urllib.error.URLError("offline")
 
     monkeypatch.setattr(urllib.request, "urlopen", unreachable)
-    assert audit_dependencies.fetch_osv("GHSA-2xpw-w6gg-jr37") is None
+    assert kit_audit.fetch_osv("GHSA-2xpw-w6gg-jr37") is None
     for body, expected in ((b"[1]", None), (b"{oops", None), (b'{"id": "GHSA-x"}', {"id": "GHSA-x"})):
         monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, body=body, **_k: io.BytesIO(body))
-        assert audit_dependencies.fetch_osv("GHSA-x") == expected
+        assert kit_audit.fetch_osv("GHSA-x") == expected
 
 
 def test_each_id_is_looked_up_once() -> None:
@@ -346,5 +336,69 @@ def test_each_id_is_looked_up_once() -> None:
         asked.append(advisory)
         return OSV.get(advisory)
 
-    audit_dependencies.audit(run=Uv(_report(PYSEC, PYSEC)), fetch=fetch, out=lambda _line: None)
+    kit_audit.audit(run=Uv(_report(PYSEC, PYSEC)), fetch=fetch, out=lambda _line: None)
     assert asked == ["GHSA-g4mx-q9vg-27p4"]
+
+
+def test_the_blocking_run_says_how_to_accept_an_advisory() -> None:
+    lines = _run(Uv(_report(HIGH)))[1]
+    assert (
+        lines[-1] == "audit: upgrade the package, or accept an advisory without a fix: --ignore-until-fixed ID=reason"
+    )
+
+
+def test_a_v3_score_of_zero_is_no_severity() -> None:
+    nothing = {"GHSA-2xpw-w6gg-jr37": {"id": "GHSA-2xpw-w6gg-jr37", "severity": [
+        {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"}
+    ]}}  # fmt: skip
+    code, lines = _run(Uv(_report(HIGH)), nothing)
+    assert code == 1 and "UNKNOWN (counted as high) (no severity in OSV)" in lines[0]
+
+
+def test_an_adverse_status_without_a_name() -> None:
+    code, lines = _run(Uv(_report(statuses=[{"status": "archived"}]), 1))
+    assert code == 0 and lines[0] == "audit: warning ?: archived"
+
+
+def test_uv_runs_in_the_projects_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[list[str], object]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs["cwd"]))
+        return subprocess.CompletedProcess(argv, 0, _report(), "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    lines: list[str] = []
+    assert kit_audit.audit(project=tmp_path, fetch=lambda _id: None, out=lines.append) == 0
+    assert calls == [(kit_audit.command(), tmp_path)]
+    assert kit_audit.run_uv(["uv", "--version"]) == (0, _report(), "")
+    assert calls[-1][1] is None, "no project: the working directory"
+
+
+def test_the_command_line_passes_its_exceptions_and_project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_audit(**kwargs: Any) -> int:
+        seen.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(kit_audit, "audit", fake_audit)
+    argv = [
+        "--ignore-until-fixed", "GHSA-aaaa-bbbb-cccc=dev only, no fix",
+        "--ignore-until-fixed", " PYSEC-2026-1 = the CLI's own = sign ",
+        "--project", str(tmp_path),
+    ]  # fmt: skip
+    assert kit_audit.main(argv) == 1
+    assert seen == {
+        "ignore_until_fixed": {"GHSA-aaaa-bbbb-cccc": "dev only, no fix", "PYSEC-2026-1": "the CLI's own = sign"},
+        "project": tmp_path,
+    }
+    assert kit_audit.main([]) == 1 and seen == {"ignore_until_fixed": {}, "project": None}
+
+
+@pytest.mark.parametrize("flag", ["GHSA-aaaa-bbbb-cccc", "GHSA-aaaa-bbbb-cccc=", "=reason", " = "])
+def test_an_exception_without_its_reason_is_a_broken_call(flag: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        kit_audit.main(["--ignore-until-fixed", flag])
+    assert stopped.value.code == 2, "exit 2, as a broken tool"
+    assert "is not ID=reason" in capsys.readouterr().err

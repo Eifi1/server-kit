@@ -1,61 +1,84 @@
-"""The gate's dependency audit: known vulnerabilities in the lock BLOCK on high and critical,
-as the ui-kit's ``npm audit --audit-level=high`` does; below that they are printed and pass.
+"""The dependency audit for every backend's gate: known vulnerabilities in the lock BLOCK on
+high and critical, as the ui-kit's ``npm audit --audit-level=high`` does; below that they are
+printed and pass. Standard library only.
 
-Marcel, 2026-11-04: "Same as ui-kit would be good for harmonization." A bare ``uv audit``
-fails on every finding, whatever its severity, and has no level option, so a dev-only
-moderate advisory with no fix yet (the minimatch one that blocked a ui-kit push) would stop
-every push and every release. ``scripts/check.sh`` runs this instead; standard library only.
+Marcel, 2026-11-04: "Same as ui-kit would be good for harmonization", and what a second app
+will need ships in the kit. A bare ``uv audit`` fails on every finding, whatever its
+severity, and has no level option, and ``pip-audit`` (the apps' ``check:security:backend``)
+neither: a dev-only moderate advisory with no fix yet (the minimatch one that blocked a
+ui-kit push) would stop every push and every release. Run it from the directory that holds
+the app's ``uv.lock``::
+
+    uv run --no-sync python -I -m eifi1_server_kit.dependency_audit
+    uv run --no-sync python -I -m eifi1_server_kit.dependency_audit --ignore-until-fixed GHSA-xxxx-xxxx-xxxx="dev only, no fix"
+
+**Exit 0**: nothing high or critical. **Exit 1**: a finding blocks. **Exit 2**: the audit
+could not be read, or the tool is broken (a bad flag included) — never a pass.
 
 1. **The findings** are ``uv audit --locked`` over the whole lock (runtime, extras, the dev
-   group), as JSON. ``uv audit`` and its JSON are uv previews (uv 0.12), so the report is
+   groups), as JSON. ``uv audit`` and its JSON are uv previews (uv 0.12), so the report is
    read strictly: a missing subcommand, a preview flag uv no longer knows, an exit code
-   other than 0 or 1, a schema other than :data:`KNOWN_SCHEMAS` or a shape this script
-   cannot read FAILS the step with what went wrong — it never passes silently.
+   other than 0 or 1, a schema other than :data:`KNOWN_SCHEMAS` or a shape this module
+   cannot read fails the step with what went wrong — it never passes silently.
 2. **The severity** is not in uv's report, so each finding is looked up where it is
-   published, OSV (``https://api.osv.dev/v1/vulns/<id>``), under its id and its aliases:
-   GitHub's rating first (``database_specific.severity`` of a ``GHSA-`` record: ``LOW``,
-   ``MODERATE``, ``HIGH``, ``CRITICAL``), which is what ``npm audit`` reads; else the
-   highest CVSS v3 base score of the records (7.0 and up is high, 9.0 and up critical).
-   uv lists one advisory under each of its ids (a ``PYSEC-`` and its ``GHSA-``), and every
-   record names the others, so the GHSA rating is found from either.
+   published, OSV (:data:`OSV_URL`), under its id and its aliases: GitHub's rating first
+   (``database_specific.severity`` of a ``GHSA-`` record: ``LOW``, ``MODERATE``, ``HIGH``,
+   ``CRITICAL``), which is what ``npm audit`` reads; else the highest CVSS v3 base score of
+   the records (7.0 and up is high, 9.0 and up critical). uv lists one advisory under each
+   of its ids (a ``PYSEC-`` and its ``GHSA-``), and every record names the others, so the
+   GitHub rating is found from either.
 3. **The rule**: high and critical BLOCK; moderate and low print one line each (id,
    package, severity, fixed-in) and pass. **No severity anywhere** — a record with only a
    CVSS v4 vector, an unreachable OSV — counts as high (fail closed), its id printed so a
    deliberate exception can be made.
-4. **An exception** (the path ``--ignore-until-fixed`` keeps): an advisory accepted on
-   purpose goes in :data:`IGNORE_UNTIL_FIXED` with its reason; uv leaves it out while no
-   fixed version exists, and reports it again the day one ships.
+4. **An exception** is the app's, never an edit of the kit: ``--ignore-until-fixed
+   ID=reason``, repeatable, with its reason; uv leaves the advisory out while no fixed
+   version exists and reports it again the day one ships. The reasons are printed on every
+   run.
 
 A project's adverse status (PEP 792: archived, deprecated, quarantined) is in the same
-report: quarantined blocks, archived and deprecated print a line, and an entry this script
+report: quarantined blocks, archived and deprecated print a line, and an entry this module
 cannot read blocks with its JSON printed (none has been seen yet; extend :func:`_status`).
-
-Exit 0: nothing blocks. Exit 1: a finding blocks. Exit 2: the audit itself could not be
-read. Run it as ``check.sh`` does: ``uv run --no-sync python -I scripts/audit_dependencies.py``.
 """
 
 from __future__ import annotations
 
+import argparse
 import functools
 import json
 import math
 import subprocess
-import sys
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+__all__ = [
+    "BLOCKING_RANK",
+    "KNOWN_SCHEMAS",
+    "OSV_URL",
+    "PREVIEW_FEATURES",
+    "RANKS",
+    "AuditUnreadableError",
+    "Fetcher",
+    "Finding",
+    "Runner",
+    "Verdict",
+    "audit",
+    "command",
+    "cvss3_base_score",
+    "cvss_rating",
+    "fetch_osv",
+    "judge",
+    "main",
+    "parse_report",
+    "run_uv",
+]
 
-#: Advisories accepted on purpose while no fix exists: id → why. Passed to uv as
-#: ``--ignore-until-fixed``, so each comes back the day a fixed version ships. None today.
-IGNORE_UNTIL_FIXED: dict[str, str] = {}
-
-#: The report schemas this script reads; uv's is ``"preview"`` (uv 0.12.22). Another one is
-#: a changed format: read it, then add it here.
+#: The report schemas this module reads; uv's is ``"preview"`` (uv 0.12.22). Another one is a
+#: changed format: a kit release reads it first.
 KNOWN_SCHEMAS = frozenset({"preview"})
 
 #: The previews the command needs (uv 0.12): the subcommand and its JSON output.
@@ -66,16 +89,17 @@ RANKS: Mapping[str, int] = {"LOW": 1, "MODERATE": 2, "MEDIUM": 2, "HIGH": 3, "CR
 #: The rank from which a finding blocks: high, as ``npm audit --audit-level=high``.
 BLOCKING_RANK = RANKS["HIGH"]
 
+#: Where an advisory's severity is published: its OSV record, by id.
 OSV_URL = "https://api.osv.dev/v1/vulns/{id}"
 
-#: The uv audit run: argv in, (exit code, stdout, stderr) out — a seam for the tests.
-Runner = Callable[[Sequence[str]], tuple[int, str, str]]
+#: The ``uv audit`` run: argv in, (exit code, stdout, stderr) out — a seam for the tests.
+type Runner = Callable[[Sequence[str]], tuple[int, str, str]]
 #: An OSV record by id, or ``None`` when it cannot be had — a seam for the tests.
-Fetcher = Callable[[str], Mapping[str, Any] | None]
+type Fetcher = Callable[[str], Mapping[str, Any] | None]
 
 
 class AuditUnreadableError(Exception):
-    """The audit's own failure: uv could not run it, or its report is not one this script
+    """The audit's own failure: uv could not run it, or its report is not one this module
     reads. Exit 2, never a pass."""
 
 
@@ -127,8 +151,8 @@ def _strs(value: object, where: str) -> tuple[str, ...]:
 
 
 def parse_report(stdout: str) -> tuple[list[Finding], list[object]]:
-    """uv's JSON report → its findings and its adverse statuses, or :class:`AuditUnreadableError`
-    for anything but the shape :data:`KNOWN_SCHEMAS` names."""
+    """uv's JSON report → its findings and its adverse statuses, or
+    :class:`AuditUnreadableError` for anything but the shape :data:`KNOWN_SCHEMAS` names."""
     try:
         report = json.loads(stdout)
     except ValueError as exc:
@@ -140,7 +164,7 @@ def parse_report(stdout: str) -> tuple[list[Finding], list[object]]:
     if version not in KNOWN_SCHEMAS:
         raise AuditUnreadableError(
             f"uv audit's report schema is {version!r}, not one of {sorted(KNOWN_SCHEMAS)}: "
-            "read the new format, then add it to KNOWN_SCHEMAS in scripts/audit_dependencies.py"
+            "this uv writes a format this eifi1-server-kit does not read; update the kit"
         )
     entries, statuses, summary = report.get("vulnerabilities"), report.get("adverse_statuses"), report.get("summary")
     if not isinstance(entries, list) or not isinstance(statuses, list) or not isinstance(summary, dict):
@@ -245,31 +269,32 @@ def judge(finding: Finding, fetch: Fetcher) -> Verdict:
 
 def _status(entry: object) -> tuple[bool, str]:
     """An adverse status → (blocks, its line). Quarantined blocks; archived and deprecated
-    print; an entry this script cannot read blocks, printed whole."""
+    print; an entry this module cannot read blocks, printed whole."""
     if isinstance(entry, dict):
         status = entry.get("status")
         dependency = entry.get("dependency")
         name = dependency.get("name") if isinstance(dependency, dict) else entry.get("name")
         if isinstance(status, str) and status.lower() in ("archived", "deprecated", "quarantined"):
             return status.lower() == "quarantined", f"{name or '?'}: {status.lower()}"
-    return True, f"an adverse status this script cannot read: {json.dumps(entry)[:300]}"
+    return True, f"an adverse status this module cannot read: {json.dumps(entry)[:300]}"
 
 
 # --- the run ---------------------------------------------------------------------------------
 
 
-def command() -> list[str]:
-    """``uv audit`` as the gate runs it, with the accepted exceptions."""
+def command(ignore_until_fixed: Iterable[str] = ()) -> list[str]:
+    """``uv audit`` as the gate runs it, with the app's accepted advisories."""
     argv = ["uv", "audit", "--locked", "--preview-features", PREVIEW_FEATURES, "--output-format", "json"]
-    for advisory in IGNORE_UNTIL_FIXED:
+    for advisory in ignore_until_fixed:
         argv += ["--ignore-until-fixed", advisory]
     return argv
 
 
-def run_uv(argv: Sequence[str]) -> tuple[int, str, str]:
+def run_uv(argv: Sequence[str], *, cwd: Path | None = None) -> tuple[int, str, str]:
+    """Run ``argv`` in ``cwd`` (the directory of the app's ``uv.lock``; ``None``: here)."""
     try:
         done = subprocess.run(
-            list(argv), cwd=ROOT, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300, check=False
+            list(argv), cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300, check=False
         )
     except FileNotFoundError as exc:
         raise AuditUnreadableError("uv is not installed") from exc
@@ -289,16 +314,31 @@ def fetch_osv(advisory: str) -> Mapping[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-def audit(run: Runner = run_uv, fetch: Fetcher = fetch_osv, out: Callable[[str], None] = print) -> int:
-    """The step: 0 nothing blocks, 1 a finding blocks, 2 the audit could not be read."""
+def audit(
+    *,
+    ignore_until_fixed: Mapping[str, str] | None = None,
+    project: Path | None = None,
+    run: Runner | None = None,
+    fetch: Fetcher = fetch_osv,
+    out: Callable[[str], None] = print,
+) -> int:
+    """The step: 0 nothing blocks, 1 a finding blocks, 2 the audit could not be read.
+
+    ``ignore_until_fixed`` maps each advisory the app accepts while it has no fix to its
+    reason; ``project`` is the directory of its ``uv.lock`` (``None``: the working one).
+    """
+    accepted = dict(ignore_until_fixed or {})
+    for advisory, reason in accepted.items():
+        out(f"audit: accepted while unfixed {advisory} — {reason}")
     try:
-        code, stdout, stderr = run(command())
+        argv = command(accepted)
+        code, stdout, stderr = run(argv) if run is not None else run_uv(argv, cwd=project)
         if "unrecognized subcommand" in stderr:
             raise AuditUnreadableError("this uv has no `uv audit` (uv 0.12 or later): update uv")
         if "Unknown preview feature" in stderr:
             raise AuditUnreadableError(
                 f"uv no longer knows a preview feature of {PREVIEW_FEATURES!r} — `uv audit` may be stable now: "
-                "check its output, then drop the flag in scripts/audit_dependencies.py"
+                "a kit release reads its output and drops the flag"
             )
         if code not in (0, 1):
             raise AuditUnreadableError(f"uv audit failed (exit {code}): {stderr.strip()[-500:]}")
@@ -321,16 +361,42 @@ def audit(run: Runner = run_uv, fetch: Fetcher = fetch_osv, out: Callable[[str],
         else:
             out(f"audit: warning {line}")
     if not blocking:
-        out(f"audit: nothing high or critical ({len(verdicts)} below it, {len(IGNORE_UNTIL_FIXED)} accepted)")
+        out(f"audit: nothing high or critical ({len(verdicts)} below it, {len(accepted)} accepted)")
         return 0
     for line in blocking:
         out(f"audit: BLOCKS {line}")
-    out(
-        "audit: upgrade the package, or accept an advisory without a fix in IGNORE_UNTIL_FIXED "
-        "(scripts/audit_dependencies.py) with its reason"
-    )
+    out("audit: upgrade the package, or accept an advisory without a fix: --ignore-until-fixed ID=reason")
     return 1
 
 
-if __name__ == "__main__":  # pragma: no cover - check.sh's entry point
-    sys.exit(audit())
+def _exception(text: str) -> tuple[str, str]:
+    advisory, sep, reason = text.partition("=")
+    if not sep or not advisory.strip() or not reason.strip():
+        raise argparse.ArgumentTypeError(f"{text!r} is not ID=reason: an accepted advisory says why")
+    return advisory.strip(), reason.strip()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """``python -m eifi1_server_kit.dependency_audit [--ignore-until-fixed ID=reason]… [--project DIR]``.
+    A bad flag exits 2, as a broken tool does."""
+    parser = argparse.ArgumentParser(
+        prog="python -m eifi1_server_kit.dependency_audit",
+        description="Audit the uv.lock: high and critical block, as npm audit --audit-level=high.",
+    )
+    parser.add_argument(
+        "--ignore-until-fixed",
+        action="append",
+        type=_exception,
+        default=[],
+        metavar="ID=reason",
+        help="accept an advisory while no fixed version exists, saying why (repeatable)",
+    )
+    parser.add_argument(
+        "--project", type=Path, default=None, help="the directory of the uv.lock (default: the working one)"
+    )
+    args = parser.parse_args(argv)
+    return audit(ignore_until_fixed=dict(args.ignore_until_fixed), project=args.project)
+
+
+if __name__ == "__main__":  # pragma: no cover - the command line's entry point
+    raise SystemExit(main())

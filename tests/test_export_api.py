@@ -130,8 +130,12 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     }
     names = [module["name"] for module in data["modules"]]
     assert len(names) == len(set(names)) and set(names) == public, "a new module joins MODULES in the exporter"
-    contracts = {module["name"]: module["contract"] for module in data["modules"]}
-    assert all(contract is not None for contract in contracts.values())
+    contracts = {module["name"]: module.get("contract") for module in data["modules"]}
+    # Every module implements a ui-kit contract but the dependency audit, a command (0.21).
+    assert [name for name, contract in contracts.items() if contract is None] == ["eifi1_server_kit.dependency_audit"]
+    assert "contract" not in next(
+        module for module in data["modules"] if module["name"] == "eifi1_server_kit.dependency_audit"
+    )
     assert contracts["eifi1_server_kit.settings"] == {"doc": "docs/settings-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.demo"] == {"doc": "docs/landing-demo-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.billing"] == {"doc": "docs/billing-harmonization.md", "section": "§10, §14"}

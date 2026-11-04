@@ -51,7 +51,9 @@ models, sessions or commits. Import from the submodules:
   named scopes (0.16: ``SyncScope``, ``EntityRule``, ``sort_changes``, ``withhold``), and
   the SQLAlchemy stamping in ``sync.mixin`` (the ``sync`` extra); the fake in ``sync.testing``;
 * :mod:`eifi1_server_kit.clock` — layer 2's clock, an aware UTC ``datetime``;
-* :mod:`eifi1_server_kit.errors` — every kit refusal answered at its contract status.
+* :mod:`eifi1_server_kit.errors` — every kit refusal answered at its contract status;
+* :mod:`eifi1_server_kit.dependency_audit` — the dependency audit for every backend's gate (0.21):
+  ``python -m eifi1_server_kit.dependency_audit``, high and critical block, as the ui-kit's npm audit.
 
 The contracts are ``docs/feedback-harmonization.md``, ``docs/auth-harmonization.md``,
 ``docs/user-admin-harmonization.md``, ``docs/settings-harmonization.md``,

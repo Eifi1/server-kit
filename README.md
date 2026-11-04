@@ -1468,6 +1468,34 @@ touching an app's `pyproject.toml` or `uv.lock`, run its suite with the kit over
 caches the wheel it builds from a path until the kit's `pyproject.toml` changes, so an edit
 made after the first run would not be what gets tested (Kurvenschmiede's S6).
 
+## The dependency audit
+
+Every backend's gate blocks on **high and critical** advisories, as the ui-kit's
+`npm audit --audit-level=high` does, and prints the rest (0.21, `eifi1_server_kit.dependency_audit`;
+Marcel, 2026-11-04: the gates harmonized). From the directory of the app's `uv.lock`:
+
+```sh
+uv run --no-sync python -I -m eifi1_server_kit.dependency_audit
+uv run --no-sync python -I -m eifi1_server_kit.dependency_audit --ignore-until-fixed GHSA-xxxx-xxxx-xxxx="dev only, no fix yet"
+```
+
+| Exit | Means |
+|---|---|
+| `0` | nothing high or critical; each moderate or low finding printed as one `audit: warning` line (id, package, severity, fixed in) |
+| `1` | a high or critical finding (`audit: BLOCKS …`), or one whose severity is published nowhere — counted as high, its id printed |
+| `2` | the audit could not be read or the tool is broken: no `uv audit` (uv ≥ 0.12), a preview flag uv no longer knows, uv's own failure, a report of another shape — or a bad flag. Never a pass (an unreachable OSV is not this: its findings count as high, `1`) |
+
+It runs `uv audit --locked` over the whole lock — runtime, extras, the dev groups — and looks
+each finding up on OSV under its id and aliases: GitHub's rating first (what npm audit reads),
+else the highest CVSS v3 score, 7.0 and up high. A quarantined project blocks; an archived or
+deprecated one prints a line. Standard library only, so it needs no extra.
+
+**An exception is the app's, never an edit of the kit**: `--ignore-until-fixed ID=reason`,
+repeatable, the reason required (exit `2` without one) and printed on every run. uv leaves
+the advisory out only while no fixed version exists, so it blocks again the day a fix ships.
+It replaces `pip-audit` in each app's `check:security:backend`, which failed on any severity;
+the Dependabot check before a push (`scripts/check-dependencies.py`) stays beside it.
+
 ## Adopting layer 1
 
 The same pattern in each app — the app keeps its models, queries, auth and routes:
@@ -1624,18 +1652,9 @@ bash scripts/check.sh      # the audit (high and critical block), ruff, ruff for
 
 CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14.
 
-**The audit blocks on high and critical, as the ui-kit's npm audit does** (0.21; the ui-kit
-runs `npm audit --audit-level=high`): `check.sh` starts with `scripts/audit_dependencies.py`,
-`uv audit --locked` over the whole lock — runtime, extras and the dev group — against OSV.
-uv has no level option, so the script reads each finding's severity where it is published
-(GitHub's rating in the advisory's OSV record, else its CVSS v3 score, 7.0 and up high):
-high and critical fail the step; moderate and low print one line each (id, package,
-severity, fixed in) and pass; **no severity anywhere counts as high**, its id printed.
-`uv audit` and its JSON are uv previews (uv ≥ 0.12), so a missing subcommand, a preview flag
-uv no longer knows, or a report of another shape fails the step with what changed — it never
-passes silently. Standard library only, no new dependency. **An exception**: an advisory
-accepted on purpose while no fix exists goes in the script's `IGNORE_UNTIL_FIXED` with its
-reason; uv's `--ignore-until-fixed` reports it again the day a fix ships.
+**The audit blocks on high and critical, as the ui-kit's npm audit does**: `check.sh` starts
+with the kit's own [dependency audit](#the-dependency-audit), the command every backend's
+gate runs; this repository accepts no advisory today.
 
 **Dependencies before a push** (0.13.1, as keksdose's): enable the hook once per clone with
 `git config core.hooksPath .githooks`. `.githooks/pre-push` runs
