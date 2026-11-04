@@ -13,6 +13,8 @@ from eifi1_server_kit.limiter import (
     UNKNOWN_CLIENT,
     FeedbackLimiters,
     SlidingWindowRateLimiter,
+    ThrottledError,
+    charge,
     client_ip,
     retry_after_header,
 )
@@ -150,6 +152,111 @@ def test_retry_after_rounds_up_past_the_wait() -> None:
     assert retry_after_header(0.0) == "1"
     assert retry_after_header(59.2) == "60"
     assert retry_after_header(3599.99) == "3600"
+    assert retry_after_header(-5.0) == "1", "never below one second"
+
+
+# --- charge and ThrottledError (0.21): one 429, uncoded, with Retry-After --------------------
+
+
+def _full(clock: _Clock, *, max_hits: int = 2, window: float = 60) -> SlidingWindowRateLimiter:
+    limiter = SlidingWindowRateLimiter(max_hits=max_hits, window_seconds=window, clock=clock)
+    for _ in range(max_hits):
+        charge(limiter, "ip", "never said")
+    return limiter
+
+
+def test_charge_lets_a_hit_in_and_records_it() -> None:
+    limiter = SlidingWindowRateLimiter(max_hits=2, window_seconds=60, clock=_Clock())
+    charge(limiter, "ip", "Too many")
+    assert limiter.count("ip") == 1
+
+
+def test_a_full_window_is_a_429_with_the_apps_sentence() -> None:
+    clock = _Clock()
+    limiter = _full(clock)
+    clock.t += 10.4
+    with pytest.raises(ThrottledError) as refused:
+        charge(limiter, "ip", "Too many sign-in attempts — please try again in a moment.")
+    error = refused.value
+    assert isinstance(error, ValueError) and error.status_code == 429
+    assert str(error) == "Too many sign-in attempts — please try again in a moment."
+    assert error.retry_after == pytest.approx(49.6)
+    assert error.headers == {"Retry-After": "50"}
+    assert not hasattr(error, "code"), "Marcel, 2026-11-04: the 429 carries no code"
+    assert limiter.count("ip") == 2, "a refused hit is not recorded"
+
+
+@pytest.mark.parametrize(
+    ("wait", "header"), [(0.0, "1"), (0.001, "1"), (0.999, "1"), (1.0, "2"), (59.2, "60"), (3600.0, "3601")]
+)
+def test_the_header_is_whole_seconds_rounded_up_at_least_one(wait: float, header: str) -> None:
+    """keksdose's ``str(int(retry_after) + 1)``: its feedback test pins ``"3601"`` for a full hour."""
+    assert ThrottledError("Too many", wait).headers == {"Retry-After": header}
+
+
+def test_a_hit_of_zero_seconds_is_a_refusal() -> None:
+    """keksdose ``_throttle``'s note: ``hit`` may answer ``0.0``, and ``0.0`` is falsy."""
+
+    class Zero(SlidingWindowRateLimiter):
+        def hit(self, key: str) -> float | None:
+            return 0.0
+
+    with pytest.raises(ThrottledError) as refused:
+        charge(Zero(max_hits=1, window_seconds=60), "ip", lambda seconds: f"Try again in {seconds} seconds.")
+    assert str(refused.value) == "Try again in 1 seconds."
+    assert refused.value.headers == {"Retry-After": "1"}
+
+
+def test_the_sentence_may_say_the_seconds_the_header_says() -> None:
+    """Kurvenschmiede's: "Try again in N seconds", N the ``Retry-After``."""
+    clock = _Clock()
+    limiter = _full(clock, max_hits=1, window=300)
+    clock.t += 0.5
+    with pytest.raises(ThrottledError) as refused:
+        charge(
+            limiter, "ip", lambda seconds: f"Too many new accounts from this address. Try again in {seconds} seconds."
+        )
+    assert str(refused.value) == "Too many new accounts from this address. Try again in 300 seconds."
+    assert refused.value.headers == {"Retry-After": "300"}
+
+
+def test_a_disabled_limiter_charges_nothing() -> None:
+    limiter = SlidingWindowRateLimiter(max_hits=0, window_seconds=60, clock=_Clock())
+    for _ in range(100):
+        charge(limiter, "ip", "never")
+
+
+async def test_the_answer_is_fastapis_body_and_the_header() -> None:
+    """Through ``install_contract_error_handlers``, as the apps' ``HTTPException`` answered:
+    ``{"detail": …}``, nothing else, and ``Retry-After`` — beside an app's ValueError → 400."""
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+    from httpx import ASGITransport, AsyncClient
+
+    from eifi1_server_kit.errors import install_contract_error_handlers
+
+    clock = _Clock()
+    limiter = SlidingWindowRateLimiter(max_hits=1, window_seconds=60, clock=clock)
+    app = FastAPI()
+
+    async def bad_request(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    app.add_exception_handler(ValueError, bad_request)  # keksdose's and Kurvenschmiede's
+    install_contract_error_handlers(app)
+
+    @app.post("/auth/login")
+    async def login() -> dict[str, bool]:
+        charge(limiter, "ip", "Too many sign-in attempts — please try again in a moment.")
+        return {"ok": True}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.post("/auth/login")).status_code == 200
+        clock.t += 30.2
+        refused = await client.post("/auth/login")
+    assert refused.status_code == 429
+    assert refused.json() == {"detail": "Too many sign-in attempts — please try again in a moment."}
+    assert refused.headers["Retry-After"] == "30"
 
 
 def test_feedback_limiters_are_per_instance_with_the_contracts_budgets() -> None:

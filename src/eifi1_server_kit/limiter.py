@@ -29,6 +29,14 @@ three apps did; ``docs/server-services-harmonization.md`` §2.11), and what
   ``upload_guards.throttle_attachment``), so a refused file uses a slot;
 * crashes — BEFORE the dedupe (keksdose ``feedback_router.py:155``), so repeats count and
   ``occurrences`` stops rising after 20 an hour.
+
+**Refusing: one 429** (0.21, the kastlan reuse audit's proposal 10). :func:`charge` charges
+one hit and raises :class:`ThrottledError` when the window is full: 429, the app's own
+sentence as ``{"detail": …}`` — no ``code``, Marcel's decision of 2026-11-04 — and a
+``Retry-After`` in whole seconds (:func:`retry_after_header`), through
+:func:`~eifi1_server_kit.errors.install_contract_error_handlers`. It replaces the
+``HTTPException`` each app raised by hand: kastlan ``auth_helpers.throttle``, keksdose
+``auth_router._throttle``, Kurvenschmiede ``auth_router._hold``.
 """
 
 from __future__ import annotations
@@ -50,6 +58,8 @@ __all__ = [
     "Clock",
     "FeedbackLimiters",
     "SlidingWindowRateLimiter",
+    "ThrottledError",
+    "charge",
     "client_ip",
     "retry_after_header",
 ]
@@ -144,10 +154,63 @@ class SlidingWindowRateLimiter:
             self._last_sweep = self._clock()
 
 
+def _whole_seconds(wait_seconds: float) -> int:
+    return max(int(wait_seconds) + 1, 1)
+
+
 def retry_after_header(wait_seconds: float) -> str:
     """The ``Retry-After`` value for a ``hit()`` answer: whole seconds, rounded up past it
-    (keksdose ``upload_guards.py:82``: ``str(int(retry_after) + 1)``)."""
-    return str(int(wait_seconds) + 1)
+    (keksdose ``upload_guards.py:82``: ``str(int(retry_after) + 1)``), so never ``0`` — a
+    ``hit()`` of ``0.0`` is ``"1"`` — and a client that waits that long is let in. Every kit
+    429 carries it: :class:`ThrottledError`, the feedback routes', the demo's."""
+    return str(_whole_seconds(wait_seconds))
+
+
+class ThrottledError(ValueError):
+    """The window is full (→ 429): ``{"detail": <the app's sentence>}`` with a
+    ``Retry-After`` in whole seconds, rounded up (:func:`retry_after_header`), answered by
+    :func:`~eifi1_server_kit.errors.install_contract_error_handlers` — FastAPI's own
+    ``HTTPException`` body, so no client can tell it from the apps' hand-raised 429s.
+
+    **No** ``code`` (Marcel, 2026-11-04): the sentence is for the person, ``Retry-After``
+    for everything that is not a browser. A ``ValueError`` like every kit refusal, so an
+    app's ``ValueError`` → 400 handler cannot swallow its status. Raise it through
+    :func:`charge`, or with a ``hit()`` answer of the app's own.
+    """
+
+    status_code: int = 429
+
+    def __init__(self, detail: str, retry_after: float) -> None:
+        #: Seconds until the oldest hit leaves the window — the limiter's ``hit()`` answer.
+        self.retry_after = retry_after
+        super().__init__(detail)
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """``{"Retry-After": …}`` — the header the answer carries."""
+        return {"Retry-After": retry_after_header(self.retry_after)}
+
+
+def charge(limiter: SlidingWindowRateLimiter, key: str, detail: str | Callable[[int], str]) -> None:
+    """Charge one hit to ``key``'s window, or refuse: :class:`ThrottledError` (429,
+    ``Retry-After``) when the window is full::
+
+        charge(limiters.login, client_ip(...), "Too many sign-in attempts — please try again in a moment.")
+
+    ``detail`` is the app's sentence, or a function of the seconds the ``Retry-After``
+    says, so the sentence and the header agree (Kurvenschmiede's)::
+
+        charge(limiters.register, ip, lambda seconds: f"Too many new accounts from this address. Try again in {seconds} seconds.")
+
+    **A** ``hit()`` **of** ``0.0`` **is a refusal**: the oldest hit leaves the window this
+    very instant, and the attempt was not recorded — so the check is ``is not None``,
+    never truthiness (keksdose ``_throttle``'s note), and the header says ``1``. A
+    disabled limiter allows every hit.
+    """
+    wait = limiter.hit(key)
+    if wait is not None:
+        sentence = detail if isinstance(detail, str) else detail(_whole_seconds(wait))
+        raise ThrottledError(sentence, wait)
 
 
 #: What :func:`client_ip` answers when it has no address at all (keksdose ``client_ip``).

@@ -45,6 +45,10 @@ other two say (kastlan ``environment == "production"``; keksdose
 ``bool(db_socket_dir) or metrics_environment == "prod"``, since both its Cloud Run
 services set ``KEKSDOSE_DB_SOCKET_DIR``; KS ``deployment is Deployment.PRODUCTION``).
 
+**The database half of that proof** is :func:`database_is_local` (0.21): a loopback host on a
+port the app's own Postgres listens on, or one of the local socket directories — never the
+host alone, because a tunnel to a deployment's database listens on the loopback too.
+
 **The recipe** (the kit ships no router for it, as for billing's routes; ``<APP>``,
 ``is_local_run`` and ``is_production`` are the app's own, as above)::
 
@@ -135,7 +139,9 @@ from __future__ import annotations
 
 import datetime as dt
 import enum
+import ipaddress
 from collections.abc import Callable, Collection, Mapping
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.requests import Request
@@ -145,6 +151,8 @@ __all__ = [
     "DEV_SWITCH_ERROR_STATUS",
     "DEV_SWITCH_LOG_TAG",
     "DEV_SWITCH_PATH",
+    "LOCAL_DATABASE_PORTS",
+    "LOCAL_SOCKET_DIRS",
     "DevSwitchAnswer",
     "DevSwitchError",
     "DevSwitchErrorCode",
@@ -152,6 +160,7 @@ __all__ = [
     "DevSwitchSettings",
     "DevSwitchUnsafeError",
     "assert_dev_switch_safe",
+    "database_is_local",
     "dev_switch_enabled",
     "effective_today",
     "require_dev_switch",
@@ -230,6 +239,117 @@ def assert_dev_switch_safe(*, flag: bool, production: bool) -> None:
     mounted. An unknown production signal (anything but ``False``) counts as production."""
     if flag and production is not False:
         raise DevSwitchUnsafeError
+
+
+#: The ports a local Postgres listens on, for :func:`database_is_local`: Postgres's own,
+#: which every app's default ``database_url`` and setup script use (kastlan
+#: ``config.py:21``, Kurvenschmiede ``settings.py:156``, keksdose's ``setup-test-pg.sh``).
+#: The apps' tunnels to their deployments listen elsewhere: kastlan's
+#: ``scripts/feedback-db.sh`` on 5433–5436, keksdose's ``feedback-live-lib.sh`` on 5433,
+#: Kurvenschmiede's ``deploy/gcp/apply-roles.sh`` on 55432.
+LOCAL_DATABASE_PORTS: frozenset[int] = frozenset({5432})
+#: The directories a local Postgres puts its socket in: Debian's and Ubuntu's
+#: ``/var/run/postgresql`` (``/run/postgresql``), and ``/tmp``, Postgres's built-in default
+#: (Homebrew, Postgres.app). Never ``/cloudsql``, where Cloud Run mounts Cloud SQL's.
+LOCAL_SOCKET_DIRS: frozenset[str] = frozenset({"/run/postgresql", "/var/run/postgresql", "/tmp"})
+
+#: Postgres's port when a URL names none.
+_POSTGRES_PORT = 5432
+_POSTGRES_SCHEMES = frozenset({"postgresql", "postgres"})
+
+
+def _loopback(host: str) -> bool:
+    """``localhost``, or an address in 127.0.0.0/8 or ``::1``. Not ``0.0.0.0``: a bind
+    address, not a place a client connects to (keksdose ``dev_switch.py:30``)."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def database_is_local(
+    url: str,
+    *,
+    ports: Collection[int] = LOCAL_DATABASE_PORTS,
+    socket_dirs: Collection[str] = LOCAL_SOCKET_DIRS,
+) -> bool:
+    """Does ``url`` name a Postgres on THIS machine, and not a tunnel to a deployment's? The
+    database half of the dev switch's ``local_run`` proof (§6.1)::
+
+        local_run=lambda: database_is_local(settings.database_url) and "K_SERVICE" not in os.environ
+
+    Local is one of two things, and nothing else:
+
+    * **a loopback host on a port the app's own Postgres listens on** — ``localhost``,
+      127.0.0.0/8 or ``::1``, AND the URL's port (5432 when it names none) in ``ports``
+      (:data:`LOCAL_DATABASE_PORTS`, Postgres's 5432);
+    * **a unix socket in a local socket directory** — an absolute ``?host=`` (or a
+      percent-encoded host) that IS one of ``socket_dirs`` (:data:`LOCAL_SOCKET_DIRS`), so
+      ``/cloudsql/<instance>`` and a proxy's ``<dir>/<project:region:instance>`` are not.
+
+    **Why not the host alone** (Kurvenschmiede, ``local_run.py:28-35``): a deployment's
+    database is reached from a laptop through a ``cloud-sql-proxy`` on 127.0.0.1 — kastlan's
+    ``scripts/feedback-db.sh`` starts one on 5433–5436 as ``kastlan_app``, the live
+    database's own role — so its host reads as local, and an app started against it with
+    the flag set would let its user make themselves ADMIN in production. kastlan's
+    ``is_local_run`` (``config.py:224-229``) and keksdose's (``dev_switch.py:47-69``) both
+    read that tunnel as a laptop. The database's name cannot tell them apart either
+    (``kastlan`` on both ends). **The port can**: a local Postgres owns 5432, a tunnel beside
+    it cannot listen there too, and every tunnel the three apps start uses another port. So
+    never start a tunnel on 5432, nor on a port the app passes in ``ports``.
+
+    **An app whose local Postgres listens elsewhere passes its port** — keksdose's
+    ``.env.example`` names a Docker Postgres on 5433, ``ports={5432, 5433}`` — but only when
+    none of its tunnels uses that port (keksdose's ``FEEDBACK_PORT`` defaults to 5433:
+    move it first). That is the explicit allow; there is no other.
+
+    **Fail-closed** on everything else: a remote host, ``0.0.0.0``; a URL with no host at
+    all, where the driver picks one from ``PGHOST`` or the app's ``connect_args`` —
+    keksdose's Cloud Run URL is hostless, its socket set by ``db_socket_dir``; several hosts
+    or ports (``h1,h2``); a ``host`` and a port that disagree; an unparsable URL; and
+    SQLite, which proves nothing about where the process runs (keksdose's code default, so a
+    deployment that forgot its URL would count as a laptop). Every host a URL names — its
+    own and a ``?host=`` — must be local.
+
+    One signal of the proof, not the whole of it: kastlan adds ``K_SERVICE`` (Cloud Run
+    sets it), keksdose its ``db_socket_dir``, Kurvenschmiede its shipped key ring.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        if parts.scheme.lower().partition("+")[0] not in _POSTGRES_SCHEMES:
+            return False
+        own_host = unquote(parts.hostname or "")
+        own_port = parts.port
+    except ValueError:
+        return False
+    query = parse_qs(parts.query)
+    query_hosts = query.get("host", [])
+    query_ports = query.get("port", [])
+    if len(query_hosts) > 1 or len(query_ports) > 1:
+        return False
+    hosts = [host for host in (own_host, *query_hosts) if host]
+    if not hosts:
+        return False
+    named_ports: set[int] = set() if own_port is None else {own_port}
+    for text in query_ports:
+        if not (text.isascii() and text.isdigit()):
+            return False
+        named_ports.add(int(text))
+    if len(named_ports) > 1:
+        return False
+    port = named_ports.pop() if named_ports else _POSTGRES_PORT
+    sockets = {directory.rstrip("/") for directory in socket_dirs}
+    for host in hosts:
+        if "," in host:
+            return False
+        if host.startswith("/"):
+            if host.rstrip("/") not in sockets:
+                return False
+        elif not (_loopback(host.lower()) and port in ports):
+            return False
+    return True
 
 
 # --- the refusals ------------------------------------------------------------------------

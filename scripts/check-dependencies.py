@@ -15,6 +15,12 @@ pins keep their monthly Dependabot PR: no local tool lists those. The hook is en
 clone with `git config core.hooksPath .githooks`.
 
 Exit 1 only for an open alert. `SKIP_DEPENDENCY_CHECK=1` skips the whole check.
+
+Known vulnerabilities are ALSO the gate's (0.21): scripts/check.sh runs the kit's own
+`python -m eifi1_server_kit.dependency_audit` — `uv audit` over the lock, on every check, CI's included —
+which blocks on high and critical, as the ui-kit's npm audit does, and prints the rest. So a
+vulnerable pin fails there before Dependabot has opened an alert. This hook keeps the alerts
+and the update report.
 """
 
 from __future__ import annotations

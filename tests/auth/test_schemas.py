@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -28,6 +29,7 @@ from eifi1_server_kit.auth import (
     ZoneName,
     apply_zone_update,
 )
+from eifi1_server_kit.user_admin import AdminUserRow
 
 ADA: dict[str, Any] = {
     "email": "ada@example.com",
@@ -175,6 +177,42 @@ def test_a_demo_session_is_never_incomplete() -> None:
     assert not KeksdoseUser(**_user(last_name="", is_demo=True)).name_incomplete
     with pytest.raises(ValidationError):
         KeksdoseUser(**_user(role="GUEST"))
+
+
+def test_an_account_without_a_role_answers_null() -> None:
+    """0.21, the kastlan reuse audit's proposal 12: a kastlan user in no company holds no
+    role (its ``MeResponse.role: UserRole | None``)."""
+    user = UserResponse(**_user(role=None))
+    assert user.role is None and user.model_dump(mode="json")["role"] is None
+    with pytest.raises(ValidationError, match="role"):
+        UserResponse(**{key: value for key, value in _user().items() if key != "role"})
+    schema = UserResponse.model_json_schema(mode="serialization")
+    assert "role" in schema["required"], "always in the answer"
+    assert {"type": "null"} in schema["properties"]["role"]["anyOf"]
+
+
+def test_a_subclass_that_narrows_the_role_keeps_it_required_and_set() -> None:
+    """keksdose's ``role: UserRole``: no ``None`` there, and the schema stays a string."""
+
+    class Role(enum.StrEnum):
+        ADMIN = "ADMIN"
+        MEMBER = "MEMBER"
+
+    class KeksdoseUser(UserResponse):
+        role: Role
+
+    assert KeksdoseUser(**_user()).role is Role.MEMBER
+    with pytest.raises(ValidationError):
+        KeksdoseUser(**_user(role=None))
+    role = KeksdoseUser.model_json_schema(mode="serialization")["properties"]["role"]
+    assert "anyOf" not in role and "role" in KeksdoseUser.model_json_schema()["required"]
+
+
+def test_the_rosters_row_takes_no_role_too() -> None:
+    """``AdminUserRow`` is the ``UserResponse`` core: kastlan's platform list names users in no
+    company (it sent ``""``); ui-kit's ``UserRosterRow.role`` is ``string | null`` already."""
+    row = AdminUserRow.model_validate(_user(role=None))
+    assert row.role is None and row.model_dump(mode="json")["role"] is None
 
 
 def test_token_response_is_generic_over_the_apps_user() -> None:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable
+from functools import partial
 from typing import Annotated
 
 import pytest
@@ -21,6 +22,8 @@ from eifi1_server_kit.dev_switch import (
     DEV_SWITCH_ERROR_STATUS,
     DEV_SWITCH_LOG_TAG,
     DEV_SWITCH_PATH,
+    LOCAL_DATABASE_PORTS,
+    LOCAL_SOCKET_DIRS,
     DevSwitchAnswer,
     DevSwitchError,
     DevSwitchErrorCode,
@@ -28,6 +31,7 @@ from eifi1_server_kit.dev_switch import (
     DevSwitchSettings,
     DevSwitchUnsafeError,
     assert_dev_switch_safe,
+    database_is_local,
     dev_switch_enabled,
     effective_today,
     require_dev_switch,
@@ -394,3 +398,103 @@ def test_the_dependency_lets_through_only_true(value: object) -> None:
         require_dev_switch(_gate(value))(None)  # type: ignore[arg-type]
     assert refused.value.status_code == 404
     require_dev_switch(_gate(True))(None)  # type: ignore[arg-type]
+
+
+# --- database_is_local (0.21): the database half of the local-run proof ------------------
+
+
+def test_the_local_endpoints_are_postgres_own() -> None:
+    assert frozenset({5432}) == LOCAL_DATABASE_PORTS
+    assert frozenset({"/run/postgresql", "/var/run/postgresql", "/tmp"}) == LOCAL_SOCKET_DIRS
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # the apps' own defaults (kastlan config.py:21, Kurvenschmiede settings.py:156)
+        "postgresql+asyncpg://kastlan:kastlan_dev@127.0.0.1:5432/kastlan",
+        "postgresql+asyncpg://kurvenschmiede:kurvenschmiede_dev@127.0.0.1:5432/kurvenschmiede",
+        "postgresql+asyncpg://keksdose_test:keksdose_test@127.0.0.1:5432/keksdose_test",
+        "postgresql+asyncpg://kastlan:kastlan_dev@localhost/kastlan",  # no port: 5432
+        "postgresql+psycopg://kastlan@LOCALHOST:5432/kastlan",
+        "postgresql://u:p@[::1]:5432/db",
+        "postgresql://u:p@127.0.0.2:5432/db",  # all of 127.0.0.0/8
+        "postgres://u:p@127.0.0.1/db",
+        "  postgresql://u:p@127.0.0.1:5432/db  ",
+        # a local socket, as a query or as a percent-encoded host
+        "postgresql+asyncpg://kastlan@/kastlan?host=/var/run/postgresql",
+        "postgresql+asyncpg://kastlan@/kastlan?host=/run/postgresql/",
+        "postgresql+asyncpg://kastlan@/kastlan?host=%2Ftmp",
+        "postgresql://kastlan@%2Fvar%2Frun%2Fpostgresql/kastlan",
+        "postgresql+asyncpg://kastlan@/kastlan?host=/run/postgresql&port=5433",  # the socket's port is its own
+        "postgresql://u:p@localhost:5432/db?host=/run/postgresql",
+        "postgresql://u:p@localhost/db?port=5432",
+    ],
+)
+def test_a_database_on_this_machine_is_local(url: str) -> None:
+    assert database_is_local(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # the apps' tunnels to their deployments: the loopback, another port
+        "postgresql+asyncpg://kastlan_app:secret@127.0.0.1:5433/kastlan",  # kastlan feedback-db.sh
+        "postgresql+asyncpg://kastlan_app:secret@127.0.0.1:5436/kastlan",
+        "postgresql://keksdose_feedback:secret@127.0.0.1:5433/keksdose",  # keksdose feedback-live-lib.sh
+        "postgresql://postgres:secret@127.0.0.1:55432/kurvenschmiede",  # KS apply-roles.sh
+        "postgresql://u:p@localhost/db?port=5433",
+        # Cloud SQL's sockets
+        "postgresql+asyncpg://u:p@/db?host=/cloudsql/keksdose:europe-west4:keksdose-db",
+        "postgresql+asyncpg://u:p@/db?host=/tmp/keksdose:europe-west4:keksdose-db",
+        "postgresql+asyncpg://u:p@/db?host=/home/ada/sockets",
+        # a remote host, a bind address, a container's name
+        "postgresql+asyncpg://u:p@db.example.com:5432/db",
+        "postgresql+asyncpg://u:p@10.0.0.5:5432/db",
+        "postgresql+asyncpg://u:p@0.0.0.0:5432/db",
+        "postgresql+asyncpg://u:p@db:5432/db",
+        "postgresql+asyncpg://u:p@localhost.example.com:5432/db",
+        # no host: the driver picks one (PGHOST, keksdose's db_socket_dir on Cloud Run)
+        "postgresql+asyncpg://keksdose:secret@/keksdose",
+        "postgresql:///db",
+        # every host must be local, one host and one port only
+        "postgresql://u:p@127.0.0.1:5432/db?host=/cloudsql/p:r:i",
+        "postgresql://u:p@127.0.0.1:5432/db?host=db.example.com",
+        "postgresql://u:p@/db?host=/run/postgresql&host=db.example.com",
+        "postgresql://u:p@/db?host=/run/postgresql,db.example.com",
+        "postgresql://u:p@127.0.0.1:5432,db.example.com:5432/db",
+        "postgresql://u:p@127.0.0.1:5432/db?port=5433",
+        "postgresql://u:p@127.0.0.1/db?port=5432&port=5433",
+        "postgresql://u:p@127.0.0.1/db?port=fifty",
+        "postgresql://u:p@127.0.0.1/db?port=５４３２",
+        # not Postgres, not a URL
+        "sqlite+aiosqlite:///./keksdose.db",
+        "sqlite:///:memory:",
+        "mysql://u:p@127.0.0.1:5432/db",
+        "",
+        "127.0.0.1:5432",
+        "postgresql://u:p@[::1/db",
+        "postgresql://u:p@127.0.0.1:port/db",
+    ],
+)
+def test_anything_else_is_not(url: str) -> None:
+    assert database_is_local(url) is False
+
+
+def test_an_app_names_its_own_local_port_and_sockets() -> None:
+    """keksdose's Docker Postgres on 5433 (``.env.example``) — once its tunnel moved off it."""
+    docker = "postgresql+asyncpg://keksdose:keksdose@127.0.0.1:5433/keksdose"
+    assert database_is_local(docker) is False
+    assert database_is_local(docker, ports={5432, 5433}) is True
+    assert database_is_local("postgresql://u:p@127.0.0.1:5432/db", ports={5433}) is False
+    socket = "postgresql://u@/db?host=/Users/ada/pg"
+    assert database_is_local(socket) is False
+    assert database_is_local(socket, socket_dirs={"/Users/ada/pg/"}) is True
+    assert database_is_local("postgresql://u@/db?host=/tmp", socket_dirs=()) is False
+
+
+def test_it_is_the_proof_the_gate_takes() -> None:
+    tunnel = "postgresql+asyncpg://kastlan_app:secret@127.0.0.1:5433/kastlan"
+    laptop = "postgresql+asyncpg://kastlan:kastlan_dev@127.0.0.1:5432/kastlan"
+    for url, on in ((tunnel, False), (laptop, True)):
+        assert dev_switch_enabled(flag=True, local_run=partial(database_is_local, url), production=False) is on

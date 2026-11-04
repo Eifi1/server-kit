@@ -63,6 +63,7 @@ class _Member(_Strict):
     doc: str
     fields: list[_Field] | None = None
     values: list[_Value] | None = None
+    value: bool | int | float | str | None = None
     methods: list[_Method] | None = None
 
 
@@ -129,8 +130,12 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     }
     names = [module["name"] for module in data["modules"]]
     assert len(names) == len(set(names)) and set(names) == public, "a new module joins MODULES in the exporter"
-    contracts = {module["name"]: module["contract"] for module in data["modules"]}
-    assert all(contract is not None for contract in contracts.values())
+    contracts = {module["name"]: module.get("contract") for module in data["modules"]}
+    # Every module implements a ui-kit contract but the dependency audit, a command (0.21).
+    assert [name for name, contract in contracts.items() if contract is None] == ["eifi1_server_kit.dependency_audit"]
+    assert "contract" not in next(
+        module for module in data["modules"] if module["name"] == "eifi1_server_kit.dependency_audit"
+    )
     assert contracts["eifi1_server_kit.settings"] == {"doc": "docs/settings-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.demo"] == {"doc": "docs/landing-demo-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.billing"] == {"doc": "docs/billing-harmonization.md", "section": "§10, §14"}
@@ -200,6 +205,15 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
     assert members["eifi1_server_kit.billing", "PortalTarget"]["signature"].startswith("PortalTarget = Literal[")
     # A constant re-exported from another module is found where it is assigned.
     assert members["eifi1_server_kit.user_admin", "LIKE_ESCAPE"]["signature"] == 'LIKE_ESCAPE = "\\\\"'
+    # 0.21: a plain literal carries its value, for a TypeScript copy (keksdose's roster pager).
+    assert members["eifi1_server_kit.user_admin", "DEFAULT_PAGE_SIZE"]["value"] == 25
+    assert members["eifi1_server_kit.user_admin", "MAX_PAGE_SIZE"]["value"] == 200
+    assert members["eifi1_server_kit.user_admin", "LIKE_ESCAPE"]["value"] == "\\"
+    assert members["eifi1_server_kit.auth", "TOTP_STEP_CLAIM"]["value"] == "totp_step"
+    assert members["eifi1_server_kit.settings", "MIN_SECRET_LENGTH"]["value"] == 32
+    assert "value" not in ttl, "a timedelta is described by its signature"
+    assert "value" not in members["eifi1_server_kit.auth", "EMAIL_CHANGE_TOKEN_KIND"], "an enum member by its enum"
+    assert "value" not in members["eifi1_server_kit.auth", "TEXT_SIZES"]
     # 0.9's layer 2: a `type` statement is found too, and a generic dataclass keeps its parameter.
     clock = members["eifi1_server_kit.feedback", "Clock"]
     assert clock["kind"] == "constant" and clock["signature"] == "type Clock = Callable[[], datetime]"

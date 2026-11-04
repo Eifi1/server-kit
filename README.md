@@ -36,7 +36,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.20 ↔ ui-kit 0.51**: that ui-kit
+package with its own version and changelog. **server-kit 0.21 ↔ ui-kit 0.55**: that ui-kit
 release is tested against this release's API export (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
@@ -207,12 +207,28 @@ imported lazily; without the extra every call raises `ImportError` naming it.
 `SlidingWindowRateLimiter(max_hits=, window_seconds=, clock=)` with `hit(key) -> float |
 None` and `reset()`; `FeedbackLimiters` (20 uploads and 20 crashes per user per hour;
 since 0.11 also `.comment`, 20, and `.vote`, 60 — `comments_per_hour=`, `votes_per_hour=`);
-`retry_after_header`. **Process-local**: each worker and each Cloud Run instance counts on
-its own. Build limiters per app (`app.state`), never as module globals. When to charge —
+`retry_after_header` (whole seconds, rounded up past the wait, at least `1`). **Process-local**:
+each worker and each Cloud Run instance counts on its own. Build limiters per app (`app.state`), never as module globals. When to charge —
 before or after validation, before or after the crash dedupe — is the caller's choice;
 the module docstring records keksdose's order and the contract's recommendation. `count(key)` reads a key's live window without charging it,
 `forget(key)` drops one key's window. The sign-in budgets are
 [`auth.AuthLimiters`](#eifi1_server_kitauth).
+
+**Refuse with `charge(limiter, key, detail)`** (0.21): one hit charged, and when the window
+is full `ThrottledError(detail, retry_after)` — a `ValueError`, status 429 — which
+`install_contract_error_handlers` answers `{"detail": <the app's sentence>}` with
+`Retry-After` (`retry_after_header`): the body the apps' hand-raised `HTTPException`s sent,
+and **no `code`** (Marcel, 2026-11-04). `detail` may be a function of the header's seconds,
+so the sentence can say them. A `hit()` of `0.0` is a refusal (`is not None`, never
+truthiness), its header `1`. It replaces kastlan's `auth_helpers.throttle`, keksdose's
+`auth_router._throttle` and Kurvenschmiede's `auth_router._hold`:
+
+```python
+charge(limiters.login, ip, "Too many sign-in attempts — please try again in a moment.")
+charge(
+    limiters.register, ip, lambda seconds: f"Too many new accounts from this address. Try again in {seconds} seconds."
+)
+```
 
 **Key every per-IP window by `client_ip(headers, peer, *, trusted_hops)`** (landing-demo
 §5.1). Every proxy appends the address it was connected from, so `X-Forwarded-For` is
@@ -248,10 +264,11 @@ each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translati
 "invalid_credentials"}` at 401, …), user administration's `AccountError` (409) and
 `RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`),
 `demo.DemoError` (403 / 404 / 429 / 503), the dev switch's `dev_switch.DevSwitchError` (404 / 409 / 422), and billing's `BillingError` (400 / 402 / 404 /
-409 / 422 / 502 / 503) and `PlanLimitError` (402), and `jobs.JobsTokenError` (401). An `AccountError`'s or a `PlanLimitError`'s `extra`
+409 / 422 / 502 / 503) and `PlanLimitError` (402), and `jobs.JobsTokenError` (401), and
+`limiter.ThrottledError` (429, uncoded, with `Retry-After`; 0.21). An `AccountError`'s or a `PlanLimitError`'s `extra`
 fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin",
 "companies": [...]}` or `{"detail": …, "code": "plan_limit", "dimension": "budgets", "plan":
-"free", "limit": 1, "used": 1}`; a refusal's `headers` go on the answer (`DemoError`'s
+"free", "limit": 1, "used": 1}`; a refusal's `headers` go on the answer (`DemoError`'s and `ThrottledError`'s
 `Retry-After`). See
 [the refusals](#the-refusals).
 
@@ -348,9 +365,10 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | The gate | `registration_decision(is_first_user=, on_env_list=, has_valid_invitation=)` → `RegistrationDecision.FIRST_ADMIN` / `INVITED` / `CLOSED` (`.allowed`, `.first_admin`); `parse_env_list`, `env_list_match` (`None` = no list set) |
 | Names | `full_name(first, last, locale)` ("First Last"; hu "Last First"; zh "LastFirst" for a CJK name, a Latin one as written; a missing part leaves the other), `first_name_of(first, last)` (0.11: the first name others see, `None` while the last name is blank — no first-word guessing), `name_incomplete(first, last, is_demo=)`, `erasure_identifiers(email, first, last, old_display_name)` |
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
-| Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
+| Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=, extra=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale; a challenge's `extra` since 0.21: a passkey ceremony's `challenge`, the 2FA step's `totp_step`); `ChallengeKind` `2fa_challenge` (5 min), `password_change` (10 min), and since 0.21 the passkey ceremonies `webauthn_register` and `webauthn_auth` (5 min each, keksdose's and kastlan's strings; `CHALLENGE_LIFETIMES`); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
-| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `role` may be `null` since 0.21 — always answered, `null` for an account with no role, a kastlan user in no company; a subclass that narrows it to the app's enum keeps it a string; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `two_factor_challenge_claims(sub, *, last_step, now)` (the 2FA challenge, five minutes, the last accepted step under `TOTP_STEP_CLAIM` `"totp_step"`) and `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was minted: one challenge, one sign-in); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1 |
 | Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
@@ -367,6 +385,24 @@ signed-in endpoint answers 401 only about the session, never for a wrong input (
 kept its verification token in plaintext). Mail `raw`, store `digest`, look up by
 `hash_token(submitted)`, delete the row when it is redeemed, and delete the account's
 earlier rows when minting a new one.
+
+**A TOTP code is accepted once** (RFC 6238 §5.2; keksdose's audit AU-10, kastlan's reuse
+audit): a code stays valid for about 90 seconds, so without a record of the step it was
+accepted for, the same code signs in again. Keep the last accepted step on the account
+(`users.totp_last_step`, `NULL` until a code is accepted, cleared with the secret), and on
+every path that accepts a code — the sign-in, the setup's first code, the disable:
+
+```python
+matched = kit.totp_matched_step(secret, payload.code, now=datetime.now(UTC))
+if not kit.totp_step_accepted(matched, user.totp_last_step):  # wrong, malformed or spent: one answer
+    ...
+user.totp_last_step = matched  # same transaction; lock the row first (SELECT … FOR UPDATE)
+```
+
+The 2FA challenge is a stateless JWT, so the code alone cannot make it single-use: mint it
+with `two_factor_challenge_claims(user.id, last_step=user.totp_last_step, now=now)`, and at
+`POST /auth/login/2fa` refuse it as `token_invalid` when
+`two_factor_challenge_is_spent(claims, user.totp_last_step)` — read with the row locked.
 
 **Per IP a hard limit, per address only a delay** (§5.2). A lock per address would let
 anyone lock a known user out by failing on purpose, so `LoginFailureThrottle` counts
@@ -432,7 +468,7 @@ holds stay in the app.
 |---|---|
 | Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` (`target_email=None` is a group: the tick alone, never `type_email`) |
 | Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, billing §6's `plan` at `acknowledge`, and §11's group words `group_create`, `group_rename`, `group_delete` (at `acknowledge`), `membership_add`, `membership_role`, and (0.15) `group_deactivate`, `group_reactivate` (a whole company switched off and on); a team's `group_rename` detail is `{}`, a company's `{from, to}`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
-| User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, `RosterQueryError` (422), `LIKE_ESCAPE` |
+| User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200 (each with its `value` in the API export since 0.21, for a TypeScript pager to be held to), `RosterQueryError` (422), `LIKE_ESCAPE`; the sort grammar is keksdose's `key[.asc\|.desc]` (a bare trailing dot ascending, since 0.21) plus the contract's `-key` |
 | Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, target_group_id=, target_group_name=, now=)` → the row's fields (`target_group_name` on a `group_delete` row only) (an `AdminAction`, or the app's own action kept as written); `audit_detail(detail, action=)` (ids, roles, flags and counts only; 0.16: a `group_rename`'s top-level `from` / `to` are names, free text cleaned to at most `DETAIL_NAME_MAX_LENGTH` 200, never refused), `group_name_problem(name)` → `GroupNameProblem` (`blank` / `too_long` / `control_character` / `secret_shaped`) or `None`, the same rule for the app's request schema (0.16), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
 | Schemas | `AdminUserRow` (never the person's `device_timezone`, 0.17.0), `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
@@ -533,6 +569,7 @@ and their columns stay in the app.
 |---|---|
 | The PATCH rule | `apply_patch(obj, update, *, not_nullable, defaults=None, skip=())` → the fields written (`obj=None` when every field is skipped); `PatchNullError` (422, `code: "not_nullable"`, `fields`), `PATCH_NULL_CODE` |
 | The language | `canonical_locale(tag, offered)`, `parse_accept_language(header, offered)`, `profile_update_model(offered, name="ProfileUpdate")` |
+| The app's secrets at start (0.21) | `secret_problems(value, *, name="The secret", min_length=32, placeholders=())` → sentences for the startup log, `[]` for none: not set (`None`, empty, whitespace), a placeholder (`PLACEHOLDER_SECRET`, keksdose's `change[-_]?me` searched anywhere without case, or one of the app's own `placeholders`), too short (`MIN_SECRET_LENGTH` 32, surrounding whitespace not counted); `name` begins each, the value is never in one. Fatal in production or a warning is the app's call |
 
 **One rule for every settings body** (§6.1), whatever its verb — keksdose's push writes
 stay PUT. An omitted field keeps its value; an explicit `null` clears a nullable field;
@@ -679,6 +716,7 @@ like billing's, and the writes are the app's.
 |---|---|
 | Settings | `DevSwitchSettings`: `dev_switch_enabled` (**False**; `<APP>_DEV_SWITCH_ENABLED`, set only in the local `.env`) |
 | The gate | `dev_switch_enabled(*, flag, local_run, production)` (true only for the flag AND the app's proof of a local run — a bool or a callable, asked only when it matters — AND not production; anything but real booleans shuts it), `assert_dev_switch_safe(*, flag, production)` → `DevSwitchUnsafeError` (a `RuntimeError`, at start), `require_dev_switch(gate)` (the route dependency: 404 unless `gate()` is `True`, the second lock behind the mount) |
+| The database proof (0.21) | `database_is_local(url, *, ports=LOCAL_DATABASE_PORTS, socket_dirs=LOCAL_SOCKET_DIRS)`: a Postgres URL whose every host is a loopback host (`localhost`, 127.0.0.0/8, `::1`) on one of `ports` (5432; no port is 5432), or a unix socket in one of `socket_dirs` (`/run/postgresql`, `/var/run/postgresql`, `/tmp`). Never the host alone: the apps' `cloud-sql-proxy` tunnels to their live databases listen on 127.0.0.1 too (kastlan 5433–5436, keksdose 5433, Kurvenschmiede 55432). False for no host (the driver's pick, keksdose's Cloud Run URL), several hosts or ports, `0.0.0.0`, SQLite, anything unparsable. An app whose local Postgres is elsewhere passes `ports=` — once no tunnel of its own uses that port |
 | The wire | `DevSwitchRequest` (`role`, `plan`, `today`, at least one; extra fields refused; `today: null` clears the override, left out it is unchanged — `sets_today` tells them apart), `DevSwitchAnswer(role, plan, today)`, `validate_dev_switch(request, *, roles, plans=(), clock=False)` (the app's spelling back, compared without case; 422 otherwise; `today` kept as sent with `clock=True`, refused without it), `DEV_SWITCH_PATH` (`/dev/switch`), `DEV_SWITCH_LOG_TAG` (`dev_switch`) |
 | The dev clock (0.20) | `effective_today(override, *, gate, today)`: the override while `gate` (the route's own predicate, or a callable) is exactly `True`, else the app's real `today()` — required, in the app's time zone (the server's own date is UTC on Cloud Run) — so an override left in a local database never applies in a deployment. The route passes `clock=True` to `validate_dev_switch`. Every path that asks for today asks this; the client takes today from `DevSwitchAnswer.today` while one is set (ui-kit's `DevMenu` "Time" section) |
 | Refusals | `DevSwitchError`, `DevSwitchErrorCode`: `dev_switch_disabled` 404, `dev_switch_unknown_role` / `dev_switch_unknown_plan` 422, `dev_switch_refused` 409 (the app's own invariant), `dev_switch_no_clock` 422 (a `today` for an app without `clock=True`); `DEV_SWITCH_ERROR_STATUS`, `DEV_SWITCH_ERROR_DETAIL` |
@@ -697,9 +735,9 @@ class Settings(BaseSettings, DevSwitchSettings):  # KASTLAN_DEV_SWITCH_ENABLED=t
 def dev_switch_on(settings: Settings) -> bool:
     return dev_switch_enabled(
         flag=settings.dev_switch_enabled,
-        # A loopback database host and not on Cloud Run — never `environment != "production"`,
-        # whose default is "development". KS: lambda: settings.is_development and is_local_database(settings)
-        local_run=lambda: is_loopback(settings.database_url) and "K_SERVICE" not in os.environ,
+        # This machine's own Postgres (not a tunnel on the loopback) and not on Cloud Run — never
+        # `environment != "production"`, whose default is "development". KS adds its shipped key ring.
+        local_run=lambda: database_is_local(settings.database_url) and "K_SERVICE" not in os.environ,
         production=settings.environment == "production",
     )
 
@@ -1111,12 +1149,16 @@ never raises). The `kind` is what the mail is for, in its log lines and Resend's
 the old address, user-admin §6.2), `account_deletion` (the answer to a deletion
 request, §6.4; kastlan said `deletion`, Kurvenschmiede `deletion_request`) and
 `work_transferred_notice` (Kurvenschmiede: to an active former owner whose work an admin
-handed on, notifications §9.3) and `feedback_published` (0.11: once to an author of
-reports the round-0.38 migration made public, feedback §9.12).
+handed on, notifications §9.3), `feedback_published` (0.11: once to an author of
+reports the round-0.38 migration made public, feedback §9.12) and `passkey_added_notice`
+(0.21, keksdose's audit AU-1: to the account's address when a passkey is added — a way in
+no session cut-off reaches).
 `ResendClient(api_key=, from_address=, timeout=10, client=None,
 reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
 under one `Idempotency-Key` — `MailMessage.idempotency_key` where the message has one,
-else a random `{kind}-{uuid}` — and never logs the recipient. A `409` (the key's first
+else a random `{kind}-{uuid}` — and never logs the recipient: a refusal's line holds the
+`kind`, the status and Resend's error `name` (`validation_error`), never Resend's body, whose
+`message` can name the address (0.21; 0.20 logged its first 500 characters). A `409` (the key's first
 request still running, or the key used with another body) is not sent and not retried.
 **Set `reply_to`** from the
 app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address)`, i.e.
@@ -1390,10 +1432,32 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.20.0/eifi1_server_kit-0.20.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.21.0/eifi1_server_kit-0.21.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`).
+With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
+
+```toml
+[project]
+dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
+
+[tool.uv.sources]
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.21.0/eifi1_server_kit-0.21.0-py3-none-any.whl" }
+```
+
+**Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —
+the tag and the file name both carry the version — and lock that one package:
+
+```sh
+uv lock --upgrade-package eifi1-server-kit   # uv.lock: the new version and the new wheel's hash
+uv sync
+```
+
+Not a second `uv add "eifi1-server-kit… @ <new url>"`: it writes the dependency line again
+from the command, so the extras the command names are merged into the app's (uv 0.12.22
+turned `[billing,fastapi]` into `[billing,fastapi,mail]` for a `[mail]` copied from another
+app's line) and an app ends up installing what it never asked for. The URL edit leaves the
+extras exactly as the app wrote them.
 
 The RELEASE WHEEL, not a `git+https` source: slim images (`python:3.14-slim`) have no git
 binary, so uv cannot fetch a git source inside a Docker build (keksdose's finding). Each
@@ -1403,6 +1467,34 @@ touching an app's `pyproject.toml` or `uv.lock`, run its suite with the kit over
 `uv run --with-editable ../server-kit pytest`. Editable, not `--with ../server-kit`: uv
 caches the wheel it builds from a path until the kit's `pyproject.toml` changes, so an edit
 made after the first run would not be what gets tested (Kurvenschmiede's S6).
+
+## The dependency audit
+
+Every backend's gate blocks on **high and critical** advisories, as the ui-kit's
+`npm audit --audit-level=high` does, and prints the rest (0.21, `eifi1_server_kit.dependency_audit`;
+Marcel, 2026-11-04: the gates harmonized). From the directory of the app's `uv.lock`:
+
+```sh
+uv run --no-sync python -I -m eifi1_server_kit.dependency_audit
+uv run --no-sync python -I -m eifi1_server_kit.dependency_audit --ignore-until-fixed GHSA-xxxx-xxxx-xxxx="dev only, no fix yet"
+```
+
+| Exit | Means |
+|---|---|
+| `0` | nothing high or critical; each moderate or low finding printed as one `audit: warning` line (id, package, severity, fixed in) |
+| `1` | a high or critical finding (`audit: BLOCKS …`), or one whose severity is published nowhere — counted as high, its id printed |
+| `2` | the audit could not be read or the tool is broken: no `uv audit` (uv ≥ 0.12), a preview flag uv no longer knows, uv's own failure, a report of another shape — or a bad flag. Never a pass (an unreachable OSV is not this: its findings count as high, `1`) |
+
+It runs `uv audit --locked` over the whole lock — runtime, extras, the dev groups — and looks
+each finding up on OSV under its id and aliases: GitHub's rating first (what npm audit reads),
+else the highest CVSS v3 score, 7.0 and up high. A quarantined project blocks; an archived or
+deprecated one prints a line. Standard library only, so it needs no extra.
+
+**An exception is the app's, never an edit of the kit**: `--ignore-until-fixed ID=reason`,
+repeatable, the reason required (exit `2` without one) and printed on every run. uv leaves
+the advisory out only while no fixed version exists, so it blocks again the day a fix ships.
+It replaces `pip-audit` in each app's `check:security:backend`, which failed on any severity;
+the Dependabot check before a push (`scripts/check-dependencies.py`) stays beside it.
 
 ## Adopting layer 1
 
@@ -1555,10 +1647,14 @@ the inbox's 403 stays each app's own guard's.
 
 ```sh
 uv sync
-bash scripts/check.sh      # ruff, ruff format --check, mypy --strict, pytest + coverage, uv build, the API export
+bash scripts/check.sh      # the audit (high and critical block), ruff, ruff format --check, mypy --strict, pytest + coverage, uv build, the API export
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14.
+
+**The audit blocks on high and critical, as the ui-kit's npm audit does**: `check.sh` starts
+with the kit's own [dependency audit](#the-dependency-audit), the command every backend's
+gate runs; this repository accepts no advisory today.
 
 **Dependencies before a push** (0.13.1, as keksdose's): enable the hook once per clone with
 `git config core.hooksPath .githooks`. `.githooks/pre-push` runs
@@ -1570,7 +1666,8 @@ skips it.
 **The API export.** The kit's documentation lives in the ui-kit showcase, as its "Server
 kit" group (Marcel, 2026-10-07). `scripts/export_api.py` reads the installed package —
 each module's `__all__`, the signatures and docstrings as written, the `#:` comments of
-constants and fields, enum values — and writes `dist/server-kit-api.json` (format
+constants and fields, enum values, and the `value` of a constant that is a plain number,
+string or boolean (0.21) — and writes `dist/server-kit-api.json` (format
 `eifi1-server-kit-api`, version 1), with each module's ui-kit contract and the mail layout
 rendered over synthetic samples in `en` and `de-CH`. `check.sh` runs it right after `uv
 build`, so every release attaches it beside the wheel and the showcase pins it the same

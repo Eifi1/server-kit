@@ -16,7 +16,7 @@ the caller's mistake, and silently matching nothing would read as "no such users
 **Sort** (:func:`parse_sort`). ``name`` (last name, first name, then id — auth §3.2),
 ``email``, ``role``, ``created``, ``last_login``; descending with a leading ``-`` (the
 contract) or a ``.desc`` suffix (what the kit's ``DataTable`` ``encodeSorts`` writes and
-keksdose speaks today). Several keys, comma-separated, each at most once. No sort asked:
+keksdose speaks today; a bare trailing dot is ascending, as keksdose reads it). Several keys, comma-separated, each at most once. No sort asked:
 :data:`DEFAULT_ROSTER_SORT`, newest account first (keksdose). The app appends ``id`` as the
 last key so equal values never reorder between pages, and puts NULLs LAST in both
 directions — somebody who never signed in is not "the most recent" because the direction
@@ -147,19 +147,24 @@ def _parts(raw: str | Iterable[str] | None) -> list[str]:
 def parse_sort(raw: str | None, *, keys: Collection[str] = SORT_KEYS) -> tuple[RosterSort, ...]:
     """``"-last_login,name"`` → ``(RosterSort("last_login", True), RosterSort("name", False))``.
 
-    ``-key`` and ``key.desc`` sort descending, ``key`` and ``key.asc`` ascending. Nothing
-    asked: :data:`DEFAULT_ROSTER_SORT`. An unknown key, an unknown direction, both a ``-``
-    and a suffix, or a key twice is a :class:`RosterQueryError` naming it — two
-    directions for one key have no sensible reading (keksdose ``sorting.parse_sort``).
+    ``-key`` and ``key.desc`` sort descending, ``key`` and ``key.asc`` ascending — and
+    ``key.``, the dot with nothing after it, ascending too, as keksdose reads it: its
+    grammar is ``key[.asc|.desc]`` split at the first dot, the direction ``""``, ``asc`` or
+    ``desc`` (``domain/services/transactions_service.py`` ``parse_sort``, the register's;
+    the roster parsed the same way in ``domain/sorting.py`` until it took this function on
+    2026-10-31). The ``-`` is the contract's (§3.1) on top. Nothing asked:
+    :data:`DEFAULT_ROSTER_SORT`. An unknown key, an unknown direction, both a ``-`` and a
+    direction, or a key twice is a :class:`RosterQueryError` naming it — two directions
+    for one key have no sensible reading.
     """
     out: list[RosterSort] = []
     seen: set[str] = set()
     for part in _parts(raw):
         descending = part.startswith("-")
-        key, dot, direction = part.removeprefix("-").partition(".")
+        key, _, direction = part.removeprefix("-").partition(".")
         if key not in keys:
             raise RosterQueryError(f"Unknown sort key {key!r}; expected one of {', '.join(keys)}")
-        if dot and (descending or direction not in ("asc", "desc")):
+        if direction not in ("", "asc", "desc") or (descending and direction):
             raise RosterQueryError(f"Unknown sort direction {part!r}; use 'key', '-key', 'key.asc' or 'key.desc'")
         if key in seen:
             raise RosterQueryError(f"Duplicate sort key {key!r}")

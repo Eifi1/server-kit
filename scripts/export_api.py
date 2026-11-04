@@ -14,6 +14,7 @@ hand, so it cannot drift from the code. Format version 1::
         signature, doc,
         fields?: [{name, type, default, doc}],   # pydantic models, dataclasses, named tuples
         values?: [{name, value}],                # enums
+        value?: int | float | str | bool,        # a constant that is a plain literal
         methods?: [{name, signature, doc}]}]}],
      mails: [{id, title, locale, subject, html}]}
 
@@ -29,8 +30,14 @@ hand, so it cannot drift from the code. Format version 1::
 * **fields**: ``default`` is ``null`` for a required field, else the default's ``repr`` (or
   ``factory()``); a class-variable knob (``offered_locales``) is listed too, typed
   ``ClassVar[…]``.
+* **value** (0.21) is a constant's value when it is a plain ``int``, ``float``, ``str`` or
+  ``bool`` — ``MAX_PAGE_SIZE``'s ``200`` — so a TypeScript copy is checked against the
+  number itself, not a parse of its signature (keksdose's audit F-63: its roster copies the
+  page sizes by hand). An enum member, a tuple, a ``timedelta`` or a pattern has none.
+  Additive: format version 1 still.
 * **contract** is the ui-kit document and section the module implements, a path in
-  ``Eifi1/ui-kit``.
+  ``Eifi1/ui-kit``; a tool that implements none (``eifi1_server_kit.dependency_audit``, 0.21) has no
+  ``contract`` key, which the ui-kit's sync already reads as optional.
 * **mails** are :func:`~eifi1_server_kit.mail.render_mail` over SYNTHETIC sample texts
   ("Ada's Garden Planner", ``example.com``) in ``en`` and ``de-CH``, so the showcase can
   preview the one layout every app's mails share. No real person, product or address.
@@ -69,8 +76,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = ROOT / "dist" / "server-kit-api.json"
 PACKAGE = "eifi1_server_kit"
 
-#: Every public module, in the showcase's order, with the ui-kit contract it implements.
-MODULES: tuple[tuple[str, str, str], ...] = (
+#: Every public module, in the showcase's order, with the ui-kit contract it implements —
+#: ``None`` for a tool that implements none (the dependency audit, 0.21), which then has no
+#: ``contract`` in the export.
+MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     ("eifi1_server_kit.auth", "docs/auth-harmonization.md", "§8"),
     ("eifi1_server_kit.user_admin", "docs/user-admin-harmonization.md", "§7"),
     ("eifi1_server_kit.settings", "docs/settings-harmonization.md", "§6"),
@@ -102,6 +111,8 @@ MODULES: tuple[tuple[str, str, str], ...] = (
     # Local-first sync, the server half (0.15): keksdose's /sync protocol, shared with kastlan;
     # its named scopes (0.16, `sync.scopes`, re-exported by the package).
     ("eifi1_server_kit.sync", "docs/local-first-harmonization.md", "§1.5, §1.6, §2.4"),
+    # Every backend's gate (0.21): the dependency audit, a command rather than a contract.
+    ("eifi1_server_kit.dependency_audit", None, None),
 )
 
 Json = dict[str, Any]
@@ -414,12 +425,20 @@ def _describe_constant(module_name: str, name: str, value: object) -> Json:
         return {"name": name, "kind": "constant", "signature": f"{name} = {_repr(value)}", "doc": ""}
     home, statement = found
     source, _ = _module_source(home)
-    return {
+    described: Json = {
         "name": name,
         "kind": "constant",
         "signature": ast.get_source_segment(source, statement) or f"{name} = {_repr(value)}",
         "doc": _comment_doc(source.splitlines(), statement.lineno),
     }
+    # The exact types: an enum member is a str or an int too, and is described by its enum.
+    if type(value) in _LITERAL_TYPES:
+        described["value"] = value
+    return described
+
+
+#: The constants whose value the export carries as it is (format note **value**).
+_LITERAL_TYPES: tuple[type, ...] = (int, float, str, bool)
 
 
 def describe_member(module: ModuleType, name: str) -> Json:
@@ -437,19 +456,17 @@ def _summary(doc: str) -> str:
     return " ".join(doc.split("\n\n", 1)[0].split())
 
 
-def describe_module(module_name: str, contract_doc: str, section: str) -> Json:
+def describe_module(module_name: str, contract_doc: str | None, section: str | None) -> Json:
     module = importlib.import_module(module_name)
     exported = getattr(module, "__all__", None)
     if exported is None:
         raise RuntimeError(f"{module_name} has no __all__: say which names are public")
     doc = inspect.cleandoc(module.__doc__ or "")
-    return {
-        "name": module_name,
-        "summary": _summary(doc),
-        "doc": doc,
-        "contract": {"doc": contract_doc, "section": section},
-        "members": [describe_member(module, name) for name in exported],
-    }
+    described: Json = {"name": module_name, "summary": _summary(doc), "doc": doc}
+    if contract_doc is not None and section is not None:
+        described["contract"] = {"doc": contract_doc, "section": section}
+    described["members"] = [describe_member(module, name) for name in exported]
+    return described
 
 
 # --- mails -------------------------------------------------------------------------------

@@ -175,19 +175,36 @@ REFRESH_TOKEN_TYPE = "refresh"
 
 
 class ChallengeKind(enum.StrEnum):
-    """The ``type`` of a sign-in challenge token (keksdose ``infrastructure/security.py``)."""
+    """The ``type`` of a sign-in challenge token (keksdose ``infrastructure/security.py``).
+
+    The two passkey ceremonies (0.21) are keksdose's and kastlan's strings
+    (``passkey_service.py:78-79``, ``domain/services/tokens.py:25-26``): a stateless token
+    carries the ceremony's ``challenge`` from ``…/begin`` to ``…/finish`` — put it in
+    :func:`challenge_claims`' ``extra`` — and two types, so a registration's challenge can
+    never finish a sign-in. keksdose's E2EE unlock (``webauthn_prf``) stays its own.
+    """
 
     #: ``{requires_2fa, challenge_token}`` → ``POST /auth/login/2fa``.
     TWO_FACTOR = "2fa_challenge"
     #: ``{requires_password_change, challenge_token}`` → ``POST /auth/login/set-password``.
     PASSWORD_CHANGE = "password_change"
+    #: Adding a passkey: ``POST /auth/passkey/register/begin`` → ``…/finish``; ``sub`` is the
+    #: signed-in user.
+    WEBAUTHN_REGISTER = "webauthn_register"
+    #: Signing in with a passkey: ``POST /auth/passkey/login/begin`` → ``…/finish``; ``sub``
+    #: is ``"webauthn"`` (nobody yet: the credential names the account at ``finish``).
+    WEBAUTHN_AUTH = "webauthn_auth"
 
 
 #: How long a challenge lasts (keksdose): five minutes to copy a code out of an app that
-#: is already open; ten to invent, type and confirm a password.
+#: is already open; ten to invent, type and confirm a password; five for a passkey
+#: ceremony (keksdose ``_CHALLENGE_TTL_MINUTES``, kastlan ``_WEBAUTHN_LIFETIME``,
+#: Kurvenschmiede ``CHALLENGE_TTL``) — the browser's own prompt gives up after one.
 CHALLENGE_LIFETIMES: Mapping[ChallengeKind, timedelta] = {
     ChallengeKind.TWO_FACTOR: timedelta(minutes=5),
     ChallengeKind.PASSWORD_CHANGE: timedelta(minutes=10),
+    ChallengeKind.WEBAUTHN_REGISTER: timedelta(minutes=5),
+    ChallengeKind.WEBAUTHN_AUTH: timedelta(minutes=5),
 }
 
 #: The claims a builder sets itself; ``extra`` may not override them.
@@ -259,14 +276,26 @@ def refresh_claims(
     return _claims(sub, token_type=REFRESH_TOKEN_TYPE, now=now, lifetime=lifetime, extra=extra)
 
 
-def challenge_claims(sub: int | str, kind: ChallengeKind, *, now: datetime) -> dict[str, Any]:
+def challenge_claims(
+    sub: int | str, kind: ChallengeKind, *, now: datetime, extra: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """The payload of a sign-in challenge token, at its kind's lifetime (keksdose
     ``create_2fa_challenge_token`` / ``create_password_change_challenge_token``).
 
     Single-purpose through its ``type``: ``get_current_user`` and ``/auth/refresh`` refuse
     it, and each challenge endpoint accepts only its own kind.
+
+    ``extra`` (0.21) is what the challenge carries to its finish, under the same rules as an
+    access token's: a passkey ceremony's ``challenge``, the 2FA challenge's ``totp_step``::
+
+        challenge_claims("webauthn", ChallengeKind.WEBAUTHN_AUTH, now=now,
+                         extra={"challenge": bytes_to_base64url(options.challenge)})
+
+    ``iat`` keeps its fraction of a second, which a passkey sign-in compares with the
+    credential's last use (keksdose ``_verify_assertion``, kastlan
+    ``finish_authentication``).
     """
-    return _claims(sub, token_type=kind.value, now=now, lifetime=CHALLENGE_LIFETIMES[kind], extra=None)
+    return _claims(sub, token_type=kind.value, now=now, lifetime=CHALLENGE_LIFETIMES[kind], extra=extra)
 
 
 def token_is_revoked(claims_iat: object, sessions_invalid_before: datetime | None) -> bool:

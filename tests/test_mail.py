@@ -191,6 +191,7 @@ def test_the_account_notices_have_their_words() -> None:
         "account_deletion",
         "work_transferred_notice",
         "feedback_published",
+        "passkey_added_notice",
     ]
     assert not {str(kind) for kind in AccountNoticeKind} & {str(kind) for kind in OneTimeTokenKind}
 
@@ -308,6 +309,49 @@ async def test_resend_retries_once_and_only_where_it_can_help(
     keys = {request.headers["Idempotency-Key"] for request in resend.requests}
     assert len(keys) == 1, "a retry is the same mail to Resend"
     assert "ada@example.com" not in caplog.text, "the log never names the recipient"
+
+
+@pytest.mark.parametrize(
+    ("body", "logged"),
+    [
+        (
+            {"statusCode": 422, "name": "validation_error", "message": "Invalid `to` field: ada@example.com"},
+            "422 validation_error",
+        ),
+        ({"name": "ada@example.com", "message": "ada@example.com"}, "422 "),
+        ({"name": ["validation_error"]}, "422 "),
+        (["ada@example.com"], "422 "),
+        ("ada@example.com is not allowed", "422 "),
+    ],
+)
+async def test_a_refusal_logs_the_status_and_the_error_name_never_the_body(
+    body: object, logged: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Resend's ``message`` can name the address it refused; the log keeps 30 days (kastlan
+    ``_resend_error_name``, the reuse audit's proposal 12)."""
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        if isinstance(body, str):
+            return httpx.Response(422, text=body)
+        return httpx.Response(422, json=body)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+    client = ResendClient(api_key="re_test", from_address="noreply@app.example", client=http, retry_delay=0)
+    with caplog.at_level(logging.DEBUG, logger="eifi1_server_kit.mail"):
+        assert await client.send("ada@example.com", MESSAGE, kind="verification") is False
+    (record,) = caplog.records
+    assert record.getMessage() == f"Resend refused the verification mail (attempt 1): {logged}"
+    assert "ada@example.com" not in caplog.text and "Invalid" not in caplog.text
+
+
+async def test_a_5xx_without_a_body_logs_both_attempts_status(caplog: pytest.LogCaptureFixture) -> None:
+    resend = _Resend(503, 502)
+    with caplog.at_level(logging.WARNING, logger="eifi1_server_kit.mail"):
+        assert await resend.client().send("ada@example.com", MESSAGE, kind="password_reset") is False
+    assert [record.getMessage() for record in caplog.records] == [
+        "Resend refused the password_reset mail (attempt 1): 503 ",
+        "Resend refused the password_reset mail (attempt 2): 502 ",
+    ]
 
 
 async def test_resend_without_an_injected_client(monkeypatch: pytest.MonkeyPatch) -> None:
