@@ -28,6 +28,7 @@ from eifi1_server_kit.feedback import (
     UnknownAttachmentUrlError,
 )
 from eifi1_server_kit.jobs import JobsTokenError
+from eifi1_server_kit.limiter import ThrottledError
 from eifi1_server_kit.notifications import NotificationError
 from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.tours import TourProgressError
@@ -195,6 +196,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         JobsTokenError,
         NotificationError,
         TourProgressError,
+        ThrottledError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error

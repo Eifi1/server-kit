@@ -207,12 +207,28 @@ imported lazily; without the extra every call raises `ImportError` naming it.
 `SlidingWindowRateLimiter(max_hits=, window_seconds=, clock=)` with `hit(key) -> float |
 None` and `reset()`; `FeedbackLimiters` (20 uploads and 20 crashes per user per hour;
 since 0.11 also `.comment`, 20, and `.vote`, 60 — `comments_per_hour=`, `votes_per_hour=`);
-`retry_after_header`. **Process-local**: each worker and each Cloud Run instance counts on
-its own. Build limiters per app (`app.state`), never as module globals. When to charge —
+`retry_after_header` (whole seconds, rounded up past the wait, at least `1`). **Process-local**:
+each worker and each Cloud Run instance counts on its own. Build limiters per app (`app.state`), never as module globals. When to charge —
 before or after validation, before or after the crash dedupe — is the caller's choice;
 the module docstring records keksdose's order and the contract's recommendation. `count(key)` reads a key's live window without charging it,
 `forget(key)` drops one key's window. The sign-in budgets are
 [`auth.AuthLimiters`](#eifi1_server_kitauth).
+
+**Refuse with `charge(limiter, key, detail)`** (0.21): one hit charged, and when the window
+is full `ThrottledError(detail, retry_after)` — a `ValueError`, status 429 — which
+`install_contract_error_handlers` answers `{"detail": <the app's sentence>}` with
+`Retry-After` (`retry_after_header`): the body the apps' hand-raised `HTTPException`s sent,
+and **no `code`** (Marcel, 2026-11-04). `detail` may be a function of the header's seconds,
+so the sentence can say them. A `hit()` of `0.0` is a refusal (`is not None`, never
+truthiness), its header `1`. It replaces kastlan's `auth_helpers.throttle`, keksdose's
+`auth_router._throttle` and Kurvenschmiede's `auth_router._hold`:
+
+```python
+charge(limiters.login, ip, "Too many sign-in attempts — please try again in a moment.")
+charge(
+    limiters.register, ip, lambda seconds: f"Too many new accounts from this address. Try again in {seconds} seconds."
+)
+```
 
 **Key every per-IP window by `client_ip(headers, peer, *, trusted_hops)`** (landing-demo
 §5.1). Every proxy appends the address it was connected from, so `X-Forwarded-For` is
@@ -248,10 +264,11 @@ each of `CONTRACT_ERRORS`: `FeedbackError`, `UploadRejectedError`, the translati
 "invalid_credentials"}` at 401, …), user administration's `AccountError` (409) and
 `RosterQueryError` (422), `settings.PatchNullError` (422, `not_nullable`),
 `demo.DemoError` (403 / 404 / 429 / 503), the dev switch's `dev_switch.DevSwitchError` (404 / 409 / 422), and billing's `BillingError` (400 / 402 / 404 /
-409 / 422 / 502 / 503) and `PlanLimitError` (402), and `jobs.JobsTokenError` (401). An `AccountError`'s or a `PlanLimitError`'s `extra`
+409 / 422 / 502 / 503) and `PlanLimitError` (402), and `jobs.JobsTokenError` (401), and
+`limiter.ThrottledError` (429, uncoded, with `Retry-After`; 0.21). An `AccountError`'s or a `PlanLimitError`'s `extra`
 fields go beside `detail` and `code`, as in kastlan's `{"detail": …, "code": "last_admin",
 "companies": [...]}` or `{"detail": …, "code": "plan_limit", "dimension": "budgets", "plan":
-"free", "limit": 1, "used": 1}`; a refusal's `headers` go on the answer (`DemoError`'s
+"free", "limit": 1, "used": 1}`; a refusal's `headers` go on the answer (`DemoError`'s and `ThrottledError`'s
 `Retry-After`). See
 [the refusals](#the-refusals).
 

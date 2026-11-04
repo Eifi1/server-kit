@@ -13,7 +13,8 @@ user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
 :class:`~eifi1_server_kit.billing.PlanLimitError` 402, a token route's
 :class:`~eifi1_server_kit.jobs.JobsTokenError` 401, and the notifications'
 :class:`~eifi1_server_kit.notifications.NotificationError` 400 / 409 / 422, and tour
-progress's :class:`~eifi1_server_kit.tours.TourProgressError` 422).
+progress's :class:`~eifi1_server_kit.tours.TourProgressError` 422, and a full window's
+:class:`~eifi1_server_kit.limiter.ThrottledError` 429, uncoded, with its ``Retry-After``).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -67,6 +68,7 @@ from eifi1_server_kit.demo import DemoError
 from eifi1_server_kit.dev_switch import DevSwitchError
 from eifi1_server_kit.feedback.errors import FeedbackError
 from eifi1_server_kit.jobs import JobsTokenError
+from eifi1_server_kit.limiter import ThrottledError
 from eifi1_server_kit.notifications.errors import NotificationError
 from eifi1_server_kit.settings import PatchNullError
 from eifi1_server_kit.tours.errors import TourProgressError
@@ -107,6 +109,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     JobsTokenError,
     NotificationError,
     TourProgressError,
+    ThrottledError,
 )
 
 
@@ -119,8 +122,9 @@ async def contract_error_response(_request: Request, exc: Exception) -> Response
     :class:`~eifi1_server_kit.settings.PatchNullError`) adds it: ``{"detail": …, "code":
     …}``, and then its ``extra`` fields beside them — never in place of them. Those without
     a code answer exactly as before. A refusal's ``headers`` mapping goes on the answer
-    (:class:`~eifi1_server_kit.demo.DemoError`'s ``Retry-After``), as an ``HTTPException``'s
-    would.
+    (:class:`~eifi1_server_kit.demo.DemoError`'s and
+    :class:`~eifi1_server_kit.limiter.ThrottledError`'s ``Retry-After``), as an
+    ``HTTPException``'s would.
     """
     body: dict[str, object] = {"detail": str(exc)}
     code = getattr(exc, "code", None)
