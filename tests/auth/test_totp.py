@@ -10,11 +10,16 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from eifi1_server_kit.auth import (
+    CHALLENGE_LIFETIMES,
     TOTP_DIGITS,
+    TOTP_STEP_CLAIM,
     TOTP_STEP_SECONDS,
     TOTP_WINDOW,
+    ChallengeKind,
     totp_matched_step,
     totp_step_accepted,
+    two_factor_challenge_claims,
+    two_factor_challenge_is_spent,
 )
 
 #: RFC 6238 Appendix B's SHA-1 seed, the ASCII "12345678901234567890", in base32.
@@ -218,3 +223,55 @@ def test_a_later_step_is_accepted() -> None:
 )
 def test_the_replay_rule(matched: int | None, last_step: int | None, accepted: bool) -> None:
     assert totp_step_accepted(matched, last_step) is accepted
+
+
+# --- one challenge, one sign-in (0.21) -------------------------------------------------------
+
+NOW = datetime(2026, 11, 4, 9, 30, 15, 250_000, tzinfo=UTC)
+
+
+def test_the_claim_is_keksdoses_and_kastlans() -> None:
+    assert TOTP_STEP_CLAIM == "totp_step"
+
+
+@pytest.mark.parametrize("last_step", [None, 0, 59_766_666])
+def test_the_challenge_carries_the_last_accepted_step(last_step: int | None) -> None:
+    claims = two_factor_challenge_claims(7, last_step=last_step, now=NOW)
+    assert claims == {
+        "sub": "7",
+        "type": "2fa_challenge",
+        "iat": NOW.timestamp(),
+        "exp": int((NOW + CHALLENGE_LIFETIMES[ChallengeKind.TWO_FACTOR]).timestamp()),
+        "totp_step": last_step,
+    }
+
+
+def test_a_challenge_completes_one_sign_in() -> None:
+    """AU-10: minted at step None, redeemed (the step moves), then replayed with the next code."""
+    step = 59_766_666
+    last: int | None = None
+    challenge = two_factor_challenge_claims(7, last_step=last, now=NOW)
+    assert not two_factor_challenge_is_spent(challenge, last)
+    matched = totp_matched_step(KASTLAN_SECRET, _code(KASTLAN_SECRET, step), now=_at(step))
+    assert totp_step_accepted(matched, last)
+    last = matched
+    assert two_factor_challenge_is_spent(challenge, last), "the copy no longer matches"
+    fresh = two_factor_challenge_claims(7, last_step=last, now=NOW)
+    assert not two_factor_challenge_is_spent(fresh, last)
+
+
+def test_a_challenge_from_before_the_claim_reads_as_none() -> None:
+    old = {"sub": "7", "type": "2fa_challenge"}
+    assert not two_factor_challenge_is_spent(old, None), "an account that has accepted no code since"
+    assert two_factor_challenge_is_spent(old, 5)
+
+
+@pytest.mark.parametrize("copy", [True, False, "5", 5.0, [5], {"step": 5}])
+def test_anything_but_an_integer_or_none_is_spent(copy: object) -> None:
+    assert two_factor_challenge_is_spent({TOTP_STEP_CLAIM: copy}, 5)
+    assert two_factor_challenge_is_spent({TOTP_STEP_CLAIM: copy}, None)
+
+
+@pytest.mark.parametrize(("copy", "last_step", "spent"), [(5, 5, False), (4, 5, True), (6, 5, True), (5, None, True)])
+def test_spent_when_the_copy_differs(copy: int, last_step: int | None, spent: bool) -> None:
+    assert two_factor_challenge_is_spent({TOTP_STEP_CLAIM: copy}, last_step) is spent

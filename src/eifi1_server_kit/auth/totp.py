@@ -34,8 +34,21 @@ whose step is spent is refused like a wrong one — the caller gets the same ans
 app may count it apart (keksdose's ``replayed_code``: ``matched is not None`` and not
 accepted). Two redemptions racing each other must not both read the old step: lock the
 row (``SELECT … FOR UPDATE``, re-read) before the check, as kastlan's ``lock_challenge``
-does. The 2FA challenge token carries the step as it stood at minting (``totp_step``), so
-one challenge completes one sign-in; that claim stays the app's.
+does.
+
+**One challenge, one sign-in** (0.21, keksdose's AU-10 again). The 2FA challenge is a
+stateless JWT that stands in for the password for five minutes, so the code alone cannot
+make it single-use: whoever held a redeemed challenge could redeem it again with the next
+code. It carries the account's last accepted step as it stood at minting
+(:data:`TOTP_STEP_CLAIM`, :func:`two_factor_challenge_claims`), and every accepted code
+moves that step, so after one redemption the copy no longer matches
+(:func:`two_factor_challenge_is_spent`)::
+
+    token = jwt.encode(two_factor_challenge_claims(user.id, last_step=user.totp_last_step, now=now), …)
+    ...
+    claims = decode(payload.challenge_token)  # type 2fa_challenge, unexpired
+    if two_factor_challenge_is_spent(claims, user.totp_last_step):  # the row locked, re-read
+        raise AuthError(AuthErrorCode.TOKEN_INVALID)
 
 No ``pyotp``: the standard library's :mod:`hmac` computes the code — HOTP (RFC 4226) over
 the time step, HMAC-SHA1, six digits, thirty-second steps, what every authenticator app
@@ -52,14 +65,21 @@ import hashlib
 import hmac
 import re
 import unicodedata
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
+
+from eifi1_server_kit.auth.tokens import ChallengeKind, challenge_claims
 
 __all__ = [
     "TOTP_DIGITS",
+    "TOTP_STEP_CLAIM",
     "TOTP_STEP_SECONDS",
     "TOTP_WINDOW",
     "totp_matched_step",
     "totp_step_accepted",
+    "two_factor_challenge_claims",
+    "two_factor_challenge_is_spent",
 ]
 
 #: A code's digits (RFC 6238's default, every authenticator app's).
@@ -69,6 +89,10 @@ TOTP_STEP_SECONDS = 30
 #: Steps accepted either side of now (keksdose and kastlan: one, ``valid_window=1``), so a
 #: code stays valid for about 90 seconds and a phone a little off still signs in.
 TOTP_WINDOW = 1
+
+#: The 2FA challenge's copy of the account's last accepted step, as it stood at minting
+#: (keksdose ``infrastructure/security.py:74-77``, kastlan ``domain/services/tokens.py:29-32``).
+TOTP_STEP_CLAIM = "totp_step"
 
 _CODE = re.compile(rf"^[0-9]{{{TOTP_DIGITS}}}$")
 
@@ -145,3 +169,30 @@ def totp_step_accepted(matched: int | None, last_step: int | None) -> bool:
     if matched is None:
         return False
     return last_step is None or matched > last_step
+
+
+def two_factor_challenge_claims(sub: int | str, *, last_step: int | None, now: datetime) -> dict[str, Any]:
+    """The 2FA challenge's payload: :func:`~eifi1_server_kit.auth.challenge_claims` of
+    :attr:`~eifi1_server_kit.auth.ChallengeKind.TWO_FACTOR` (five minutes), with the
+    account's last accepted step under :data:`TOTP_STEP_CLAIM` — ``None`` when it has
+    accepted none (keksdose ``create_2fa_challenge_token``, kastlan's the same)."""
+    return challenge_claims(sub, ChallengeKind.TWO_FACTOR, now=now, extra={TOTP_STEP_CLAIM: last_step})
+
+
+def two_factor_challenge_is_spent(claims: Mapping[str, Any], last_step: int | None) -> bool:
+    """Has a code been accepted since this 2FA challenge was minted? (keksdose
+    ``auth_service.two_factor_challenge_is_spent``, kastlan
+    ``TwoFactorService.lock_challenge``.)
+
+    ``claims`` is the decoded challenge, already checked for its type and expiry;
+    ``last_step`` the account's ``totp_last_step`` NOW — read with the row locked, so two
+    redemptions racing each other cannot both see the old step. Spent when its copy
+    differs: every accepted code moves the step, so after one redemption no copy matches. A
+    challenge without the claim (minted before it existed) reads as ``None``, which matches
+    an account that has accepted no code since. Anything but an integer or ``None`` there is
+    spent. A spent challenge is refused like an expired one (``token_invalid``).
+    """
+    step = claims.get(TOTP_STEP_CLAIM)
+    if step is not None and (isinstance(step, bool) or not isinstance(step, int)):
+        return True
+    return step != last_step

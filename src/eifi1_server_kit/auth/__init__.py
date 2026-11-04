@@ -14,8 +14,9 @@ the reference, cited ``file`` per rule.
 * :mod:`~eifi1_server_kit.auth.passwords` — :func:`absent_account_check`, the dummy hash an
   address with no account is checked against, so it costs what one with an account costs;
 * :mod:`~eifi1_server_kit.auth.totp` — the second factor's code: the time step it matches
-  (:func:`totp_matched_step`) and the replay rule, a step accepted once
-  (:func:`totp_step_accepted`);
+  (:func:`totp_matched_step`), the replay rule, a step accepted once
+  (:func:`totp_step_accepted`), and one 2FA challenge for one sign-in
+  (:func:`two_factor_challenge_claims`, :func:`two_factor_challenge_is_spent`);
 * :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes, with the account's text size
   and contrast (``docs/text-size-harmonization.md`` §6);
 * :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes.
@@ -121,10 +122,13 @@ from eifi1_server_kit.auth.tokens import (
 )
 from eifi1_server_kit.auth.totp import (
     TOTP_DIGITS,
+    TOTP_STEP_CLAIM,
     TOTP_STEP_SECONDS,
     TOTP_WINDOW,
     totp_matched_step,
     totp_step_accepted,
+    two_factor_challenge_claims,
+    two_factor_challenge_is_spent,
 )
 
 __all__ = [
@@ -171,6 +175,7 @@ __all__ = [
     "TAG_SEPARATOR",
     "TEXT_SIZES",
     "TOTP_DIGITS",
+    "TOTP_STEP_CLAIM",
     "TOTP_STEP_SECONDS",
     "TOTP_WINDOW",
     "VERIFICATION_RESEND_PER_RECIPIENT",
@@ -224,5 +229,7 @@ __all__ = [
     "token_is_revoked",
     "totp_matched_step",
     "totp_step_accepted",
+    "two_factor_challenge_claims",
+    "two_factor_challenge_is_spent",
     "verified_by_invitation",
 ]
