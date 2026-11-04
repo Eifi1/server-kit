@@ -1619,16 +1619,23 @@ the inbox's 403 stays each app's own guard's.
 
 ```sh
 uv sync
-bash scripts/check.sh      # uv audit, ruff, ruff format --check, mypy --strict, pytest + coverage, uv build, the API export
+bash scripts/check.sh      # the audit (high and critical block), ruff, ruff format --check, mypy --strict, pytest + coverage, uv build, the API export
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14.
 
-**Known vulnerabilities fail the gate** (0.21): `check.sh` starts with `uv audit --locked`
-over the whole lock — runtime, extras and the dev group — against OSV, as the ui-kit runs
-`npm audit --audit-level=high`. uv's own command (uv ≥ 0.12, a preview feature), so no new
-dependency. A vulnerability accepted on purpose, with no fix yet, goes behind
-`--ignore-until-fixed <ID>` in `check.sh` with its reason.
+**The audit blocks on high and critical, as the ui-kit's npm audit does** (0.21; the ui-kit
+runs `npm audit --audit-level=high`): `check.sh` starts with `scripts/audit_dependencies.py`,
+`uv audit --locked` over the whole lock — runtime, extras and the dev group — against OSV.
+uv has no level option, so the script reads each finding's severity where it is published
+(GitHub's rating in the advisory's OSV record, else its CVSS v3 score, 7.0 and up high):
+high and critical fail the step; moderate and low print one line each (id, package,
+severity, fixed in) and pass; **no severity anywhere counts as high**, its id printed.
+`uv audit` and its JSON are uv previews (uv ≥ 0.12), so a missing subcommand, a preview flag
+uv no longer knows, or a report of another shape fails the step with what changed — it never
+passes silently. Standard library only, no new dependency. **An exception**: an advisory
+accepted on purpose while no fix exists goes in the script's `IGNORE_UNTIL_FIXED` with its
+reason; uv's `--ignore-until-fixed` reports it again the day a fix ships.
 
 **Dependencies before a push** (0.13.1, as keksdose's): enable the hook once per clone with
 `git config core.hooksPath .githooks`. `.githooks/pre-push` runs
