@@ -15,12 +15,15 @@ from starlette.routing import Route
 from eifi1_server_kit.auth import PROFILE_NOT_NULLABLE, ProfileUpdate
 from eifi1_server_kit.errors import CONTRACT_ERRORS, install_contract_error_handlers
 from eifi1_server_kit.settings import (
+    MIN_SECRET_LENGTH,
     PATCH_NULL_CODE,
+    PLACEHOLDER_SECRET,
     PatchNullError,
     apply_patch,
     canonical_locale,
     parse_accept_language,
     profile_update_model,
+    secret_problems,
 )
 
 #: kastlan's UI languages, in its menu's order.
@@ -328,3 +331,73 @@ def test_the_plain_profile_update_checks_only_the_shape_as_before() -> None:
     assert ProfileUpdate(locale="pt").locale == "pt"
     with pytest.raises(ValidationError):
         ProfileUpdate.model_validate({"locale": "de_ch"})
+
+
+# --- the app's secrets at start (0.21) ------------------------------------------------------
+
+STRONG = "4f9c2b7e1d8a6f3c0b5e9d2a7c4f1e8b"  # 32 hex characters, 128 bits
+
+
+def test_the_floor_is_kastlans_32() -> None:
+    assert MIN_SECRET_LENGTH == 32
+
+
+def test_a_strong_secret_has_no_problem() -> None:
+    assert secret_problems(STRONG) == []
+    assert secret_problems(STRONG + "\n") == [], "a pasted payload's newline is no problem"
+    assert secret_problems("x" * 8, min_length=8) == []
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", "\n"])
+def test_a_secret_not_set_is_said_once(value: str | None) -> None:
+    assert secret_problems(value, name="KASTLAN_JWT_SECRET") == ["KASTLAN_JWT_SECRET is not set"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # keksdose's INSECURE_JWT_SECRETS (infrastructure/settings.py:21-28), every one
+        "dev-secret-change-me",
+        "change-me-in-production",
+        "change-me-to-a-long-random-string",
+        "CHANGE_ME_openssl_rand_hex_32",
+        # kastlan's: the code default and its .env.example line, both longer than 32
+        "change-me-in-production-insecure-dev-default",
+        "change-me-to-a-long-random-string-min-32-chars",
+        "please-CHANGEME-before-deploying-this-to-anywhere",
+        "Change_Me_" + STRONG,
+    ],
+)
+def test_a_placeholder_is_refused_at_any_length(value: str) -> None:
+    problems = secret_problems(value, name="JWT secret")
+    assert "JWT secret is a placeholder, public in the repository" in problems
+    assert all(value not in problem for problem in problems), "the value never reaches a log"
+
+
+def test_the_apps_own_placeholders() -> None:
+    """kastlan's seal key template line says no "change me", and copies of it survive."""
+    seal = "another-long-random-string-min-32-chars"
+    assert secret_problems(seal) == []
+    assert secret_problems(seal, name="KASTLAN_TOTP_SEAL_KEY", placeholders={seal}) == [
+        "KASTLAN_TOTP_SEAL_KEY is a placeholder, public in the repository"
+    ]
+
+
+def test_a_short_secret_says_how_short() -> None:
+    assert secret_problems("s3cr3t", name="KASTLAN_JWT_SECRET") == [
+        "KASTLAN_JWT_SECRET is too short (6 characters; at least 32)"
+    ]
+    assert secret_problems(STRONG[:31]) == ["The secret is too short (31 characters; at least 32)"]
+    assert secret_problems(STRONG, min_length=64) == ["The secret is too short (32 characters; at least 64)"]
+
+
+def test_a_short_placeholder_says_both() -> None:
+    assert secret_problems("changeme") == [
+        "The secret is a placeholder, public in the repository",
+        "The secret is too short (8 characters; at least 32)",
+    ]
+
+
+def test_the_pattern_is_searched_without_case() -> None:
+    assert PLACEHOLDER_SECRET.search("x-ChAnGe_Me-y")
+    assert not PLACEHOLDER_SECRET.search("change-it-me")

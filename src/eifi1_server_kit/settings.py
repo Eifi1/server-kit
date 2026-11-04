@@ -1,4 +1,5 @@
-"""Settings on the server: one rule for every settings body, and the account's language.
+"""Settings on the server: one rule for every settings body, the account's language, and the
+app's secrets at start.
 
 ``docs/settings-harmonization.md`` §6 in ``Eifi1/ui-kit``. Two things every app's settings
 endpoints share; the endpoints themselves, their models and their columns stay in the app.
@@ -30,13 +31,19 @@ app's offered languages: :func:`canonical_locale` replaces keksdose's
 account; for everyone with one, mails and pushes use the account's locale and the server
 never guesses from the request. ``ProfileUpdate`` takes the app's offered languages through
 its ``offered_locales`` knob, or :func:`profile_update_model` builds that class in one call.
+
+**The app's secrets at start** (0.21, the kastlan reuse audit's proposal 11). Each app
+checks its signing secret and its keys when it starts and refuses to start in production
+on a weak one: :func:`secret_problems` is that check — not set, a placeholder (keksdose's
+``change[-_]?me`` rule, :data:`PLACEHOLDER_SECRET`), too short (:data:`MIN_SECRET_LENGTH`).
+What follows from a problem — fatal in production, a warning on a laptop — stays the app's.
 """
 
 from __future__ import annotations
 
 import re
 import types
-from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, MutableMapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel
@@ -45,12 +52,15 @@ if TYPE_CHECKING:
     from eifi1_server_kit.auth.schemas import ProfileUpdate
 
 __all__ = [
+    "MIN_SECRET_LENGTH",
     "PATCH_NULL_CODE",
+    "PLACEHOLDER_SECRET",
     "PatchNullError",
     "apply_patch",
     "canonical_locale",
     "parse_accept_language",
     "profile_update_model",
+    "secret_problems",
 ]
 
 #: The ``code`` of :class:`PatchNullError`, named after ``apply_patch``'s ``not_nullable``.
@@ -298,3 +308,62 @@ def profile_update_model(offered: Sequence[str], *, name: str = "ProfileUpdate")
     return cast(
         "type[ProfileUpdate]", types.new_class(name, (ProfileUpdate,), exec_body=lambda ns: ns.update(namespace))
     )
+
+
+# --- the app's secrets at start --------------------------------------------------------------
+
+#: The shortest secret accepted: 32 characters (kastlan ``config.py:194``, its JWT secret and
+#: its TOTP seal key), 256 bits of hex or more of base64.
+MIN_SECRET_LENGTH = 32
+
+#: An env template's "replace me" value, anywhere in it and without case (keksdose
+#: ``infrastructure/settings.py:30-43``): ``CHANGE_ME_…`` in its ``deploy/.env.prod.example``,
+#: ``change-me-…`` in its ``backend/.env.example`` and in kastlan's ``.env.example``,
+#: ``changeme``. Searched, not matched at the start as keksdose's prefix is, so the code
+#: defaults that END with it (keksdose's ``dev-secret-change-me``) need no list of their own.
+#: A pattern rather than a list, so a template line added later is caught without anyone
+#: keeping a set in step; a random secret holds it by chance about never.
+PLACEHOLDER_SECRET = re.compile(r"change[-_]?me", re.IGNORECASE)
+
+
+def secret_problems(
+    value: str | None,
+    *,
+    name: str = "The secret",
+    min_length: int = MIN_SECRET_LENGTH,
+    placeholders: Collection[str] = (),
+) -> list[str]:
+    """What is wrong with a secret, as sentences for a startup log; ``[]`` when nothing is
+    (keksdose ``is_placeholder_secret``, kastlan ``validate_security``)::
+
+        problems = [
+            *secret_problems(s.jwt_secret, name="KASTLAN_JWT_SECRET"),
+            *secret_problems(s.totp_seal_key, name="KASTLAN_TOTP_SEAL_KEY",
+                             placeholders={"another-long-random-string-min-32-chars"}),
+        ]
+        if problems and is_production(s):
+            raise RuntimeError("Refusing to start in production: " + "; ".join(problems))
+
+    * **not set** — ``None``, empty or only whitespace (and nothing else is said);
+    * **a placeholder** — :data:`PLACEHOLDER_SECRET` anywhere in it, or one of
+      ``placeholders``, the app's own public values that don't say "change me" (a code
+      default, a template line; copies of a template outlive its next edit). A placeholder
+      of any length is public: kastlan's ``change-me-to-a-long-random-string-min-32-chars``
+      passed its 32-character check (the reuse audit's proposal 11). Anyone who signs
+      tokens with it lets a forged ``{"sub": "1", "role": "ADMIN"}`` in;
+    * **too short** — fewer than ``min_length`` characters, surrounding whitespace not
+      counted (a pasted Secret Manager payload's newline adds nothing).
+
+    ``name`` begins each sentence: the variable to fix (``KASTLAN_JWT_SECRET``). The value
+    itself is never in one, so the list can go to any log. Whether a problem is fatal is
+    the app's: in production, refuse to start; on a laptop, a warning.
+    """
+    secret = (value or "").strip()
+    if not secret:
+        return [f"{name} is not set"]
+    problems: list[str] = []
+    if PLACEHOLDER_SECRET.search(secret) or secret in placeholders:
+        problems.append(f"{name} is a placeholder, public in the repository")
+    if len(secret) < min_length:
+        problems.append(f"{name} is too short ({len(secret)} characters; at least {min_length})")
+    return problems

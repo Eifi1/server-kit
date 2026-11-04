@@ -547,6 +547,7 @@ and their columns stay in the app.
 |---|---|
 | The PATCH rule | `apply_patch(obj, update, *, not_nullable, defaults=None, skip=())` → the fields written (`obj=None` when every field is skipped); `PatchNullError` (422, `code: "not_nullable"`, `fields`), `PATCH_NULL_CODE` |
 | The language | `canonical_locale(tag, offered)`, `parse_accept_language(header, offered)`, `profile_update_model(offered, name="ProfileUpdate")` |
+| The app's secrets at start (0.21) | `secret_problems(value, *, name="The secret", min_length=32, placeholders=())` → sentences for the startup log, `[]` for none: not set (`None`, empty, whitespace), a placeholder (`PLACEHOLDER_SECRET`, keksdose's `change[-_]?me` searched anywhere without case, or one of the app's own `placeholders`), too short (`MIN_SECRET_LENGTH` 32, surrounding whitespace not counted); `name` begins each, the value is never in one. Fatal in production or a warning is the app's call |
 
 **One rule for every settings body** (§6.1), whatever its verb — keksdose's push writes
 stay PUT. An omitted field keeps its value; an explicit `null` clears a nullable field;
@@ -693,6 +694,7 @@ like billing's, and the writes are the app's.
 |---|---|
 | Settings | `DevSwitchSettings`: `dev_switch_enabled` (**False**; `<APP>_DEV_SWITCH_ENABLED`, set only in the local `.env`) |
 | The gate | `dev_switch_enabled(*, flag, local_run, production)` (true only for the flag AND the app's proof of a local run — a bool or a callable, asked only when it matters — AND not production; anything but real booleans shuts it), `assert_dev_switch_safe(*, flag, production)` → `DevSwitchUnsafeError` (a `RuntimeError`, at start), `require_dev_switch(gate)` (the route dependency: 404 unless `gate()` is `True`, the second lock behind the mount) |
+| The database proof (0.21) | `database_is_local(url, *, ports=LOCAL_DATABASE_PORTS, socket_dirs=LOCAL_SOCKET_DIRS)`: a Postgres URL whose every host is a loopback host (`localhost`, 127.0.0.0/8, `::1`) on one of `ports` (5432; no port is 5432), or a unix socket in one of `socket_dirs` (`/run/postgresql`, `/var/run/postgresql`, `/tmp`). Never the host alone: the apps' `cloud-sql-proxy` tunnels to their live databases listen on 127.0.0.1 too (kastlan 5433–5436, keksdose 5433, Kurvenschmiede 55432). False for no host (the driver's pick, keksdose's Cloud Run URL), several hosts or ports, `0.0.0.0`, SQLite, anything unparsable. An app whose local Postgres is elsewhere passes `ports=` — once no tunnel of its own uses that port |
 | The wire | `DevSwitchRequest` (`role`, `plan`, `today`, at least one; extra fields refused; `today: null` clears the override, left out it is unchanged — `sets_today` tells them apart), `DevSwitchAnswer(role, plan, today)`, `validate_dev_switch(request, *, roles, plans=(), clock=False)` (the app's spelling back, compared without case; 422 otherwise; `today` kept as sent with `clock=True`, refused without it), `DEV_SWITCH_PATH` (`/dev/switch`), `DEV_SWITCH_LOG_TAG` (`dev_switch`) |
 | The dev clock (0.20) | `effective_today(override, *, gate, today)`: the override while `gate` (the route's own predicate, or a callable) is exactly `True`, else the app's real `today()` — required, in the app's time zone (the server's own date is UTC on Cloud Run) — so an override left in a local database never applies in a deployment. The route passes `clock=True` to `validate_dev_switch`. Every path that asks for today asks this; the client takes today from `DevSwitchAnswer.today` while one is set (ui-kit's `DevMenu` "Time" section) |
 | Refusals | `DevSwitchError`, `DevSwitchErrorCode`: `dev_switch_disabled` 404, `dev_switch_unknown_role` / `dev_switch_unknown_plan` 422, `dev_switch_refused` 409 (the app's own invariant), `dev_switch_no_clock` 422 (a `today` for an app without `clock=True`); `DEV_SWITCH_ERROR_STATUS`, `DEV_SWITCH_ERROR_DETAIL` |
@@ -711,9 +713,9 @@ class Settings(BaseSettings, DevSwitchSettings):  # KASTLAN_DEV_SWITCH_ENABLED=t
 def dev_switch_on(settings: Settings) -> bool:
     return dev_switch_enabled(
         flag=settings.dev_switch_enabled,
-        # A loopback database host and not on Cloud Run — never `environment != "production"`,
-        # whose default is "development". KS: lambda: settings.is_development and is_local_database(settings)
-        local_run=lambda: is_loopback(settings.database_url) and "K_SERVICE" not in os.environ,
+        # This machine's own Postgres (not a tunnel on the loopback) and not on Cloud Run — never
+        # `environment != "production"`, whose default is "development". KS adds its shipped key ring.
+        local_run=lambda: database_is_local(settings.database_url) and "K_SERVICE" not in os.environ,
         production=settings.environment == "production",
     )
 
