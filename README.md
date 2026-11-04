@@ -468,7 +468,7 @@ holds stay in the app.
 |---|---|
 | Rules | `refuse_self(actor_id, target_id)`; `refuse_last_admin(target_is_admin=, active_admins=, change_removes_admin=)` (kastlan counts per company); `confirm_email_matches(target_email, typed)` (normalised, so case and spaces never fail it and a `+tag` is part of it); `require_confirmation(level, target_email=, acknowledged=, confirm_email=)` (`target_email=None` is a group: the tick alone, never `type_email`) |
 | Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, billing §6's `plan` at `acknowledge`, and §11's group words `group_create`, `group_rename`, `group_delete` (at `acknowledge`), `membership_add`, `membership_role`, and (0.15) `group_deactivate`, `group_reactivate` (a whole company switched off and on); a team's `group_rename` detail is `{}`, a company's `{from, to}`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
-| User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200, `RosterQueryError` (422), `LIKE_ESCAPE` |
+| User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200 (each with its `value` in the API export since 0.21, for a TypeScript pager to be held to), `RosterQueryError` (422), `LIKE_ESCAPE`; the sort grammar is keksdose's `key[.asc\|.desc]` (a bare trailing dot ascending, since 0.21) plus the contract's `-key` |
 | Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, target_group_id=, target_group_name=, now=)` → the row's fields (`target_group_name` on a `group_delete` row only) (an `AdminAction`, or the app's own action kept as written); `audit_detail(detail, action=)` (ids, roles, flags and counts only; 0.16: a `group_rename`'s top-level `from` / `to` are names, free text cleaned to at most `DETAIL_NAME_MAX_LENGTH` 200, never refused), `group_name_problem(name)` → `GroupNameProblem` (`blank` / `too_long` / `control_character` / `secret_shaped`) or `None`, the same rule for the app's request schema (0.16), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
 | Schemas | `AdminUserRow` (never the person's `device_timezone`, 0.17.0), `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
@@ -1149,8 +1149,10 @@ never raises). The `kind` is what the mail is for, in its log lines and Resend's
 the old address, user-admin §6.2), `account_deletion` (the answer to a deletion
 request, §6.4; kastlan said `deletion`, Kurvenschmiede `deletion_request`) and
 `work_transferred_notice` (Kurvenschmiede: to an active former owner whose work an admin
-handed on, notifications §9.3) and `feedback_published` (0.11: once to an author of
-reports the round-0.38 migration made public, feedback §9.12).
+handed on, notifications §9.3), `feedback_published` (0.11: once to an author of
+reports the round-0.38 migration made public, feedback §9.12) and `passkey_added_notice`
+(0.21, keksdose's audit AU-1: to the account's address when a passkey is added — a way in
+no session cut-off reaches).
 `ResendClient(api_key=, from_address=, timeout=10, client=None,
 reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
 under one `Idempotency-Key` — `MailMessage.idempotency_key` where the message has one,
@@ -1610,7 +1612,8 @@ skips it.
 **The API export.** The kit's documentation lives in the ui-kit showcase, as its "Server
 kit" group (Marcel, 2026-10-07). `scripts/export_api.py` reads the installed package —
 each module's `__all__`, the signatures and docstrings as written, the `#:` comments of
-constants and fields, enum values — and writes `dist/server-kit-api.json` (format
+constants and fields, enum values, and the `value` of a constant that is a plain number,
+string or boolean (0.21) — and writes `dist/server-kit-api.json` (format
 `eifi1-server-kit-api`, version 1), with each module's ui-kit contract and the mail layout
 rendered over synthetic samples in `en` and `de-CH`. `check.sh` runs it right after `uv
 build`, so every release attaches it beside the wheel and the showcase pins it the same

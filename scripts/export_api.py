@@ -14,6 +14,7 @@ hand, so it cannot drift from the code. Format version 1::
         signature, doc,
         fields?: [{name, type, default, doc}],   # pydantic models, dataclasses, named tuples
         values?: [{name, value}],                # enums
+        value?: int | float | str | bool,        # a constant that is a plain literal
         methods?: [{name, signature, doc}]}]}],
      mails: [{id, title, locale, subject, html}]}
 
@@ -29,6 +30,11 @@ hand, so it cannot drift from the code. Format version 1::
 * **fields**: ``default`` is ``null`` for a required field, else the default's ``repr`` (or
   ``factory()``); a class-variable knob (``offered_locales``) is listed too, typed
   ``ClassVar[…]``.
+* **value** (0.21) is a constant's value when it is a plain ``int``, ``float``, ``str`` or
+  ``bool`` — ``MAX_PAGE_SIZE``'s ``200`` — so a TypeScript copy is checked against the
+  number itself, not a parse of its signature (keksdose's audit F-63: its roster copies the
+  page sizes by hand). An enum member, a tuple, a ``timedelta`` or a pattern has none.
+  Additive: format version 1 still.
 * **contract** is the ui-kit document and section the module implements, a path in
   ``Eifi1/ui-kit``.
 * **mails** are :func:`~eifi1_server_kit.mail.render_mail` over SYNTHETIC sample texts
@@ -414,12 +420,20 @@ def _describe_constant(module_name: str, name: str, value: object) -> Json:
         return {"name": name, "kind": "constant", "signature": f"{name} = {_repr(value)}", "doc": ""}
     home, statement = found
     source, _ = _module_source(home)
-    return {
+    described: Json = {
         "name": name,
         "kind": "constant",
         "signature": ast.get_source_segment(source, statement) or f"{name} = {_repr(value)}",
         "doc": _comment_doc(source.splitlines(), statement.lineno),
     }
+    # The exact types: an enum member is a str or an int too, and is described by its enum.
+    if type(value) in _LITERAL_TYPES:
+        described["value"] = value
+    return described
+
+
+#: The constants whose value the export carries as it is (format note **value**).
+_LITERAL_TYPES: tuple[type, ...] = (int, float, str, bool)
 
 
 def describe_member(module: ModuleType, name: str) -> Json:

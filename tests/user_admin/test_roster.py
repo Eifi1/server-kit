@@ -52,6 +52,10 @@ def test_nothing_asked_is_the_first_page_newest_first() -> None:
         ("-name", (("name", True),)),
         ("name.desc", (("name", True),)),
         ("name.asc", (("name", False),)),
+        # keksdose's grammar splits at the first dot and takes "" as no direction (0.21)
+        ("name.", (("name", False),)),
+        ("-name.", (("name", True),)),
+        ("created.,email.desc", (("created", False), ("email", True))),
         ("-last_login, email", (("last_login", True), ("email", False))),
         ("created.desc,role,", (("created", True), ("role", False))),
         ("", (("created", True),)),
@@ -71,8 +75,11 @@ def test_sort_takes_the_contracts_dash_and_the_kits_suffix(
         ("plan", "Unknown sort key 'plan'"),
         ("-", "Unknown sort key ''"),
         ("name.up", "Unknown sort direction 'name.up'"),
-        ("name.", "Unknown sort direction 'name.'"),
+        ("name.desc.", "Unknown sort direction 'name.desc.'"),
+        ("name..", "Unknown sort direction 'name..'"),
         ("-name.desc", "Unknown sort direction '-name.desc'"),
+        ("-name.asc", "Unknown sort direction '-name.asc'"),
+        (".desc", "Unknown sort key ''"),
         ("name,-name", "Duplicate sort key 'name'"),
     ],
 )

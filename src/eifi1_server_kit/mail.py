@@ -416,7 +416,7 @@ class AccountNoticeKind(enum.StrEnum):
 
     The user-admin contract requires the first two of every app with an email change and
     an account deletion; the third is Kurvenschmiede's, for its admin transfer of work
-    (notifications §9.3)::
+    (notifications §9.3); the fifth tells an account a passkey was added (keksdose)::
 
         await mailer.send(user.email, message, kind=AccountNoticeKind.ACCOUNT_DELETION)
     """
@@ -438,6 +438,12 @@ class AccountNoticeKind(enum.StrEnum):
     #: Once per person, through the app's once-marker (``feedback_published:<user_id>``).
     #: About the person's own data, so no switch and no unsubscribe link (kk, KS).
     FEEDBACK_PUBLISHED = "feedback_published"
+    #: To the account's address when a passkey is added (0.21; keksdose's audit AU-1,
+    #: ``passkey_service._announce_added``): a way in that no session cut-off reaches and a
+    #: new password does not lock out, so one added behind the owner's back must not go
+    #: unnoticed. keksdose's word, in the style of ``email_change_notice``; the words stay
+    #: the app's.
+    PASSKEY_ADDED_NOTICE = "passkey_added_notice"
 
 
 # --- the test mail (admin-harmonization §9.2, 0.15) --------------------------------------
