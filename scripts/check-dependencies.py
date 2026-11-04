@@ -15,6 +15,10 @@ pins keep their monthly Dependabot PR: no local tool lists those. The hook is en
 clone with `git config core.hooksPath .githooks`.
 
 Exit 1 only for an open alert. `SKIP_DEPENDENCY_CHECK=1` skips the whole check.
+
+Known vulnerabilities are ALSO the gate's (0.21): scripts/check.sh runs `uv audit` over the
+lock on every check, CI's included, so a vulnerable pin fails there even offline from GitHub
+or before Dependabot has opened an alert. This hook keeps the alerts and the update report.
 """
 
 from __future__ import annotations

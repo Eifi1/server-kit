@@ -1597,10 +1597,16 @@ the inbox's 403 stays each app's own guard's.
 
 ```sh
 uv sync
-bash scripts/check.sh      # ruff, ruff format --check, mypy --strict, pytest + coverage, uv build, the API export
+bash scripts/check.sh      # uv audit, ruff, ruff format --check, mypy --strict, pytest + coverage, uv build, the API export
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same script on Python 3.14.
+
+**Known vulnerabilities fail the gate** (0.21): `check.sh` starts with `uv audit --locked`
+over the whole lock — runtime, extras and the dev group — against OSV, as the ui-kit runs
+`npm audit --audit-level=high`. uv's own command (uv ≥ 0.12, a preview feature), so no new
+dependency. A vulnerability accepted on purpose, with no fix yet, goes behind
+`--ignore-until-fixed <ID>` in `check.sh` with its reason.
 
 **Dependencies before a push** (0.13.1, as keksdose's): enable the hook once per clone with
 `git config core.hooksPath .githooks`. `.githooks/pre-push` runs

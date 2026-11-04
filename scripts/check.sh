@@ -8,6 +8,13 @@ cd "$(dirname "$0")/.."
 # `--locked`, not `--frozen`: fail when pyproject.toml and uv.lock disagree instead of
 # silently installing from a stale lock.
 uv sync --locked
+# Known vulnerabilities in the lock — every package, the extras and the dev group — fail
+# the gate, as the ui-kit's `npm audit --audit-level=high` does. uv's own audit (OSV; uv
+# 0.12 and later, still a preview, hence the flag): no new dependency, and it reads the
+# lock as it is. A vulnerability with no fix yet that is accepted on purpose goes behind
+# `--ignore-until-fixed <ID>` here, with the reason beside it. Dependabot's open alerts are
+# scripts/check-dependencies.py's, before a push; this runs on every check, CI's too.
+uv audit --locked --preview-features audit-command
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
