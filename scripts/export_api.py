@@ -88,6 +88,9 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     ("eifi1_server_kit.billing", "docs/billing-harmonization.md", "§10, §14"),
     ("eifi1_server_kit.jobs", "docs/billing-harmonization.md", "§14.7"),
     ("eifi1_server_kit.mail", "docs/auth-harmonization.md", "§8"),
+    # A change to the terms or the privacy policy, announced by mail and in the app (0.22):
+    # decision 10 of §2, the decisions.
+    ("eifi1_server_kit.legal", "docs/legal-harmonization.md", "§2"),
     ("eifi1_server_kit.notifications", "docs/notifications-harmonization.md", "§3, §4.1, §9, §10"),
     # The inbox's routes and the queue's jobs route (0.16), behind the `fastapi` extra; the
     # inbox's port, the queue and its service come with `eifi1_server_kit.notifications`.

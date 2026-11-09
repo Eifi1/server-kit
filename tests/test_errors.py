@@ -28,6 +28,7 @@ from eifi1_server_kit.feedback import (
     UnknownAttachmentUrlError,
 )
 from eifi1_server_kit.jobs import JobsTokenError
+from eifi1_server_kit.legal import LegalNoticeError
 from eifi1_server_kit.limiter import ThrottledError
 from eifi1_server_kit.notifications import NotificationError
 from eifi1_server_kit.settings import PatchNullError
@@ -62,6 +63,7 @@ RAISED: dict[str, tuple[Exception, int]] = {
     "access": (TranslationAccessError("Not granted for locale 'fr'"), 403),
     "roster": (RosterQueryError("Unknown sort key 'plan'"), 422),
     "jobs": (JobsTokenError(), 401),
+    "legal_notice": (LegalNoticeError("the change terms:2026-12-15 needed its mail by 2026-11-15"), 409),
     "plain": (ValueError("an app's own invalid input"), 400),
 }
 
@@ -196,6 +198,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         JobsTokenError,
         NotificationError,
         TourProgressError,
+        LegalNoticeError,
         ThrottledError,
     }
     for error in CONTRACT_ERRORS:
