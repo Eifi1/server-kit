@@ -1136,7 +1136,9 @@ and renders it. It fills `{placeholders}` on the template only and lays the mail
 `render_message`, which HTML-escapes every part, the subject included, so a name with
 markup stays text. The link must be http(s) and is escaped in the `href` too. →
 `MailMessage(subject, text, html)`. The plain text's link line is `{cta}: {link}`, with
-the no-break space French sets before the colon (`Choisir\u00a0: …`).
+the no-break space French sets before the colon (`Choisir\u00a0: …`) and, from 0.23, the
+full-width colon Chinese sets with no space (`阅读新条款：https://…`); the unsubscribe
+footer line is typeset the same way.
 
 The HTML is a **whole document**: `<!doctype html><html lang="…"><head><meta
 charset="utf-8"><title>{subject}</title></head><body>…</body></html>`. The `lang` is the

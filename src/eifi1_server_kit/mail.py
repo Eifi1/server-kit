@@ -109,10 +109,13 @@ SUPPORT_LOCAL_PART = "support"
 #: A language tag as ``<html lang>`` takes it (BCP 47's shape: ``de-CH``, ``en``,
 #: ``zh-Hans``) — checked, because it is written into an attribute.
 _LANG_TAG = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
-#: What goes before the colon of the plain text's link line, per language: French sets a
-#: no-break space (U+00A0) before it, as ui-kit's French catalogue does (``Mixte\u00a0:``);
-#: every other language none.
-_BEFORE_COLON: Mapping[str, str] = {"fr": "\u00a0"}
+#: What joins the words of the plain text's link lines to their link (``{cta}{sep}{link}``),
+#: per language (0.23): French sets a no-break space (U+00A0) before the colon, as ui-kit's
+#: French catalogue does (``Mixte\u00a0:``); Chinese, simplified or traditional, the
+#: full-width colon (U+FF1A), which carries its own spacing, so no space on either side
+#: (``阅读新条款：https://…``). Every other language: ``: ``.
+_LINK_SEPARATORS: Mapping[str, str] = {"fr": "\u00a0: ", "zh": "\uff1a"}
+_LINK_SEPARATOR = ": "
 #: A header's name: printable ASCII but the colon (RFC 5322 ``ftext``).
 _HEADER_NAME = re.compile(r"[!-9;-~]+")
 #: RFC 8058's second header: the body a mail client POSTs to the first one's URL.
@@ -257,8 +260,8 @@ def render_message(
     no longer close the attribute.
 
     The plain text's link line is ``{cta}: {link}``, typeset for ``lang``: French takes a
-    no-break space before the colon (``Choisir\u00a0: https://…``), every other language
-    none.
+    no-break space before the colon (``Choisir\u00a0: https://…``), Chinese the full-width
+    colon with no space (``阅读新条款：https://…``, 0.23), every other language ``: ``.
 
     ``unsubscribe`` (a notification mail, :class:`MailUnsubscribe`) adds a last line after
     the footer, linking its ``page``: escaped and typeset like the action line —
@@ -281,10 +284,10 @@ def render_message(
         f'<head><meta charset="utf-8"><title>{escape(subject)}</title></head>'
         f"<body>{content}</body></html>"
     )
-    colon = _BEFORE_COLON.get(_language(tag).lower(), "") + ":"
-    text = f"{intro}\n\n{body}\n\n{cta}{colon} {link}\n\n{outro}"
+    separator = _LINK_SEPARATORS.get(_language(tag).lower(), _LINK_SEPARATOR)
+    text = f"{intro}\n\n{body}\n\n{cta}{separator}{link}\n\n{outro}"
     if unsubscribe is not None:
-        text += f"\n\n{unsubscribe.label}{colon} {unsubscribe.page}"
+        text += f"\n\n{unsubscribe.label}{separator}{unsubscribe.page}"
     return html, text
 
 
