@@ -10,6 +10,33 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.23.0] (2026-11-10)
+
+server-kit 0.23.0: the backend half of round 0.59 (ui-kit 0.59) — two findings from 0.22's
+build. A **minor**: it adds an optional keyword argument to two public names, and **nothing
+breaking**: without it every key is 0.22's. Per-app steps: ui-kit's `docs/adopt-0.59.md`, the
+server-kit 0.23 section.
+
+### Fixed
+
+* **mail:** a Chinese mail's link line takes the full-width colon. `render_message` keeps one
+  separator per language — French `" : "`, Chinese (simplified or traditional) `"："`, every
+  other language `": "` — for the action line and a notification mail's unsubscribe footer, so
+  every mail laid out by `render_message` (the apps' tables through `render_mail`, the
+  legal-change mail) reads `阅读新条款：https://…`. The HTML half is unchanged.
+* **notifications:** a job's mail key carries the app's host, so two apps on one Resend team no
+  longer share an `Idempotency-Key` (a 409 for 24 hours; the queue's bundle could be dropped
+  after three).
+  - `MailMarker.idempotency_key(day, *, app_base_url=None)` answers
+    `<type>:<host>:<event>:<user_id>:<day>`.
+  - `QueueService(queue, port, *, app_base_url=None)` answers `queue:<host>:<first row
+    id>:<count>`, the URL checked when the service is built.
+  - Optional and keyword-only: without it the key is 0.22's. Only the host counts, in lower
+    case (ASCII, at most 64 characters, so the longest marker key is 246 of Resend's 256). A
+    key changes once, when an app passes its base URL; the marker row (and the queue's claim
+    and done) still stop a second mail, so the change can at worst send one extra copy, never
+    lose one.
+
 ## [0.22.0] (2026-11-10)
 
 server-kit 0.22.0: the backend half of round 0.58 (ui-kit 0.58) — keksdose's legal audit of

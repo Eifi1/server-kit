@@ -27,8 +27,11 @@ person's data.
 * **At the flush the plan runs again** (:meth:`FlushPort.still_wanted`): the switches,
   ``active``, the device's mutes, and quiet hours, in case the window moved.
 * **Idempotency**: the claim commits before the send and ``done`` after; a mail carries
-  ``Idempotency-Key = queue:<first row id>:<count>``, so a resend after a lost answer is a
-  no-op at Resend, and a push sent twice replaces itself through its tag. A claim older
+  ``Idempotency-Key = queue:<host>:<first row id>:<count>``, so a resend after a lost answer
+  is a no-op at Resend, and a push sent twice replaces itself through its tag. The host is
+  that of the service's ``app_base_url`` (0.23): every app's queue counts its rows from 1,
+  and the apps share one Resend team. Without it the key is 0.22's,
+  ``queue:<first row id>:<count>``. A claim older
   than :data:`QUEUE_CLAIM_TIMEOUT` is claimable again; after :data:`QUEUE_MAX_ATTEMPTS`
   the rows are dropped ``"failed"``.
 * **Retention**: sent and dropped rows are purged after :data:`QUEUE_RETENTION`.
@@ -50,7 +53,12 @@ from pydantic import BaseModel
 
 from eifi1_server_kit.notifications.push import PUSH_TTL, PushData, PushPayload
 from eifi1_server_kit.notifications.registry import NotificationType
-from eifi1_server_kit.notifications.retry import MAIL_EVENT_PATTERN, MAIL_LATE_DAYS, MAIL_MARKER_RETENTION
+from eifi1_server_kit.notifications.retry import (
+    MAIL_EVENT_PATTERN,
+    MAIL_LATE_DAYS,
+    MAIL_MARKER_RETENTION,
+    _key_host,
+)
 
 __all__ = [
     "QUEUE_CLAIM_TIMEOUT",
@@ -212,17 +220,32 @@ def _check_event(event: str) -> str:
 class QueueService:
     """The queue's flows over the app's :class:`NotificationQueue` and :class:`FlushPort`::
 
-    service = QueueService(queue, port)
+    service = QueueService(queue, port, app_base_url=settings.app_base_url)
     await service.hold_push(user.id, "scan_done", event, payload, not_before=end, now=now)
     await notifications_tick(service, now)  # every 15 minutes
+
+    ``app_base_url`` (0.23) puts the app's host into a bundled mail's ``Idempotency-Key``,
+    ``queue:<host>:<first row id>:<count>``: the base URL the app builds its links from, as
+    :meth:`~.retry.MailMarker.idempotency_key` takes it, the host only. Without it the key
+    is 0.22's, ``queue:<first row id>:<count>``, which another app's queue on the same
+    Resend team sends too. A :class:`ValueError` for a ``limit`` below 1 or an
+    ``app_base_url`` that is not http(s) with an ASCII host, when the service is built.
     """
 
-    def __init__(self, queue: NotificationQueue, port: FlushPort, *, limit: int = QUEUE_FLUSH_LIMIT) -> None:
+    def __init__(
+        self,
+        queue: NotificationQueue,
+        port: FlushPort,
+        *,
+        limit: int = QUEUE_FLUSH_LIMIT,
+        app_base_url: str | None = None,
+    ) -> None:
         if limit < 1:
             raise ValueError(f"a flush claims 1 row or more: {limit}")
         self.queue = queue
         self.port = port
         self.limit = limit
+        self._key_prefix = "queue" if app_base_url is None else f"queue:{_key_host(app_base_url)}"
 
     async def hold_push(
         self,
@@ -334,7 +357,8 @@ class QueueService:
         if channel == "push":
             sent = await self.port.send_push(user_id, _collapsed(type_id, items))
         else:
-            sent = await self.port.send_mail(user_id, type_id, items, f"queue:{items[0].id}:{len(items)}")
+            key = f"{self._key_prefix}:{items[0].id}:{len(items)}"
+            sent = await self.port.send_mail(user_id, type_id, items, key)
         if sent:
             await self.queue.done(ids, now)
             tally.sent += len(ids)

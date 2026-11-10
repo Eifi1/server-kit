@@ -37,7 +37,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.22 ↔ ui-kit 0.58**: that ui-kit
+package with its own version and changelog. **server-kit 0.23 ↔ ui-kit 0.59**: that ui-kit
 release is tested against this release's API export (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
@@ -1136,7 +1136,9 @@ and renders it. It fills `{placeholders}` on the template only and lays the mail
 `render_message`, which HTML-escapes every part, the subject included, so a name with
 markup stays text. The link must be http(s) and is escaped in the `href` too. →
 `MailMessage(subject, text, html)`. The plain text's link line is `{cta}: {link}`, with
-the no-break space French sets before the colon (`Choisir\u00a0: …`).
+the no-break space French sets before the colon (`Choisir\u00a0: …`) and, from 0.23, the
+full-width colon Chinese sets with no space (`阅读新条款：https://…`); the unsubscribe
+footer line is typeset the same way.
 
 The HTML is a **whole document**: `<!doctype html><html lang="…"><head><meta
 charset="utf-8"><title>{subject}</title></head><body>…</body></html>`. The `lang` is the
@@ -1326,11 +1328,11 @@ off the event loop, its mailer). keksdose is the source
 | The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches(app, email, push=None)`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate` (both refuse a `timezone` from 0.18, a 422 as any unknown field — ignored in 0.16 and 0.17), `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches(app, email, push)`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch, *, couple_push_to_app=False)`, `migrate_enabled_to_channels(enabled)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
 | Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE`; per device (0.16) `device_receives(muted_types, type_id)`, `read_muted_types(types, stored)`, `apply_muted_types(types, muted)` |
 | Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `quiet_hours_end(start, end, zone, now)`, `effective_zone(device_timezone, fallback=DEFAULT_ZONE)`, `local_today(zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
-| A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day)`), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
+| A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day, *, app_base_url=None)`), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
 | Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse` (`muted_types`), `PushDeviceUpdate(muted_types)`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type, inbox=True)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `push_gone_expired(gone_at, now, *, grace=PUSH_GONE_GRACE)`, `vapid_subject(support_address)`; `parse_push_body(model, body)`, `parse_push_replace(body)` (0.17.0: a bad body is a plain 422 that never echoes `old_auth` or a key; a body that isn't valid JSON is refused by FastAPI first, in the redacted `json_invalid` shape — one route, two 422 shapes, neither echoes); `documented_body(model)` (0.18: the `openapi_extra` that documents an untyped `Annotated[Any, Body()]` body from its model, nested models inlined); `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE`, `PUSH_GONE_GRACE` (7 days) |
 | Unsubscribe | `unsubscribe_token(secret, user_id, type_id)`, `read_unsubscribe_token(secret, token)` → `UnsubscribeClaim(user_id, type_id)`, `unsubscribe_key(secret)` |
 | The inbox | `InboxItem` (`company`, 0.16), `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days); layer 2 (0.16): `InboxStore` (`add`, `page`, `mark_read`, `clear`, `prune`), `NewInboxItem`, `INBOX_PAGE_DEFAULT`, `INBOX_PAGE_MAX` |
-| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted` — 0.17.0: gets the flush's `now=` when it takes one —, `send_push`, `send_mail`), `QueueService(queue, port)` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
+| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted` — 0.17.0: gets the flush's `now=` when it takes one —, `send_push`, `send_mail`), `QueueService(queue, port, *, limit=…, app_base_url=None)` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
 | Routes (`notifications.router`, the `fastapi` extra) | `InboxDeps(store=, current_user_id=, guards=())`, `inbox_router(deps, *, prefix="/notifications/inbox")`; `notifications_jobs_router(service, require_jobs_token, *, now=utc_now, prefix="/ops/notifications")` → `POST /flush` |
 | Testing (`notifications.testing`) | `InMemoryInboxStore`, `InMemoryNotificationQueue` (`commit`, `rollback`, `commits`), `RecordingFlushPort` |
 | Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `NotificationChannelError` (422, `notification_channel_not_offered`, `types`, `channel`; 0.16), `PushEndpointTakenError` (409, `push_endpoint_taken`), `PushBodyInvalidError` (422, `push_body_invalid`, `fields`; 0.17.0), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
@@ -1381,9 +1383,12 @@ push is never retried. Each scheduled run (never the run at the app's start) rea
 events still due by `mail_due(event_day, today, sent=…)` and their recipients by
 `plan_delivery`, read again at every try, and skips a recipient with a marker,
 `MailMarker(user_id, type_id, event)`. The send carries the marker's
-`.idempotency_key(today)` as `MailMessage.idempotency_key`:
-`<type>:<event>:<user_id>:<YYYY-MM-DD>`, so two runs on one day send one mail (Resend
-keeps a key 24 hours). Sent: the marker row, `ON CONFLICT DO
+`.idempotency_key(today, app_base_url=settings.app_base_url)` as
+`MailMessage.idempotency_key`: `<type>:<host>:<event>:<user_id>:<YYYY-MM-DD>`, so two runs
+on one day send one mail (Resend keeps a key 24 hours). The host (0.23) keeps the apps on
+one Resend team apart, as `legal_change:<host>:…` does; only the base URL's host counts, so
+a port, a path or a trailing slash never changes a key. Without `app_base_url` the key is
+0.22's, `<type>:<event>:<user_id>:<YYYY-MM-DD>`. Sent: the marker row, `ON CONFLICT DO
 NOTHING`, committed per recipient; not sent: logged with the type and the event, nothing
 written. The event key is the app's, built by `mail_event` (kastlan:
 `mail_event(company_id, day)` → `"42:2026-10-13"`): ids and days, no personal data, no
@@ -1415,7 +1420,10 @@ Zurich; no pick) for everything written for one person, `local_today(zone, now)`
 A `timezone` (`PATCH /notifications/settings`, keksdose's `/push/settings` shim,
 `PATCH /auth/me`) is a 422 from 0.18, as any unknown field is (ignored in 0.16 and 0.17):
 breaking only for a stale ≤0.45 bundle, which still sends one.
-The tick is idempotent, so a job runner may retry it.
+The tick is idempotent, so a job runner may retry it. A bundled mail carries
+`queue:<host>:<first row id>:<count>` when the service is built with
+`QueueService(queue, port, app_base_url=settings.app_base_url)` (0.23); without it, 0.22's
+`queue:<first row id>:<count>`, which another app's queue on the same Resend team sends too.
 **The inbox** has a port and three routes; **the queue** is opt-in — an app that runs it
 holds a quiet type's push instead of dropping it, and calls the tick every 15 minutes:
 
@@ -1532,7 +1540,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.22.0/eifi1_server_kit-0.22.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.23.0/eifi1_server_kit-0.23.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -1542,7 +1550,7 @@ With the image guard, the Resend client, the Paddle client, a router or the sync
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.22.0/eifi1_server_kit-0.22.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.23.0/eifi1_server_kit-0.23.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —

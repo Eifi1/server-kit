@@ -18,9 +18,10 @@ per row; a window bounds the retries.
   stored: only the scheduled run sends, once a run, so the window holds it to four tries.
   A failed try writes nothing. Markers are kept :data:`MAIL_MARKER_RETENTION`, so an
   operator can tell whether a person was sent a mail; the logs never name the recipient.
-* **One ``Idempotency-Key`` per recipient, event and day**
+* **One ``Idempotency-Key`` per app, recipient, event and day**
   (:meth:`MailMarker.idempotency_key`, on :attr:`~eifi1_server_kit.mail.MailMessage.idempotency_key`):
-  two runs on one day send one mail, as Resend answers the second from the first.
+  two runs on one day send one mail, as Resend answers the second from the first. The app's
+  host (0.23, its ``app_base_url``) keeps the apps on one Resend team apart.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from urllib.parse import urlsplit
 
 from eifi1_server_kit.notifications.registry import TYPE_ID_PATTERN
 
@@ -48,6 +50,12 @@ _TYPE_ID = re.compile(TYPE_ID_PATTERN)
 #: key's parts stay apart — ``type`` and ``day`` have none either, and the event is what
 #: is left between them.
 _USER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+#: The app's host as a key carries it (``legal``'s rule): ASCII, an IDN host in its ``xn--``
+#: form, and at most 64 characters, so the longest marker key stays within Resend's 256.
+_HOST = re.compile(r"^[a-z0-9.-]{1,64}$")
+#: What a URL the app is configured with never holds (``legal``'s ``_UNSAFE_IN_HREF``): a
+#: control character, a backslash or a space.
+_UNSAFE_IN_URL = re.compile(r"[\x00-\x1f\x7f\\\s]")
 
 
 def _day(value: date, what: str) -> date:
@@ -56,6 +64,24 @@ def _day(value: date, what: str) -> date:
     if isinstance(value, datetime):
         raise TypeError(f"{what} is a date, not a datetime: pass .date() ({value!r})")
     return value
+
+
+def _key_host(app_base_url: str) -> str:
+    """The host of the app's base URL, as an ``Idempotency-Key`` carries it to keep the apps
+    on one Resend team apart (0.23, ``legal``'s ``legal_change:<host>:…``):
+    ``https://Kastlan.example:8443/api/`` → ``kastlan.example``. The host only, lower case,
+    so a scheme, a port, a path or a trailing slash in the setting never changes a key. A
+    :class:`ValueError` unless the URL is http(s) with an ASCII host of at most 64
+    characters."""
+    if not app_base_url.startswith(("https://", "http://")) or _UNSAFE_IN_URL.search(app_base_url):
+        raise ValueError(f"the app's base URL is http(s): {app_base_url[:60]!r}")
+    try:
+        host = urlsplit(app_base_url).hostname or ""
+    except ValueError:  # an unclosed "[" of an IPv6 host
+        host = ""
+    if not _HOST.fullmatch(host):
+        raise ValueError(f"the app's base URL has an ASCII host of at most 64 characters: {app_base_url[:60]!r}")
+    return host
 
 
 def mail_event(*parts: str | int | date) -> str:
@@ -88,7 +114,8 @@ class MailMarker:
         marker = MailMarker(user.id, "invoices_overdue", mail_event(company.id, day))
         if not mail_due(day, today, sent=marker in markers):
             continue
-        message = replace(message, idempotency_key=marker.idempotency_key(today))
+        key = marker.idempotency_key(today, app_base_url=settings.app_base_url)
+        message = replace(message, idempotency_key=key)
         if await mailer.send(user.email, message, kind=marker.type_id):
             ...  # INSERT (user_id, type_id, event, sent_at) ON CONFLICT DO NOTHING; commit
 
@@ -110,18 +137,34 @@ class MailMarker:
         if isinstance(self.user_id, str) and not _USER_ID.fullmatch(self.user_id):
             raise ValueError(f"a user id is a number or a key with no colon or space: {self.user_id[:80]!r}")
 
-    def idempotency_key(self, day: date) -> str:
-        """``<type>:<event>:<user_id>:<YYYY-MM-DD>`` for the try on ``day`` (decision 7)::
+    def idempotency_key(self, day: date, *, app_base_url: str | None = None) -> str:
+        """``<type>:<host>:<event>:<user_id>:<YYYY-MM-DD>`` for the try on ``day`` (decision
+        7), ``<host>`` that of ``app_base_url``, the app's own base URL::
 
-            MailMarker(17, "invoices_overdue", "42:2026-10-13").idempotency_key(date(2026, 10, 14))
-            # "invoices_overdue:42:2026-10-13:17:2026-10-14"
+            marker = MailMarker(17, "invoices_overdue", "42:2026-10-13")
+            marker.idempotency_key(date(2026, 10, 14), app_base_url="https://kastlan.example")
+            # "invoices_overdue:kastlan.example:42:2026-10-13:17:2026-10-14"
 
         Two runs on one day send one mail: Resend answers the second from the first (it
         keeps a key 24 hours). The next day's try is a new key, so a count that changed in
-        between is no conflict at Resend. At most 181 characters, within Resend's 256. A
-        :class:`TypeError` for a ``datetime``.
+        between is no conflict at Resend.
+
+        **The host keeps the apps apart** (0.23): the apps send through one Resend team, and
+        a key is the team's, so two apps' mails of one type, event, user id and day would be
+        one key, and Resend would refuse the second app's for 24 hours (another body: a
+        ``409``). Pass the base URL the app builds its links from, the one
+        :func:`~eifi1_server_kit.legal.send_legal_change_mails` takes. Only its host counts,
+        in lower case, so a port, a path or a trailing slash never makes a rerun's key a new
+        one. Without it the key is 0.22's, ``<type>:<event>:<user_id>:<YYYY-MM-DD>``.
+
+        At most 246 characters, within Resend's 256. A :class:`TypeError` for a
+        ``datetime``; a :class:`ValueError` for an ``app_base_url`` that is not http(s) with
+        an ASCII host of at most 64 characters.
         """
-        return f"{self.type_id}:{self.event}:{self.user_id}:{_day(day, 'the day of the try').isoformat()}"
+        today = _day(day, "the day of the try").isoformat()
+        if app_base_url is None:
+            return f"{self.type_id}:{self.event}:{self.user_id}:{today}"
+        return f"{self.type_id}:{_key_host(app_base_url)}:{self.event}:{self.user_id}:{today}"
 
 
 def mail_due(event_day: date, today: date, *, sent: bool, late_days: int = MAIL_LATE_DAYS) -> bool:

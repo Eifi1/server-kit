@@ -264,6 +264,17 @@ def test_the_mail_falls_back_as_every_mail_does() -> None:
 
 
 @pytest.mark.parametrize(
+    ("change", "cta"), [(TERMS, "阅读新条款"), (PRIVACY, "阅读新版隐私政策")], ids=["terms", "privacy"]
+)
+@pytest.mark.parametrize("locale", ["zh", "zh-Hans", "zh-TW"])
+def test_the_chinese_mail_takes_the_full_width_colon(locale: str, change: LegalChange, cta: str) -> None:
+    """The layout's Chinese link line (0.23): ``阅读新条款：https://…``, no Latin colon."""
+    message = legal_change_message(locale, change, app_name="Kurvenschmiede", app_base_url=BASE)
+    assert f"\n\n{cta}：{BASE}/{change.page}\n\n" in message.text
+    assert ": " not in message.text
+
+
+@pytest.mark.parametrize(
     ("href", "base", "link"),
     [
         (None, "https://app.example/", "https://app.example/terms"),

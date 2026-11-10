@@ -183,6 +183,29 @@ async def test_a_failed_send_is_tried_again_after_the_claim_timeout_and_dropped_
     assert keys == {f"queue:{row.id}:1"}, "the idempotency key is stable across a resend"
 
 
+async def test_a_bundles_key_carries_the_apps_host() -> None:
+    """Two apps' queues both start at row 1, so ``queue:1:1`` was one key for both on their
+    shared Resend team (0.23): with the service's ``app_base_url`` the host keeps them
+    apart, and only the host counts, so the key holds across a resend and a restart."""
+    queue = InMemoryNotificationQueue()
+    port = RecordingFlushPort(sends_ok=False)
+    service = QueueService(queue, port, app_base_url="https://KEKSDOSE.example/api/")
+    await service.queue_mail(COMMENT, 7, "comment:1", {"number": 1}, now=NOW)
+    queue.commit()
+    assert await service.flush(NOW) == FlushResult(left=1)
+    again = QueueService(queue, port, app_base_url="https://keksdose.example")
+    assert await again.flush(NOW + QUEUE_CLAIM_TIMEOUT + timedelta(minutes=1)) == FlushResult(left=1)
+    row = next(iter(queue.rows.values()))
+    assert [key for *_rest, key in port.mails] == [f"queue:keksdose.example:{row.id}:1"] * 2
+
+
+@pytest.mark.parametrize(("base", "words"), [("keksdose.example", "base URL is http"), ("https://", "ASCII host")])
+def test_the_service_refuses_a_base_url_without_an_ascii_host(base: str, words: str) -> None:
+    """Refused when the service is built, not at the first bundle's send."""
+    with pytest.raises(ValueError, match=words):
+        QueueService(InMemoryNotificationQueue(), RecordingFlushPort(), app_base_url=base)
+
+
 async def test_a_claim_that_died_is_reclaimed_and_counted() -> None:
     """A run that died after its third claim: the next claim drops it ``failed``."""
     service, queue, port = _service()

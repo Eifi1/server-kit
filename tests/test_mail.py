@@ -132,7 +132,7 @@ def test_render_message_sets_the_french_space_before_the_colon(lang: str) -> Non
     html, text = render_message(subject="s", lang=lang, intro="i", body="b", cta="Choisir", link=LINK, outro="o")
     assert f"\n\nChoisir\u00a0: {LINK}\n\n" in text
     assert "\u00a0" not in html
-    for other in ("en", "de-CH", "it", "es", "hu", "zh-Hans"):
+    for other in ("en", "de-CH", "it", "es", "hu"):
         _, plain = render_message(subject="s", lang=other, intro="i", body="b", cta="Choose", link=LINK, outro="o")
         assert f"\n\nChoose: {LINK}\n\n" in plain and "\u00a0" not in plain
     french = render_mail("fr-CH", RESET, link=LINK, name="Ada", hours=1)
@@ -446,6 +446,41 @@ def test_the_footer_line_is_last_escaped_and_typeset_like_the_action_line() -> N
     assert french.endswith(f"Stop <these> : {PAGE}")
     plain_html, plain_text = render_message(subject="s", lang="en", intro="i", body="b", cta="c", link=LINK, outro="o")
     assert PAGE not in plain_text and "unsubscribe" not in plain_html, "account mail has none"
+
+
+@pytest.mark.parametrize(
+    ("lang", "separator"),
+    [
+        ("de-CH", ": "),
+        ("en", ": "),
+        ("es", ": "),
+        ("fr", "\u00a0: "),
+        ("hu", ": "),
+        ("it", ": "),
+        ("zh", "\uff1a"),
+        ("zh-Hans", "\uff1a"),
+        ("zh_TW", "\uff1a"),
+        ("ZH-hant", "\uff1a"),
+    ],
+)
+def test_the_link_lines_are_typeset_for_each_language(lang: str, separator: str) -> None:
+    """The 0.22 builder's finding: Chinese takes the full-width colon (U+FF1A), which
+    carries its own spacing, so no space on either side (``阅读新条款：https://…``); an
+    ASCII ``: `` there is a Latin colon in a Chinese line. Both lines the layout writes — the
+    action and the unsubscribe footer — and never the HTML half, which has no colon."""
+    html, text = render_message(
+        subject="s", lang=lang, intro="i", body="b", cta="Go", link=LINK, outro="o", unsubscribe=WAY_OUT
+    )
+    assert text == f"i\n\nb\n\nGo{separator}{LINK}\n\no\n\n{WAY_OUT.label}{separator}{PAGE}"
+    assert "\uff1a" not in html and "\u00a0" not in html
+
+
+def test_a_chinese_mail_from_a_table_takes_the_full_width_colon() -> None:
+    texts = {**RESET, "zh": MailText("重置密码", "{name}，您好：", "链接 {hours} 小时内有效。", "重置密码", "请忽略。")}
+    message = render_mail("zh-CN", texts, link=LINK, name="Ada", hours=1, unsubscribe=WAY_OUT)
+    assert f"\n\n重置密码：{LINK}\n\n" in message.text
+    assert message.text.endswith(f"{WAY_OUT.label}：{PAGE}")
+    assert ": " not in message.text, "no Latin colon in the Chinese mail"
 
 
 def test_render_mail_makes_a_notification_mail() -> None:
