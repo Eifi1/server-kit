@@ -18,8 +18,9 @@ of the same contracts. The source of every rule is keksdose's backend (the canon
 §4.1, [`docs/top-bar-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/top-bar-harmonization.md)
 §2.7 with §6.1–§6.3, [`docs/admin-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/admin-harmonization.md)
 §9, [`docs/tours-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/tours-harmonization.md)
-§10 and [`docs/local-first-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/local-first-harmonization.md)
-§1.5–§1.6 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
+§10, [`docs/local-first-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/local-first-harmonization.md)
+§1.5–§1.6 and [`docs/legal-harmonization.md`](https://github.com/Eifi1/ui-kit/blob/main/docs/legal-harmonization.md)
+decision 10 in the ui-kit. The API reference is the ui-kit showcase's "Server kit" group, built
 from the `server-kit-api.json` each release carries ([Developing](#developing)).
 
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
@@ -36,7 +37,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.21 ↔ ui-kit 0.55**: that ui-kit
+package with its own version and changelog. **server-kit 0.22 ↔ ui-kit 0.58**: that ui-kit
 release is tested against this release's API export (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
@@ -1150,9 +1151,10 @@ the old address, user-admin §6.2), `account_deletion` (the answer to a deletion
 request, §6.4; kastlan said `deletion`, Kurvenschmiede `deletion_request`) and
 `work_transferred_notice` (Kurvenschmiede: to an active former owner whose work an admin
 handed on, notifications §9.3), `feedback_published` (0.11: once to an author of
-reports the round-0.38 migration made public, feedback §9.12) and `passkey_added_notice`
+reports the round-0.38 migration made public, feedback §9.12), `passkey_added_notice`
 (0.21, keksdose's audit AU-1: to the account's address when a passkey is added — a way in
-no session cut-off reaches).
+no session cut-off reaches) and `legal_change` (0.22: to every active account when the
+terms or the privacy policy change, in the kit's words; `legal` below).
 `ResendClient(api_key=, from_address=, timeout=10, client=None,
 reply_to=None)` posts to Resend, retrying once only on a transport error, `429` or `5xx`,
 under one `Idempotency-Key` — `MailMessage.idempotency_key` where the message has one,
@@ -1210,6 +1212,104 @@ them on its message. Account mail and billing's notices carry none. A notificati
 job sends again carries `idempotency_key` (`MailMessage(…, idempotency_key=…)`, 1–256
 printable ASCII characters, no space), the send's request header to Resend, which
 `ConsoleMailer` ignores (`notifications`, "a failed send").
+
+### `eifi1_server_kit.legal`
+
+A change to the terms or the privacy policy (0.22; legal contract decision 10, keksdose's
+legal audit). The terms' `changes` section promises to announce a material change **at
+least 30 days ahead, by email and in the app, with the new text**, and no app could mail
+every account. ui-kit draws the in-app notice; this module serves the list it reads and
+sends the mail. Nothing here needs an extra.
+
+**The record.** `LegalChange(page, announced=, effective=, href=None)`, one per change, in
+the app's code beside the new text. `page` is `"terms"` or `"privacy"` (`LegalChangePage`;
+the imprint owes no notice). `announced` is the day the release carrying the new text
+ships, `effective` the day it applies. A change that takes effect fewer than `NOTICE_DAYS`
+(30) days after it is announced **cannot be made**: `LegalNoticeError`, a `ValueError`, so
+the app's own tests fail before a release does. Give a few days' margin (35): the mail must
+go by `mail_by` (`effective` less 30 days), and a run that fails on a provider's outage
+wants a day to be retried. `href` is where the new text can be read: a path in the app
+(`/terms?version=2026-12-15`) or an http(s) URL, never another scheme, `//` or a space;
+`None` when the page itself shows it. `key` (`terms:2026-12-15`) names the change in the
+app's record.
+
+**The in-app list**, `GET /api/v1/legal/changes` (`LEGAL_CHANGES_PATH`): a list of
+`LegalChangeAnnouncement`, `{page, effective, href}`, exactly the shape ui-kit's notice
+reads (`effective` as `"2026-12-15"`). `current_announcements(changes, today=…)` answers
+every change from its `announced` day through its `effective` day, soonest first. Public,
+no account: it names pages and dates. No router: like the admin's test mail route, it is
+three lines over the app's own tuple, and `today` is the app's day in its zone:
+
+```python
+from eifi1_server_kit.legal import LEGAL_CHANGES_PATH, LegalChange, LegalChangeAnnouncement, current_announcements
+
+LEGAL_CHANGES = (LegalChange("terms", announced=date(2026, 11, 10), effective=date(2026, 12, 15)),)
+
+
+@router.get(LEGAL_CHANGES_PATH, response_model=list[LegalChangeAnnouncement])
+def legal_changes() -> list[LegalChangeAnnouncement]:
+    return current_announcements(LEGAL_CHANGES, today=local_today())
+```
+
+**The mail**, `legal_change_message(locale, change, *, app_name, app_base_url)` →
+`HtmlMailMessage`: the kit's words, in the seven languages of the test mail (`de-CH`, `en`,
+`es`, `fr`, `hu`, `it`, `zh`, through `pick_entry`'s fallback), laid out by
+`render_message`. It names the page and the effective date, written out in the mail's
+language ("15 December 2026", "15. Dezember 2026", "2026. december 15."), says that one may
+object (by replying) or delete the account before that date and export until then (the
+terms' wording; the terms' mail adds that an objection may end the account on that date),
+and links the new text (`href`, or `app_base_url` + `/terms` or `/privacy`). Sent under
+`AccountNoticeKind.LEGAL_CHANGE` (`legal_change`). **No `List-Unsubscribe` and no
+unsubscribe line**: it is a notice the terms owe every account, not a mail anyone
+subscribed to, so it follows the account-mail rule above. Objections arrive as replies, so
+**set the transport's `reply_to`** (`support_address`).
+
+**Every account, once**: `send_legal_change_mails(change, recipients, mailer, *, app_name,
+app_base_url, today, already_sent, record_sent)` → `LegalChangeRun`.
+
+- **The app picks the recipients**: `LegalChangeRecipient(user_id, email, locale)` for
+  every active account with an address, never a deactivated, erased or demo one (as
+  feedback §9.11 drops them). The address stays out of the `repr`.
+- **The app keeps the record**: one row per (change, account), the change by `key`.
+  `already_sent` holds the ids it has for this change (a set, or anything with `in`);
+  those, and an id listed twice, are skipped, so a rerun never mails anyone twice.
+  `record_sent(user_id)` is awaited right after each mail the transport took and before
+  the next is sent: `INSERT … ON CONFLICT DO NOTHING` and commit, so a run that dies
+  half-way loses no record; what it raises is raised. Keep the rows: they show the notice
+  went out. Each send also carries the `Idempotency-Key`
+  `legal_change:<host>:<page>:<effective>:<user_id>`, so a rerun within Resend's 24 hours
+  whose record was lost sends nothing new; the host keeps two apps on one Resend team apart.
+- **Throttled**: `pause` seconds between two mails (`LEGAL_CHANGE_PAUSE`, 0.5: Resend allows
+  10 requests a second per team, shared with the app's own mails), at most `limit` mails per
+  call (`LEGAL_CHANGE_BATCH`, 200, under three minutes; `None` for no limit), and a stop
+  after `stop_after` failures in a row (`LEGAL_CHANGE_STOP_AFTER`, 5: the provider is down or
+  the quota spent). Either stop leaves `run.complete` `False`: call it again.
+- **The notice holds**: before `announced` or after `mail_by`, `LegalNoticeError` (409
+  through `install_contract_error_handlers`) before anything is read or sent. Accounts not
+  mailed by then need a new change with a later `effective`.
+- **The answer**: `run.results`, a `LegalChangeResult(user_id, outcome)` per account read
+  (`LegalChangeOutcome`: `sent`, `skipped`, `failed`), `run.sent` / `.skipped` / `.failed`,
+  and `run.complete`. One log line names the change's key and the counts, never an address.
+
+```python
+from eifi1_server_kit.legal import LegalChangeRecipient, send_legal_change_mails
+
+
+@router.post("/ops/jobs/legal-change", dependencies=[Depends(require_jobs_token(lambda: settings.jobs_token))])
+async def mail_legal_change(session: Session = Depends(get_session)) -> dict[str, object]:
+    change = LEGAL_CHANGES[-1]
+    run = await send_legal_change_mails(
+        change,
+        [LegalChangeRecipient(u.id, u.email, u.locale) for u in active_accounts(session)],  # no demo, none erased
+        mailer,
+        app_name="Kurvenschmiede",
+        app_base_url=settings.app_base_url,
+        today=local_today(),
+        already_sent=legal_change_sent_ids(session, change.key),
+        record_sent=lambda user_id: record_legal_change_sent(session, change.key, user_id),
+    )
+    return {"sent": run.sent, "skipped": run.skipped, "failed": run.failed, "complete": run.complete}
+```
 
 ### `eifi1_server_kit.notifications`
 
@@ -1432,7 +1532,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.21.0/eifi1_server_kit-0.21.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.22.0/eifi1_server_kit-0.22.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -1442,7 +1542,7 @@ With the image guard, the Resend client, the Paddle client, a router or the sync
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.21.0/eifi1_server_kit-0.21.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.22.0/eifi1_server_kit-0.22.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —

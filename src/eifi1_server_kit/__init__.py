@@ -25,6 +25,9 @@ models, sessions or commits. Import from the submodules:
   setting and its 401;
 * :mod:`eifi1_server_kit.mail` — mail texts per language, one escaped layout as a whole
   document, Resend and console transports, a notification mail's one-click unsubscribe;
+* :mod:`eifi1_server_kit.legal` — a change to the terms or the privacy policy (0.22): the
+  record that refuses less than 30 days' notice, the in-app list's shape, the kit's mail
+  in seven languages, and every active account mailed once;
 * :mod:`eifi1_server_kit.notifications` — notifications: the app's types, the settings
   resource and its PATCH, delivery, quiet hours and the digest's period, a job's mail
   owed until it went, Web Push's shapes and outcomes, the signed unsubscribe token, the
@@ -58,12 +61,12 @@ models, sessions or commits. Import from the submodules:
 The contracts are ``docs/feedback-harmonization.md``, ``docs/auth-harmonization.md``,
 ``docs/user-admin-harmonization.md``, ``docs/settings-harmonization.md``,
 ``docs/landing-demo-harmonization.md``, ``docs/billing-harmonization.md``,
-``docs/text-size-harmonization.md``, ``docs/notifications-harmonization.md`` and
-``docs/top-bar-harmonization.md`` in
+``docs/text-size-harmonization.md``, ``docs/notifications-harmonization.md``,
+``docs/top-bar-harmonization.md`` and ``docs/legal-harmonization.md`` in
 ``Eifi1/ui-kit``; the rules are keksdose's,
 lifted with a citation on each.
 """
 
 from __future__ import annotations
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"

@@ -192,6 +192,7 @@ def test_the_account_notices_have_their_words() -> None:
         "work_transferred_notice",
         "feedback_published",
         "passkey_added_notice",
+        "legal_change",
     ]
     assert not {str(kind) for kind in AccountNoticeKind} & {str(kind) for kind in OneTimeTokenKind}
 

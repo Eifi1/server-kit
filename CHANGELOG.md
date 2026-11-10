@@ -10,6 +10,45 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.22.0] (2026-11-10)
+
+server-kit 0.22.0: the backend half of round 0.58 (ui-kit 0.58) — keksdose's legal audit of
+2026-11-09. The terms promise to announce a material change at least 30 days ahead, by email
+and in the app, and no app could mail every account; Marcel kept both channels (legal
+contract decision 10), and the kits provide the means. A **minor**: it adds public names,
+and **nothing breaking**. Per-app steps: ui-kit's `docs/adopt-0.58.md`, the server-kit 0.22
+section.
+
+### Added
+
+* **legal:** a change to the terms or the privacy policy is mailed to every account and
+  listed (`eifi1_server_kit.legal`, layer 1, no extra).
+  - `LegalChange(page, announced=, effective=, href=None)` is the app's record of one change,
+    beside the new text; `page` is `"terms"` or `"privacy"` (`LegalChangePage`). A change
+    that takes effect fewer than `NOTICE_DAYS` (30) days after it is announced cannot be made:
+    `LegalNoticeError` (a `ValueError`, 409 through `install_contract_error_handlers`).
+    `key` (`"terms:2026-12-15"`) names it in the app's record; `mail_by` is the last day a
+    mail still gives 30 days.
+  - `GET /api/v1/legal/changes` (`LEGAL_CHANGES_PATH`) answers a list of
+    `LegalChangeAnnouncement` `{page, effective, href}`, the shape ui-kit's
+    `LegalChangeNotice` reads. `current_announcements(changes, today=)` gives every change
+    from its announced day through its effective day, soonest first. No router: three lines
+    over the app's own tuple. `href` is a path in the app or an http(s) URL.
+  - `legal_change_message(locale, change, *, app_name, app_base_url)`: the mail in seven
+    languages (de-CH, en, es, fr, hu, it, zh), the page and its effective date written out,
+    that one may object by replying or delete the account before then and export until then,
+    and a button to the new text. A notice the terms owe every account, not a subscription:
+    no List-Unsubscribe. `AccountNoticeKind.LEGAL_CHANGE` (`"legal_change"`).
+  - `send_legal_change_mails(change, recipients, mailer, *, app_name, app_base_url, today,
+    already_sent, record_sent)` mails every account the app hands over
+    (`LegalChangeRecipient`: user id, address, locale; the address stays out of the repr) and
+    answers a `LegalChangeRun` (sent, skipped or failed per account, and whether it is
+    complete). Ids in `already_sent`, and an id listed twice, are skipped; `record_sent` is
+    awaited after each accepted mail; each send carries the `Idempotency-Key`
+    `legal_change:<host>:<page>:<effective>:<user_id>`. 0.5 s between mails, at most 200 per
+    call, a stop after 5 failures in a row; before `announced` or after `mail_by` it refuses
+    before reading or sending anything.
+
 ## [0.21.0] (2026-11-04)
 
 server-kit 0.21.0: the backend half of round 0.55 (ui-kit 0.55) — kastlan's reuse audit of

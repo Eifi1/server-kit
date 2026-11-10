@@ -416,7 +416,8 @@ class AccountNoticeKind(enum.StrEnum):
 
     The user-admin contract requires the first two of every app with an email change and
     an account deletion; the third is Kurvenschmiede's, for its admin transfer of work
-    (notifications §9.3); the fifth tells an account a passkey was added (keksdose)::
+    (notifications §9.3); the fifth tells an account a passkey was added (keksdose); the
+    sixth announces a change to the terms or the privacy policy (legal decision 10)::
 
         await mailer.send(user.email, message, kind=AccountNoticeKind.ACCOUNT_DELETION)
     """
@@ -444,6 +445,12 @@ class AccountNoticeKind(enum.StrEnum):
     #: unnoticed. keksdose's word, in the style of ``email_change_notice``; the words stay
     #: the app's.
     PASSKEY_ADDED_NOTICE = "passkey_added_notice"
+    #: To every active account when the terms or the privacy policy change (0.22; legal
+    #: decision 10, keksdose's legal audit): the page, the day it takes effect, at least 30
+    #: days ahead, and the way to object. The terms promise it, so no switch and no
+    #: unsubscribe link. The words are the kit's (:mod:`eifi1_server_kit.legal`), as the
+    #: legal pages' shared sections are ui-kit's.
+    LEGAL_CHANGE = "legal_change"
 
 
 # --- the test mail (admin-harmonization §9.2, 0.15) --------------------------------------

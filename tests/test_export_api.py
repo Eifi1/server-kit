@@ -139,6 +139,8 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     assert contracts["eifi1_server_kit.settings"] == {"doc": "docs/settings-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.demo"] == {"doc": "docs/landing-demo-harmonization.md", "section": "§6"}
     assert contracts["eifi1_server_kit.billing"] == {"doc": "docs/billing-harmonization.md", "section": "§10, §14"}
+    # 0.22: the legal change's list and mail serve decision 10, in §2 of the legal contract.
+    assert contracts["eifi1_server_kit.legal"] == {"doc": "docs/legal-harmonization.md", "section": "§2"}
     # 0.16's named scopes are `sync`'s own (§2.4), re-exported from `sync.scopes`.
     assert contracts["eifi1_server_kit.sync"] == {
         "doc": "docs/local-first-harmonization.md",

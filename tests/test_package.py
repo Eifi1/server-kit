@@ -41,6 +41,7 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.feedback.router",
         "eifi1_server_kit.feedback.testing",
         "eifi1_server_kit.jobs",
+        "eifi1_server_kit.legal",
         "eifi1_server_kit.limiter",
         "eifi1_server_kit.mail",
         "eifi1_server_kit.notifications",
