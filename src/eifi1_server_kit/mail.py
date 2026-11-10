@@ -304,7 +304,8 @@ class MailMessage:
     provider, not a mail header — for a mail a job may send again (notifications §9.4,
     :meth:`~eifi1_server_kit.notifications.MailMarker.idempotency_key`)::
 
-        message = replace(message, idempotency_key=marker.idempotency_key(today))
+        key = marker.idempotency_key(today, app_base_url=settings.app_base_url)
+        message = replace(message, idempotency_key=key)
 
     :class:`ResendClient` sends it on both tries; ``None`` (account mail) is a random key
     per send. :class:`ConsoleMailer` ignores it. A :class:`ValueError` unless it is 1–256

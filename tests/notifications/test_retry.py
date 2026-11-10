@@ -113,6 +113,70 @@ def test_the_longest_key_is_one_resend_takes() -> None:
     longest = MailMarker("u" * 64, "t" * 40, "e" * 64).idempotency_key(NEXT)
     assert len(longest) == 181
     assert MailMessage(subject="s", text="t", idempotency_key=longest).idempotency_key == longest
+    hosted = MailMarker("u" * 64, "t" * 40, "e" * 64).idempotency_key(NEXT, app_base_url=f"https://{'h' * 64}")
+    assert len(hosted) == 246
+    assert MailMessage(subject="s", text="t", idempotency_key=hosted).idempotency_key == hosted
+
+
+def test_the_key_carries_the_apps_host() -> None:
+    """The 0.22 builder's finding: the apps share one Resend team, whose keys are its own,
+    so kastlan's and keksdose's mail of one type, event, user id and day were one key — and
+    Resend refuses the second (another body, a 409) for 24 hours. The host keeps them apart,
+    as ``legal_change:<host>:…`` does."""
+    marker = MailMarker(17, "invoices_overdue", mail_event(42, DAY))
+    kastlan = marker.idempotency_key(NEXT, app_base_url="https://kastlan.example")
+    assert kastlan == "invoices_overdue:kastlan.example:42:2026-10-13:17:2026-10-14"
+    assert marker.idempotency_key(NEXT, app_base_url="https://keksdose.example") != kastlan, "two apps, two keys"
+    assert marker.idempotency_key(_days(2), app_base_url="https://kastlan.example") != kastlan, "a new day"
+    assert MailMarker(UUID, "share_granted", "p.7").idempotency_key(NEXT, app_base_url="http://localhost:8000") == (
+        f"share_granted:localhost:p.7:{UUID}:2026-10-14"
+    )
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "https://kastlan.example",
+        "https://kastlan.example/",
+        "https://KASTLAN.example",
+        "https://kastlan.example:8443/a/",
+    ],
+)
+def test_only_the_host_counts_so_the_key_stays_the_apps_across_reruns(base: str) -> None:
+    """A trailing slash, a port, a path or the host's case in the setting never makes a
+    rerun's key a new one, which Resend would send again."""
+    marker = MailMarker(17, "invoices_overdue", "42:2026-10-13")
+    assert (
+        marker.idempotency_key(NEXT, app_base_url=base)
+        == "invoices_overdue:kastlan.example:42:2026-10-13:17:2026-10-14"
+    )
+
+
+def test_without_a_base_url_the_key_is_the_one_before_0_23() -> None:
+    """An app that has not passed its base URL yet sends the key it sent with 0.22."""
+    marker = MailMarker(17, "invoices_overdue", "42:2026-10-13")
+    assert marker.idempotency_key(NEXT) == marker.idempotency_key(NEXT, app_base_url=None)
+    assert marker.idempotency_key(NEXT) == "invoices_overdue:42:2026-10-13:17:2026-10-14"
+
+
+@pytest.mark.parametrize(
+    ("base", "words"),
+    [
+        ("", "base URL is http"),
+        ("kastlan.example", "base URL is http"),
+        ("ftp://kastlan.example", "base URL is http"),
+        ("https://kastlan.example/ x", "base URL is http"),
+        ("https://kastlan.example\\@evil.example", "base URL is http"),
+        ("https://", "ASCII host"),
+        ("https://bücher.example", "ASCII host"),
+        ("https://[::1]:8000", "ASCII host"),
+        ("https://[::1", "ASCII host"),
+        (f"https://{'h' * 65}", "ASCII host"),
+    ],
+)
+def test_the_key_refuses_a_base_url_without_an_ascii_host(base: str, words: str) -> None:
+    with pytest.raises(ValueError, match=words):
+        MailMarker(17, "invoices_overdue", "42").idempotency_key(NEXT, app_base_url=base)
 
 
 def test_the_marker_is_a_frozen_hashable_row() -> None:
