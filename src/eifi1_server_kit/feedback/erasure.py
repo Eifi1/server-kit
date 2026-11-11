@@ -8,7 +8,9 @@ foreign-key plan — which rows exist and in what order they go is each app's sc
 What an erased report keeps is the REPORT: title, body, category, status, outcome and
 dates, with the person's own email / display name in the text replaced by
 ``[erased]``. What it loses: ``user_id``, ``crash_fingerprint`` (derived from the user id,
-so a token for the person, not the defect), every context key outside the allow-list,
+so a token for the person, not the defect), every context key outside the allow-list, a
+crash body's ``User:``, ``User agent:`` and ``Fingerprint:`` lines and its ``URL:`` past
+the path (0.24, :func:`scrub_crash_diagnostics`),
 and every picture — ``screenshot_url``, ``attachment_urls``, the rework files named in
 the body's ``[screenshot] <url>`` lines AND, since 0.13, each rework entry's
 ``attachment_url`` (:func:`anonymise_reply`).
@@ -26,6 +28,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from eifi1_server_kit.feedback.attachments import DEFAULT_ATTACHMENT_URL_POLICY, AttachmentUrlPolicy
 from eifi1_server_kit.feedback.body import split_body_attachments
@@ -55,12 +58,26 @@ FEEDBACK_CONTEXT_KEEP: frozenset[str] = frozenset(
 )
 
 #: What replaces the erased person's own identifiers where they were written INTO the text
-#: (a crash body's ``User: <email> (#<id>)`` line, keksdose ``_ERASED_MARK``).
+#: (keksdose ``_ERASED_MARK``). A crash body's ``User: <email> (#<id>)`` line goes whole
+#: since 0.24 (:func:`scrub_crash_diagnostics`); the mark is for the rest of the text.
 ERASED_MARK = "[erased]"
 
 #: Needles shorter than this are skipped: a 3-character display name ("Bob") appears inside
 #: ordinary words, and the email is the identifier that matters.
 MIN_NEEDLE_LENGTH = 4
+
+#: The heading of a crash body's diagnostics block (:func:`eifi1_server_kit.feedback.crash_body`);
+#: the block runs from here to the first blank line.
+CRASH_DIAGNOSTICS_HEADING = "-- Diagnostics --"
+
+#: The diagnostics lines an erased crash report loses — the same three the context loses
+#: (``user_*``, ``ua``, ``fingerprint``; keksdose legal audit 2026-11-11, C-7). The ``User:``
+#: line goes WHOLE, not scrubbed: it holds the account number beside the address, and the
+#: address of the day the crash was filed, which an erasure's identifiers (today's address
+#: only) no longer find after a change.
+CRASH_DIAGNOSTICS_DROP: tuple[str, ...] = ("User:", "User agent:", "Fingerprint:")
+
+_URL_LINE_RE = re.compile(r"^(URL:\s+)(\S.*)$")
 
 
 def scrub_text(text: str | None, needles: Iterable[str | None]) -> str:
@@ -76,6 +93,44 @@ def scrub_text(text: str | None, needles: Iterable[str | None]) -> str:
             continue
         out = re.sub(re.escape(needle), ERASED_MARK, out, flags=re.IGNORECASE)
     return out
+
+
+def _page_path(value: str) -> str:
+    """A ``URL:`` line's value cut to its path. A placeholder (``(not captured)``) stays."""
+    if value.startswith("("):
+        return value
+    return urlsplit(value).path or "/"
+
+
+def scrub_crash_diagnostics(body: str | None) -> str:
+    """A crash body without the diagnostics that name the person or the device (C-7).
+
+    Inside the ``-- Diagnostics --`` block only: the ``User:``, ``User agent:`` and
+    ``Fingerprint:`` lines go, and ``URL:`` keeps only its path — what the context keeps
+    (``route``) and nothing of what it drops (``url``, ``origin``: a query can carry what
+    the person typed, a developer's origin an IP). The message, the stack and everything
+    else stay as they were; a body without the block comes back unchanged, so a hand-filed
+    report with a line that starts "User:" keeps it.
+
+    :func:`anonymise_feedback` applies it (0.24). Rows erased before 0.24 — a crash report
+    whose ``user_id`` is already NULL — still have the three lines: run it once over their
+    bodies. A second pass changes nothing.
+    """
+    out: list[str] = []
+    inside = False
+    for line in (body or "").split("\n"):
+        if line.strip() == CRASH_DIAGNOSTICS_HEADING:
+            inside = True
+        elif inside and not line.strip():
+            inside = False
+        elif inside:
+            if line.startswith(CRASH_DIAGNOSTICS_DROP):
+                continue
+            match = _URL_LINE_RE.match(line)
+            if match:
+                line = match.group(1) + _page_path(match.group(2))
+        out.append(line)
+    return "\n".join(out)
 
 
 def scrub_context(context: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -127,7 +182,8 @@ def anonymise_feedback(
     :func:`eifi1_server_kit.auth.erasure_identifiers` (the email, the old display name, the
     full name in every order, longest first; never a bare first or last name). The body's
     ``[screenshot] <url>`` lines are stripped (the fix this module documents) BEFORE the
-    scrub, and every URL the row named is returned in ``urls`` for
+    scrub, as are a crash body's personal diagnostics (:func:`scrub_crash_diagnostics`,
+    0.24), and every URL the row named is returned in ``urls`` for
     :func:`attachment_keys_to_purge`. ``changes`` sets ``user_id``, ``crash_fingerprint``,
     ``screenshot_url`` and ``attachment_urls`` to ``None``.
     """
@@ -138,7 +194,7 @@ def anonymise_feedback(
     )
     changes: dict[str, Any] = {
         "title": scrub_text(title, needles),
-        "body": scrub_text(stripped, needles),
+        "body": scrub_text(scrub_crash_diagnostics(stripped), needles),
         "context": scrub_context(context),
         "crash_fingerprint": None,
         "screenshot_url": None,
