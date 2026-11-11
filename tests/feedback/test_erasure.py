@@ -21,6 +21,7 @@ from eifi1_server_kit.feedback import (
     crash_fingerprint,
     feedback_attachment_urls,
     scrub_context,
+    scrub_crash_diagnostics,
     scrub_text,
 )
 
@@ -120,9 +121,64 @@ def test_a_crash_report_loses_the_email_out_of_its_body() -> None:
     assert EMAIL in body, "precondition: the crash body embeds the address"
     erased = _erase(title="[crash] TypeError: x is not a function", body=body)
     kept = erased.changes["body"]
-    assert EMAIL not in kept and ERASED_MARK in kept
+    assert EMAIL not in kept
     assert "TypeError: x is not a function" in kept and "/budget" in kept
     assert erased.changes["crash_fingerprint"] is None
+
+
+def _crash_row(**payload: Any) -> tuple[str, str]:
+    crash = CrashReportCreate(
+        name="TypeError",
+        message="x is not a function",
+        route="/budget",
+        url="http://192.168.1.20:5173/budget?q=Psychotherapie&p=2#row-4",
+        ua="Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X)",
+        viewport="390x844",
+        version="0.4.39",
+        stack="TypeError: x is not a function\n    at Budget (budget.tsx:12:3)",
+        **payload,
+    )
+    fingerprint = crash_fingerprint(crash, 7)
+    return crash_body(crash, user_id=7, user_email=EMAIL, fingerprint=fingerprint), fingerprint
+
+
+def test_an_erased_crash_body_keeps_only_what_describes_the_software() -> None:
+    """keksdose legal audit 2026-11-11, C-7: the body lost the address but kept the account
+    number, the browser string and the fingerprint — the three the context drops."""
+    body, fingerprint = _crash_row()
+    kept = _erase(body=body).changes["body"]
+    for gone in ("User:", "(#7)", "User agent:", "Mozilla", "Fingerprint:", fingerprint):
+        assert gone not in kept, gone
+    assert "Psychotherapie" not in kept and "192.168.1.20" not in kept and "p=2" not in kept
+    assert "URL:         /budget\n" in kept, "the URL keeps its path, as the context keeps route"
+    for stays in ("Route:       /budget", "App version: 0.4.39", "Viewport:    390x844", "Boundary:", "Online:"):
+        assert stays in kept, stays
+    assert "at Budget (budget.tsx:12:3)" in kept and "-- Component stack --" in kept
+    assert scrub_crash_diagnostics(kept) == kept, "a second pass changes nothing"
+
+
+def test_the_user_line_goes_with_an_address_the_identifiers_no_longer_know() -> None:
+    """The crash was filed under the address of that day; the erasure only knows today's."""
+    body, _ = _crash_row()
+    kept = _erase(body=body, identifiers=["new-address@example.test", NAME]).changes["body"]
+    assert EMAIL not in kept and "(#7)" not in kept
+
+
+def test_only_the_diagnostics_block_is_touched() -> None:
+    """A hand-filed report with lines that look like diagnostics keeps them; so does a
+    crash's message or stack. A URL line that was never captured keeps its placeholder."""
+    prose = "User: I could not sign in\nURL: https://keksdose.app/budget?q=x\nFingerprint: none"
+    assert scrub_crash_diagnostics(prose) == prose
+    assert scrub_crash_diagnostics(None) == ""
+    crash = CrashReportCreate(name="Error", message="boom", stack="User: in the stack\nUser agent: too")
+    body = crash_body(crash, user_id=7, user_email=EMAIL, fingerprint="f" * 32)
+    kept = scrub_crash_diagnostics(body)
+    assert "URL:         (not captured)" in kept
+    assert "User: in the stack\nUser agent: too" in kept
+    assert "Fingerprint:" not in kept and "(#7)" not in kept
+    assert scrub_crash_diagnostics("-- Diagnostics --\nURL:         https://keksdose.app") == (
+        "-- Diagnostics --\nURL:         /"
+    )
 
 
 def test_scrub_text_is_exact_and_case_insensitive() -> None:

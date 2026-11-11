@@ -123,8 +123,10 @@ def crash_body(
 ) -> str:
     """The diagnostics block, as plain greppable text (keksdose ``_crash_body``, ``:262``).
 
-    The ``User:`` line embeds the address — which is why erasure scrubs bodies too
-    (:func:`eifi1_server_kit.feedback.anonymise_feedback`).
+    The ``User:`` line embeds the address and the account number, ``User agent:`` and
+    ``Fingerprint:`` the device and a token for the person — erasure drops those three lines
+    and cuts ``URL:`` to its path (:func:`eifi1_server_kit.feedback.scrub_crash_diagnostics`,
+    0.24), so keep the labels as they are: the scrub finds the lines by them.
     """
     where = "the whole app shell" if payload.boundary == "app" else "a single page"
     online = "yes" if payload.online else "no" if payload.online is not None else "(unknown)"

@@ -103,6 +103,7 @@ from eifi1_server_kit.feedback.erasure import (
     attachment_keys_to_purge,
     feedback_attachment_urls,
     scrub_context,
+    scrub_crash_diagnostics,
     scrub_text,
 )
 from eifi1_server_kit.feedback.errors import (
@@ -363,6 +364,7 @@ __all__ = [
     "rework_stamp",
     "rework_status",
     "scrub_context",
+    "scrub_crash_diagnostics",
     "scrub_text",
     "split_body_attachments",
     "split_rework_blocks",
