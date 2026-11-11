@@ -10,6 +10,28 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.24.0] (2026-11-11)
+
+server-kit 0.24.0: the backend half of round 0.60 (ui-kit 0.60) — finding C-7 of keksdose's
+legal audit of 2026-11-11. A **minor**: it adds one public name, and **nothing breaking**:
+`anonymise_feedback` keeps its signature. Per-app steps: ui-kit's `docs/adopt-0.60.md`, the
+server-kit 0.24 section.
+
+### Fixed
+
+* **feedback:** an erased crash report's body loses the person's diagnostics. `crash_body`
+  writes them into the body as text, and `anonymise_feedback` replaced only the person's name
+  and email there: the account number (`User: … (#id)`), the browser string (`User agent:`)
+  and the fingerprint (`Fingerprint:`) stayed, although the context loses the same three.
+  - `anonymise_feedback` now runs `scrub_crash_diagnostics` over the body before the name
+    scrub. Inside the `-- Diagnostics --` block the `User:`, `User agent:` and `Fingerprint:`
+    lines go, and `URL:` keeps only its path, as the context keeps `route` and drops `url` and
+    `origin`. The rest of the body stays; a body without the block comes back unchanged.
+  - Dropping the whole `User:` line also removes the address of the day the crash was filed,
+    which `erasure_identifiers` (today's address only) did not find after an address change.
+  - `scrub_crash_diagnostics(body)` is public, for a one-off over rows erased before 0.24
+    (crash reports whose `user_id` is already NULL); a second pass changes nothing.
+
 ## [0.23.0] (2026-11-10)
 
 server-kit 0.23.0: the backend half of round 0.59 (ui-kit 0.59) — two findings from 0.22's
