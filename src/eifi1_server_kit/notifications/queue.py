@@ -29,9 +29,8 @@ person's data.
 * **Idempotency**: the claim commits before the send and ``done`` after; a mail carries
   ``Idempotency-Key = queue:<host>:<first row id>:<count>``, so a resend after a lost answer
   is a no-op at Resend, and a push sent twice replaces itself through its tag. The host is
-  that of the service's ``app_base_url`` (0.23): every app's queue counts its rows from 1,
-  and the apps share one Resend team. Without it the key is 0.22's,
-  ``queue:<first row id>:<count>``. A claim older
+  that of the service's ``app_base_url`` (0.23, required since 0.27): every app's queue
+  counts its rows from 1, and the apps share one Resend team. A claim older
   than :data:`QUEUE_CLAIM_TIMEOUT` is claimable again; after :data:`QUEUE_MAX_ATTEMPTS`
   the rows are dropped ``"failed"``.
 * **Retention**: sent and dropped rows are purged after :data:`QUEUE_RETENTION`.
@@ -226,10 +225,11 @@ class QueueService:
 
     ``app_base_url`` (0.23) puts the app's host into a bundled mail's ``Idempotency-Key``,
     ``queue:<host>:<first row id>:<count>``: the base URL the app builds its links from, as
-    :meth:`~.retry.MailMarker.idempotency_key` takes it, the host only. Without it the key
-    is 0.22's, ``queue:<first row id>:<count>``, which another app's queue on the same
-    Resend team sends too. A :class:`ValueError` for a ``limit`` below 1 or an
-    ``app_base_url`` that is not http(s) with an ASCII host, when the service is built.
+    :meth:`~.retry.MailMarker.idempotency_key` takes it, the host only. **Required since
+    0.27**: without it the key was 0.22's, ``queue:<first row id>:<count>``, which another
+    app's queue on the same Resend team sends too. A :class:`TypeError` for an
+    ``app_base_url`` left out or ``None``; a :class:`ValueError` for a ``limit`` below 1 or
+    an ``app_base_url`` that is not http(s) with an ASCII host, when the service is built.
     """
 
     def __init__(
@@ -237,15 +237,15 @@ class QueueService:
         queue: NotificationQueue,
         port: FlushPort,
         *,
+        app_base_url: str,
         limit: int = QUEUE_FLUSH_LIMIT,
-        app_base_url: str | None = None,
     ) -> None:
         if limit < 1:
             raise ValueError(f"a flush claims 1 row or more: {limit}")
         self.queue = queue
         self.port = port
         self.limit = limit
-        self._key_prefix = "queue" if app_base_url is None else f"queue:{_key_host(app_base_url)}"
+        self._key_prefix = f"queue:{_key_host(app_base_url)}"
 
     async def hold_push(
         self,

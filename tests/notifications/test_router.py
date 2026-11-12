@@ -116,7 +116,7 @@ async def test_the_prune_drops_rows_past_retention(store: InMemoryInboxStore) ->
 async def test_the_jobs_route_runs_the_tick_behind_the_token() -> None:
     queue = InMemoryNotificationQueue()
     port = RecordingFlushPort()
-    service = QueueService(queue, port)
+    service = QueueService(queue, port, app_base_url="https://keksdose.example")
     comment = NotificationType("feedback_comment", app=None, email=True)
     await service.queue_mail(comment, 1, "comment:1", {"number": 1}, now=NOW - timedelta(minutes=1))
     queue.commit()

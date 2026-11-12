@@ -23,6 +23,8 @@ from eifi1_server_kit.notifications import (
 from eifi1_server_kit.notifications.testing import InMemoryNotificationQueue, RecordingFlushPort
 
 NOW = datetime(2026, 10, 19, 22, tzinfo=UTC)
+#: The app's base URL, which a bundle's key carries the host of (required since 0.27).
+BASE = "https://keksdose.example"
 END = NOW + timedelta(hours=8)
 RECEIVED = NotificationType("feedback_received", app=True, email=True, bundle=timedelta(minutes=15))
 COMMENT = NotificationType("feedback_comment", app=None, email=True)
@@ -37,7 +39,7 @@ def _push(title: str, body: str, tag: str, *, inbox: bool = True) -> PushPayload
 def _service(*, sends_ok: bool = True) -> tuple[QueueService, InMemoryNotificationQueue, RecordingFlushPort]:
     queue = InMemoryNotificationQueue()
     port = RecordingFlushPort(sends_ok=sends_ok)
-    return QueueService(queue, port), queue, port
+    return QueueService(queue, port, app_base_url=BASE), queue, port
 
 
 async def test_a_held_push_waits_for_the_end_of_quiet_hours() -> None:
@@ -152,7 +154,7 @@ async def test_mails_join_the_open_bundle_and_go_as_one() -> None:
     ((user_id, type_id, items, key),) = port.mails
     assert (user_id, type_id) == (7, "feedback_received")
     assert [item.payload["number"] for item in items] == [1, 2, 3]
-    assert key == f"queue:{items[0].id}:3"
+    assert key == f"queue:keksdose.example:{items[0].id}:3"
     # The bundle is closed: the next item opens a new one.
     await service.queue_mail(RECEIVED, 7, "feedback:4", {"number": 4}, now=NOW + timedelta(minutes=20))
     queue.commit()
@@ -180,7 +182,7 @@ async def test_a_failed_send_is_tried_again_after_the_claim_timeout_and_dropped_
     row = next(iter(queue.rows.values()))
     assert (row.attempts, row.dropped) == (QUEUE_MAX_ATTEMPTS, "failed")
     keys = {key for *_rest, key in port.mails}
-    assert keys == {f"queue:{row.id}:1"}, "the idempotency key is stable across a resend"
+    assert keys == {f"queue:keksdose.example:{row.id}:1"}, "the idempotency key is stable across a resend"
 
 
 async def test_a_bundles_key_carries_the_apps_host() -> None:
@@ -197,6 +199,15 @@ async def test_a_bundles_key_carries_the_apps_host() -> None:
     assert await again.flush(NOW + QUEUE_CLAIM_TIMEOUT + timedelta(minutes=1)) == FlushResult(left=1)
     row = next(iter(queue.rows.values()))
     assert [key for *_rest, key in port.mails] == [f"queue:keksdose.example:{row.id}:1"] * 2
+
+
+def test_the_service_requires_the_apps_base_url() -> None:
+    """0.27: left out, a bundle's key was 0.22's ``queue:<id>:<count>``, which every app's
+    queue sends from row 1; ``None`` from an unset setting is refused as well."""
+    with pytest.raises(TypeError, match="app_base_url"):
+        QueueService(InMemoryNotificationQueue(), RecordingFlushPort())  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="the app's base URL is required"):
+        QueueService(InMemoryNotificationQueue(), RecordingFlushPort(), app_base_url=None)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(("base", "words"), [("keksdose.example", "base URL is http"), ("https://", "ASCII host")])
@@ -258,7 +269,7 @@ async def test_a_retried_tick_job_sends_nothing_twice() -> None:
 
 def test_a_flush_claims_one_row_or_more() -> None:
     with pytest.raises(ValueError, match="1 row or more"):
-        QueueService(InMemoryNotificationQueue(), RecordingFlushPort(), limit=0)
+        QueueService(InMemoryNotificationQueue(), RecordingFlushPort(), app_base_url=BASE, limit=0)
 
 
 async def test_a_port_that_takes_now_gets_the_flushs_now() -> None:
@@ -281,7 +292,7 @@ class _PortWithoutNow(RecordingFlushPort):
 
 async def test_a_port_without_now_keeps_working() -> None:
     queue = InMemoryNotificationQueue()
-    service = QueueService(queue, _PortWithoutNow())
+    service = QueueService(queue, _PortWithoutNow(), app_base_url=BASE)
     await service.hold_push(7, "scan_done", "scan:1", _push("a", "b", "c"), not_before=END, now=NOW)
     queue.commit()
     assert await service.flush(END) == FlushResult(dropped=1)
@@ -298,7 +309,7 @@ class _PortWithKeywords(RecordingFlushPort):
 async def test_a_port_taking_keywords_gets_now_too() -> None:
     queue = InMemoryNotificationQueue()
     port = _PortWithKeywords()
-    service = QueueService(queue, port)
+    service = QueueService(queue, port, app_base_url=BASE)
     await service.hold_push(7, "scan_done", "scan:1", _push("a", "b", "c"), not_before=END, now=NOW)
     queue.commit()
     assert await service.flush(END) == FlushResult(sent=1) and port.checked_at == [END]
