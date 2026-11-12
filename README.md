@@ -210,10 +210,10 @@ imported lazily; without the extra every call raises `ImportError` naming it.
 ### `eifi1_server_kit.objects`
 
 Where the apps' stored files live (0.26), lifted from keksdose's `InvoiceFileStore`
-(`adapters/external/invoice_file_store.py`). The port `ObjectStore` has four async methods —
+(`adapters/external/invoice_file_store.py`). The port `ObjectStore` has six async methods —
 `save(key, data, *, content_type=None)`, `read(key) -> bytes`, `remove(key)`,
-`list_objects(prefix="") -> list[StoredObject(key, modified)]` in key order — and three
-backends:
+`list_objects(prefix="") -> list[StoredObject(key, modified)]` in key order, and since 0.27
+`exists(key) -> bool` and `check()` — and three backends:
 
 | Backend | For | Needs |
 |---|---|---|
@@ -223,7 +223,7 @@ backends:
 
 The app mints the key (keksdose `feedback/<sha12>.<ext>`, Kurvenschmiede its keyed digest);
 the store makes none, keeps the bytes as given (no sealing: the provider's encryption at
-rest) and never creates a bucket. A key is what every backend can hold — at most 1024 bytes
+rest) and never creates a bucket on its own. A key is what every backend can hold — at most 1024 bytes
 of UTF-8 (`MAX_KEY_BYTES`), `/`-separated segments of at most 255 (`MAX_SEGMENT_BYTES`), none
 empty or starting with a dot, no backslash or control character — so nothing climbs out of
 the local root and a key that works in development works in the bucket; anything else is a
@@ -233,6 +233,20 @@ urllib3's errors are none); `read` of a missing object is `ObjectNotFoundError`,
 `FileNotFoundError` too, the app's 404; `remove` of a missing object is no failure. The cloud
 clients are synchronous and imported lazily: each call runs in a worker thread, and a missing
 extra is an `ImportError` naming it. Build one store per process and share it.
+
+**Asking without reading** (0.27, keksdose's `object_exists` and `healthcheck`):
+`exists(key)` reads the object's metadata, never its bytes (a stat, `blob.exists()`,
+`stat_object`) — for a key the client sent before a row is hung on it — and answers `False`
+for absent only: a store that cannot say raises `ObjectStoreError`, never "absent".
+`check()` is one cheap request for a readiness probe or an admin page, raising
+`ObjectStoreError` unless the store is reachable and its bucket is there: the local root (or,
+before the first save made it, the directory above it) writable; Cloud Storage lists at most
+one object, which `roles/storage.objectUser` allows where the bucket's own metadata is not;
+S3 is keksdose's `bucket_exists`, with a missing bucket a failure. It makes nothing.
+**`ensure_bucket()`**, on `LocalObjectStore` and `S3ObjectStore` only, makes the root or the
+bucket when the app asks — a development MinIO's at the app's start, where keksdose made it
+on the first upload; no save ever does, so production never creates one. A Cloud Storage
+bucket is its deploy's, and `GcsObjectStore` has none.
 
 `await purge_objects(store, keys, *, reason, concurrency=PURGE_CONCURRENCY)` removes many,
 16 in flight, each key once, and never raises: it returns the keys it left, in the order
