@@ -10,6 +10,32 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.25.0] (2026-11-12)
+
+server-kit 0.25.0: the backend half of round 0.61 (ui-kit 0.61) — Marcel, 2026-11-12:
+Kurvenschmiede's feedback area works exactly like keksdose's. A **minor**: it adds a module of
+public names, and **nothing breaking**. Per-app steps: ui-kit's `docs/adopt-0.61.md`, the
+server-kit 0.25 section.
+
+### Added
+
+* **feedback:** a notice opens its reports as keksdose's do, through one link builder
+  (`feedback.links`, lifted from keksdose's `feedback_notice_url`, `feedback_url` and
+  `bundle_texts`). Kurvenschmiede and kastlan linked `?row=` alone, so the pages' `?ids=` set
+  (ui-kit 0.59) never opened from their mails, and a status filter left on still hid the list
+  under the opened row (keksdose live #500).
+  - `feedback_inbox_href(ids)` for `feedback_received`: `/feedback?ids=123&row=123`, a crash
+    bundle `/feedback?ids=7,8,9`.
+  - `my_feedback_href(ids)` for a reply or a comment on the person's own report:
+    `/my-feedback?ids=12&row=12`, a bundle `?ids=12,14`.
+  - `public_feedback_href(ids)` for a report the person follows: one opens in
+    `/all-feedback?row=12`, several in `/all-feedback?sort=updated`.
+  - `feedback_notice_href(ids, *, mine)` picks between the last two, per recipient.
+  - `ids` is one int or several, named once each in order, each a positive integer of at most
+    2**53 - 1; past `FEEDBACK_LINK_IDS_MAX` (50) the link opens the bare list. A path by default;
+    `app_base_url` makes the mail's absolute link. The paths are exported as
+    `FEEDBACK_INBOX_PATH`, `MY_FEEDBACK_PATH` and `PUBLIC_FEEDBACK_PATH`.
+
 ## [0.24.0] (2026-11-11)
 
 server-kit 0.24.0: the backend half of round 0.60 (ui-kit 0.60) — finding C-7 of keksdose's
