@@ -28,8 +28,10 @@ being one. **Mail by kind** (:func:`mails_at_once`): a report and a rework are m
 once; a crash only inside the queue's 15-minute bundle where the app runs one.
 
 **The words**: no title, no body, no reporter — "New feedback report #123 (Bug)", "Report
-#123 was sent back for rework", "New crash report #123" — linking ``/feedback?row=123``;
-kastlan names the company. **No recipient in logs**: the alert's path logs the type, the
+#123 was sent back for rework", "New crash report #123" — linking
+:func:`~eifi1_server_kit.feedback.feedback_inbox_href`'s ``/feedback?ids=123&row=123``
+(0.25: the inbox narrowed to the report, so a status filter the admin left on cannot hide
+it; a crash bundle ``/feedback?ids=7,8,9``); kastlan names the company. **No recipient in logs**: the alert's path logs the type, the
 report id and the recipient's user id, never an address.
 """
 
