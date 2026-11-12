@@ -27,6 +27,11 @@ into :class:`FeedbackAttention`'s three tiles from the kit's own status sets.
 The admins' alert (0.16, contract §11): :data:`FEEDBACK_RECEIVED`, :class:`FeedbackAlert`,
 the :class:`FeedbackAlerts` port :class:`FeedbackService` tells (``alerts=``),
 :func:`admin_alert_recipients` and :func:`mails_at_once`.
+
+Where a notice opens (0.25, contract §9.11, §13.7): :func:`feedback_inbox_href`,
+:func:`my_feedback_href`, :func:`public_feedback_href` and :func:`feedback_notice_href`,
+the ``?ids=`` set and the ``?row=`` the pages read, one rule for every app's mails and
+pushes in place of each app's own string.
 """
 
 from __future__ import annotations
@@ -122,6 +127,16 @@ from eifi1_server_kit.feedback.errors import (
     FeedbackValidationError,
     LegacyReworkAppendError,
     UnknownAttachmentUrlError,
+)
+from eifi1_server_kit.feedback.links import (
+    FEEDBACK_INBOX_PATH,
+    FEEDBACK_LINK_IDS_MAX,
+    MY_FEEDBACK_PATH,
+    PUBLIC_FEEDBACK_PATH,
+    feedback_inbox_href,
+    feedback_notice_href,
+    my_feedback_href,
+    public_feedback_href,
 )
 from eifi1_server_kit.feedback.ports import (
     AttachmentStorage,
@@ -229,6 +244,8 @@ __all__ = [
     "FEEDBACK_ANSWERED",
     "FEEDBACK_COMMENT",
     "FEEDBACK_CONTEXT_KEEP",
+    "FEEDBACK_INBOX_PATH",
+    "FEEDBACK_LINK_IDS_MAX",
     "FEEDBACK_RECEIVED",
     "LEGACY_REWORK_APPEND",
     "LEGACY_REWORK_APPEND_DETAIL",
@@ -239,11 +256,13 @@ __all__ = [
     "MAX_SCREENSHOT_URL_LENGTH",
     "MAX_TITLE_LENGTH",
     "MIN_NEEDLE_LENGTH",
+    "MY_FEEDBACK_PATH",
     "NOT_NULLABLE_FIELDS",
     "OPAQUE_KEY_PATTERN",
     "OUTCOME_READ_ONLY",
     "PICKABLE_CATEGORIES",
     "PUBLIC_COMMENT_FIELDS",
+    "PUBLIC_FEEDBACK_PATH",
     "PUBLIC_PAGE_MAX",
     "PUBLIC_PAGE_SIZE",
     "PUBLIC_REPLY_FIELDS",
@@ -344,18 +363,22 @@ __all__ = [
     "download_attachment",
     "feedback_attachment_urls",
     "feedback_attention",
+    "feedback_inbox_href",
+    "feedback_notice_href",
     "feedback_recipients",
     "fold_crash_context",
     "initial_status",
     "is_public",
     "is_rework_append",
     "mails_at_once",
+    "my_feedback_href",
     "normalise_crash_text",
     "opens_with_rework_rule",
     "plan_reply",
     "plan_rework",
     "plan_update",
     "public_body",
+    "public_feedback_href",
     "public_text",
     "reject_manual_crash",
     "reopens",

@@ -37,7 +37,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.24 ↔ ui-kit 0.60**: that ui-kit
+package with its own version and changelog. **server-kit 0.25 ↔ ui-kit 0.61**: that ui-kit
 release is tested against this release's API export (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
@@ -78,6 +78,7 @@ SQLAlchemy or an app's model ([`docs/server-services-harmonization.md`](https://
 | Errors | `FeedbackError` → `FeedbackValidationError` (422: `CrashCategoryNotAssignableError`, `UnknownAttachmentUrlError`, `LegacyReworkAppendError` with `code` `LEGACY_REWORK_APPEND`, since 0.16), `FeedbackForbiddenError` (403) — all `ValueError`s with a `status_code` |
 | Public feedback (0.11) | `public_body(body, *, policy)` (no file line, no attachment URL anywhere, kastlan's folded `--- COMMENT <stamp> · <name> ---` without the name), `public_text(text, *, policy)` (the URL removal alone, `REMOVED_URL` "[…]"), `is_public(category, public)` (never a CRASH), `feedback_recipients(*, author_id, commenter_ids, writer_id)`; `FEEDBACK_ANSWERED`, `FEEDBACK_COMMENT`, `COMMENT_MAX` (4000), `REPLY_MAX` (8000), `PUBLIC_PAGE_SIZE` (50), `PUBLIC_PAGE_MAX` (100); `PUBLIC_REPORT_FIELDS`, `PUBLIC_COMMENT_FIELDS`, `PUBLIC_REPLY_FIELDS` (what leaves for others, §9.10; `kind` since 0.13, never `attachment_url`); `DECIDED_STATUSES`; `plan_reply(*, status, new_status, now=)` → `ReplyPlan(changes, status_from, status_to)`; `plan_update(…, filed_private=False)` (`public` is the author's while the report is open, at any status when `filed_private`) |
 | Public schemas (0.11) | `FeedbackResponse` gains `author_name`, `mine`, `public`, `filed_private`, `votes`, `voted`, `comment_count`, `replies` (all optional); `FeedbackUpdate` gains `public`, and **`outcome` is frozen**: a PATCH naming it is 422 `OUTCOME_READ_ONLY` ("outcome is read-only; post a reply"); `FeedbackReplyCreate`, `FeedbackReplyResponse` (`FeedbackPublicReplyResponse` + `status_from`, + `attachment_url` since 0.13; `kind` on both), `FeedbackPublicListItem`, `FeedbackPublicResponse` (separate models, so nothing added to `FeedbackResponse` reaches the public), `FeedbackCommentCreate`, `FeedbackCommentResponse`, `FeedbackCommentHide`, `FeedbackVoteResponse`, `PublicSort` |
+| Notice links (0.25, feedback §9.11, §13.7) | `feedback_inbox_href(ids, *, app_base_url=None)` (`feedback_received`: `/feedback?ids=123&row=123`, a crash bundle `/feedback?ids=7,8,9`), `my_feedback_href(ids, *, app_base_url=None)` (`/my-feedback?ids=12&row=12`, a bundle `?ids=12,14`), `public_feedback_href(ids, *, app_base_url=None)` (`/all-feedback?row=12`, several `?sort=updated`), `feedback_notice_href(ids, *, mine, app_base_url=None)` (one of the last two by whose report it is: `feedback_answered`, `feedback_comment`); `ids` one int or several, named once each in the order given, each a positive safe integer (`TypeError`, `ValueError`); past `FEEDBACK_LINK_IDS_MAX` (50) the bare list; a path, or with `app_base_url` (an http(s) origin, perhaps with a path) a mail's absolute link; `FEEDBACK_INBOX_PATH`, `MY_FEEDBACK_PATH`, `PUBLIC_FEEDBACK_PATH` |
 
 **READY, the triage step** (feedback contract §8.2): OPEN means "filed, not yet triaged",
 and an admin releases a row for implementation by setting READY. The server decides the
@@ -1540,7 +1541,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.24.0/eifi1_server_kit-0.24.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.25.0/eifi1_server_kit-0.25.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -1550,7 +1551,7 @@ With the image guard, the Resend client, the Paddle client, a router or the sync
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.24.0/eifi1_server_kit-0.24.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.25.0/eifi1_server_kit-0.25.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —
