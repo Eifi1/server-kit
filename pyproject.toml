@@ -1,6 +1,6 @@
 [project]
 name = "eifi1-server-kit"
-version = "0.25.0"
+version = "0.26.0"
 description = "The backend sibling of @eifi1/ui-kit: the cross-app contracts (feedback, uploads, limiter, CORS, translation review, sign-in and the account, user administration, settings, the demo, billing, mail) as pure, framework-light code."
 readme = "README.md"
 license = "MIT"
@@ -42,6 +42,15 @@ fastapi = ["fastapi>=0.115.0", "python-multipart>=0.0.18"]
 # is SQLAlchemy ORM code; `sync`'s schemas, merge rule, paging and counter port need nothing,
 # and the mixin is imported lazily. Both apps' floor, no ceiling (local-first §1.6).
 sync = ["sqlalchemy>=2.0.0"]
+# `objects.GcsObjectStore` (0.26) reaches a Cloud Storage bucket through Google's own client,
+# keyless: Application Default Credentials, on Cloud Run the runtime service account. The
+# protocol, `LocalObjectStore` and `purge_objects` need nothing, and the client is imported
+# lazily. No app has a floor yet: 3.0, the line the kit is tested on. No ceiling.
+gcs = ["google-cloud-storage>=3.0.0"]
+# `objects.S3ObjectStore` (0.26) speaks the S3 API with minio, as keksdose's
+# `S3InvoiceFileStore` does against storage.googleapis.com with an HMAC pair; imported
+# lazily. keksdose's floor, no ceiling.
+s3 = ["minio>=7.2.20"]
 
 [project.urls]
 Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"
@@ -55,9 +64,15 @@ dev = [
     # the lock below sits at or past the newest version any app runs. Raise it after a
     # green `scripts/check.sh` on the next release, never past one that has not run.
     "fastapi>=0.115.0,<0.158",
+    # The `gcs` extra, so `GcsObjectStore` is tested against the client's own exceptions and
+    # its keyless default construction, through a stub client: no network, no bucket.
+    "google-cloud-storage>=3.0.0",
     # The `mail` and `billing` extras, so ResendClient and PaddleClient are tested against
     # httpx's MockTransport — and the client FastAPI's tests drive an app with.
     "httpx>=0.28.0",
+    # The `s3` extra, so `S3ObjectStore` is tested against minio's own `S3Error`, through a
+    # stub client: no network, no bucket.
+    "minio>=7.2.20",
     "mypy>=1.18.0",
     # The `images` extra, so `ensure_decodable_image` is tested against real pictures.
     "pillow>=11.0.0",
@@ -120,6 +135,15 @@ python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["src", "tests", "scripts"]
+# google-api-core's and google-auth's exceptions are typed packages whose constructors are
+# not: raising one (the object store's tests) is a call mypy may not see into.
+untyped_calls_exclude = ["google.api_core.exceptions", "google.auth.exceptions"]
+
+[[tool.mypy.overrides]]
+# google-cloud-storage ships no types (no py.typed, no stubs): `GcsObjectStore`'s client and
+# bucket are Any to mypy, and the store says what it reads from them.
+module = ["google.cloud", "google.cloud.storage", "google.cloud.storage.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

@@ -37,6 +37,10 @@ models, sessions or commits. Import from the submodules:
   each app implements, its routes as ``feedback.router.feedback_router`` (the ``fastapi``
   extra) and the fakes and conformance checks in ``feedback.testing``;
 * :mod:`eifi1_server_kit.uploads` — what an uploaded file is, by its bytes;
+* :mod:`eifi1_server_kit.objects` — where the apps' stored files live (0.26): one object store
+  port by the app's own keys, the local disk, Cloud Storage without a key (the ``gcs`` extra)
+  and S3 through minio (the ``s3`` extra), every failure an ``OSError``, and a bounded purge
+  that never raises;
 * :mod:`eifi1_server_kit.limiter` — an in-process sliding-window limiter, and the client's
   address counted from the right of ``X-Forwarded-For``;
 * :mod:`eifi1_server_kit.cors` — narrow, credential-free CORS for extra origins;
@@ -69,4 +73,4 @@ lifted with a citation on each.
 
 from __future__ import annotations
 
-__version__ = "0.25.0"
+__version__ = "0.26.0"

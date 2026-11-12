@@ -47,6 +47,7 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.notifications",
         "eifi1_server_kit.notifications.router",
         "eifi1_server_kit.notifications.testing",
+        "eifi1_server_kit.objects",
         "eifi1_server_kit.settings",
         "eifi1_server_kit.sync",
         "eifi1_server_kit.sync.scopes",

@@ -102,6 +102,8 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     ("eifi1_server_kit.tours", "docs/tours-harmonization.md", "§10.2, §10.3"),
     ("eifi1_server_kit.tours.router", "docs/tours-harmonization.md", "§10.3"),
     ("eifi1_server_kit.uploads", "docs/feedback-harmonization.md", "§3.5"),
+    # The apps' stored files (0.26): what an app's storage port (§2.5) keeps its files in.
+    ("eifi1_server_kit.objects", "docs/server-services-harmonization.md", "§2.5"),
     ("eifi1_server_kit.limiter", "docs/feedback-harmonization.md", "§3.5, §3.6"),
     ("eifi1_server_kit.errors", "docs/feedback-harmonization.md", "§3.7"),
     # Layer 2's clock, shared by the feedback service and the translation review (0.10).

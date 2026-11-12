@@ -146,6 +146,8 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         "doc": "docs/local-first-harmonization.md",
         "section": "§1.5, §1.6, §2.4",
     }
+    # 0.26's object store is what an app's storage port (§2.5) keeps its files in.
+    assert contracts["eifi1_server_kit.objects"] == {"doc": "docs/server-services-harmonization.md", "section": "§2.5"}
 
 
 def test_the_members_are_each_modules_all_in_order(data: dict[str, Any]) -> None:
@@ -238,6 +240,26 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
     assert rule["signature"] == "@dataclass(frozen=True, slots=True) class EntityRule"
     assert members["eifi1_server_kit.sync", "sort_changes"]["signature"] == (
         "async sort_changes(scope: SyncScope, changes: Sequence[Change], rows: ScopeRows) -> SortedChanges"
+    )
+    # 0.26's object store: the port is a protocol, each backend a class whose methods are its
+    # own, the purge a coroutine, the key's limits plain numbers.
+    store = members["eifi1_server_kit.objects", "ObjectStore"]
+    assert store["kind"] == "protocol"
+    assert {method["name"]: method["signature"] for method in store["methods"]}["save"] == (
+        "async save(key: str, data: bytes, *, content_type: str | None = None) -> None"
+    )
+    gcs = {
+        method["name"]: method["signature"]
+        for method in members["eifi1_server_kit.objects", "GcsObjectStore"]["methods"]
+    }
+    assert gcs["__init__"] == "__init__(bucket: str, *, client: Client | None = None) -> None"
+    assert members["eifi1_server_kit.objects", "purge_objects"]["signature"] == (
+        "async purge_objects(store: ObjectStore, keys: Iterable[str], *, reason: str, "
+        "concurrency: int = PURGE_CONCURRENCY) -> list[str]"
+    )
+    assert members["eifi1_server_kit.objects", "MAX_KEY_BYTES"]["value"] == 1024
+    assert members["eifi1_server_kit.objects", "ObjectNotFoundError"]["signature"] == (
+        "class ObjectNotFoundError(ObjectStoreError, FileNotFoundError)"
     )
 
 

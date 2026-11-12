@@ -10,6 +10,35 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.26.0] (2026-11-12)
+
+server-kit 0.26.0: one object store for the apps' stored files (Marcel, 2026-11-12:
+Kurvenschmiede's feedback attachments move to an object store, and the store goes into the
+kit). A **minor**: a new module and two new extras, **nothing breaking**; the base install is
+unchanged.
+
+### Added
+
+* **objects:** one object store for the apps' files, lifted from keksdose's
+  `invoice_file_store.py`.
+  - `ObjectStore`: async `save(key, data, *, content_type=None)`, `read(key)`,
+    `remove(key)` (raises on failure; a missing object counts as removed) and
+    `list_objects(prefix="")` → `StoredObject(key, modified)`, in key order.
+  - `LocalObjectStore(root)`: a file per key, written atomically, never outside the root.
+  - `GcsObjectStore(bucket, *, client=None)`: Google Cloud Storage, keyless through Application
+    Default Credentials (on Cloud Run, the runtime service account). Extra `gcs`
+    (`google-cloud-storage>=3.0.0`).
+  - `S3ObjectStore(bucket, *, endpoint=, access_key=, secret_key=, region=None)` or
+    `(bucket, *, client=)`: S3-compatible through minio, keksdose's current path. Extra `s3`
+    (`minio>=7.2.20`).
+  - `purge_objects(store, keys, *, reason, concurrency=16)`: removes each key once with bounded
+    concurrency, never raises, returns the keys it left.
+  - Every failure is an `ObjectStoreError` (an `OSError`, the backend's error chained); a missing
+    object on `read` is `ObjectNotFoundError`, also a `FileNotFoundError`, for the app's 404.
+  - One key rule on every backend: at most 1024 bytes, `/`-parts of at most 255 bytes, no empty
+    or dot-leading part, no backslash or control character. The app mints its keys; the store
+    encrypts nothing and creates no bucket.
+
 ## [0.25.0] (2026-11-12)
 
 server-kit 0.25.0: the backend half of round 0.61 (ui-kit 0.61) — Marcel, 2026-11-12:
