@@ -170,8 +170,8 @@ written once (server-services §2, §4.1). The ports and the service come with
 - **The create stamps the identity** (`stamp_identity`) and decides the first status;
   `attachment_urls` is `None` for none, never `[]`.
 - **Public feedback (0.11, feedback §9).** `create_reply` is mounted with `deps.replies`
-  (all three apps); the other eight with `deps.public_viewer` (keksdose: everyone signed
-  in; Kurvenschmiede: never a CUSTOMER), which needs `comments`, `votes` and `people`
+  (all three apps); the other eight with `deps.public_viewer` (keksdose and Kurvenschmiede:
+  everyone signed in), which needs `comments`, `votes` and `people`
   (else `ValueError` at build time). An admin always sees the public parts; a demo never
   does (404 on the reads, the app's demo refusal on the writes); a CRASH is never public.
   Others read first names only, and every body that leaves for them passes `public_text`.
@@ -618,8 +618,9 @@ session.add(AdminActionModel(**record))  # the app's own model, in the same tran
 `at_least=` raises it and never lowers it. keksdose raises the reset mail and the forced
 password change to `type_email` for an account whose key a password opens.
 
-**The detail never holds content.** Kurvenschmiede encrypts notes, titles and bodies at
-rest, and a plaintext copy in `detail` would carry them past the encryption, into a
+**The detail never holds content.** Kurvenschmiede encrypts its content at rest (a
+project's name, description and inputs, its gear, a translation's text and note), and a
+plaintext copy in `detail` would carry them past the encryption, into a
 table every admin reads and past the erasure scrub. So `audit_detail` accepts only short
 tokens: a role, a locale, an ISO date. It refuses sentences, addresses, secrets and
 anything that is not JSON. A refusal is a bug in the app, and its tests catch it.
@@ -884,9 +885,9 @@ async def dev_switch_state(user=Depends(get_current_user)) -> DevSwitchAnswer:
 - **The role is written in the local database**, as every app reads it from the row:
   keksdose `users.role`; kastlan the acting company's `user_role_assignments` (replace
   the caller's roles there), then `issue_session`; Kurvenschmiede `users.role` on the
-  caller's row directly, skipping `set_role`'s self and last-admin refusals, but refusing
-  CUSTOMER for an account that owns work (`DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED,
-  "Sign in as the seed's customer")`, 409).
+  caller's row directly, skipping `set_role`'s self and last-admin refusals. What the app's
+  own rules refuse is `DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED, …)`, 409:
+  keksdose's demo account, Kurvenschmiede's plan for a role that has none of its own.
 - **The plan goes through the operator's grant, permanent** (`comped_until=None`):
   keksdose `set_plan`, kastlan `BillingService.set_plan`, Kurvenschmiede `change_plan` on
   the caller's own row. Billing §16's permanent-grant warning then shows, which is right —

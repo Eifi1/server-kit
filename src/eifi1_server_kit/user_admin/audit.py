@@ -17,7 +17,8 @@ the response cannot promise (kastlan's ``audit_logs``, §9.3)::
     await session.flush()
 
 **The detail holds ids, roles, flags and counts — never content and never a secret**
-(§4.3, §9.6). Kurvenschmiede encrypts notes, titles and bodies at rest; a plaintext copy
+(§4.3, §9.6). Kurvenschmiede encrypts its content at rest (a project's name, description
+and inputs, its gear, a translation's text and note); a plaintext copy
 in ``detail`` would carry them past the encryption into a table every admin reads, and
 past the erasure scrub, which knows the row's ``target_email`` and nothing inside
 ``detail``. So :func:`audit_detail` refuses, as a programming error, what could carry

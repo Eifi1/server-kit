@@ -222,7 +222,7 @@ def test_the_detail_holds_ids_roles_flags_counts_and_dates() -> None:
 @pytest.mark.parametrize(
     ("detail", "message"),
     [
-        # Content: Kurvenschmiede encrypts notes, titles and bodies at rest (§9.6).
+        # Content: Kurvenschmiede encrypts its content at rest (§9.6).
         ({"note": "Please welcome Ada"}, "never content"),
         ({"title": "Gear-ratio"}, None),  # a single word is a token and passes — see below
         ({"email": "ada@example.com"}, "never content"),

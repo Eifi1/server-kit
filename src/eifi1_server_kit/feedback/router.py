@@ -147,7 +147,9 @@ class FeedbackDeps[RowT: FeedbackRow]:
     #: keksdose every signed-in user, Kurvenschmiede ADMIN / MEMBER / REVIEWER. ``None``
     #: mounts no public route (kastlan).
     public_viewer: Callable[[FeedbackActor], bool] | None = None
-    #: ``q`` searches the title; False where titles are sealed (Kurvenschmiede): a 422.
+    #: ``q`` searches the title; False for an app that seals its titles, where a ``q`` is a
+    #: 422. The three apps keep them in plain text and search (Kurvenschmiede since its
+    #: migration 0059, 2026-11-12).
     public_search: bool = True
     reply_response_model: type[FeedbackReplyResponse] = FeedbackReplyResponse
     #: ``POST /{feedback_id}/rework``'s body (§10.3): subclass it to narrow its
