@@ -26,11 +26,13 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
-  Five optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
+  Seven optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
   `mail` (`httpx>=0.28`) for `mail.ResendClient` only, `billing` (`httpx>=0.28`) for
   `billing.PaddleClient` only, `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
-  for `feedback.router`, `translation_review.router` and `tours.router` only, and `sync`
-  (`sqlalchemy>=2.0`) for `sync.mixin` only. No JWT library: the kit builds and checks claims, each app
+  for `feedback.router`, `translation_review.router` and `tours.router` only, `sync`
+  (`sqlalchemy>=2.0`) for `sync.mixin` only, `gcs` (`google-cloud-storage>=3.0`) for
+  `objects.GcsObjectStore` only, and `s3` (`minio>=7.2.20`) for `objects.S3ObjectStore` only
+  (0.26). No JWT library: the kit builds and checks claims, each app
   signs with its own.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
@@ -203,6 +205,38 @@ PNG with only its signature, a truncated PNG or WebP, a decompression bomb past 
 `MAX_IMAGE_PIXELS`. A JPEG or GIF cut off mid-raster still passes (`verify()` does not
 decode). Other types and `UNDECODABLE_IMAGE_TYPES` (HEIC/HEIF) pass unparsed. Pillow is
 imported lazily; without the extra every call raises `ImportError` naming it.
+
+### `eifi1_server_kit.objects`
+
+Where the apps' stored files live (0.26), lifted from keksdose's `InvoiceFileStore`
+(`adapters/external/invoice_file_store.py`). The port `ObjectStore` has four async methods —
+`save(key, data, *, content_type=None)`, `read(key) -> bytes`, `remove(key)`,
+`list_objects(prefix="") -> list[StoredObject(key, modified)]` in key order — and three
+backends:
+
+| Backend | For | Needs |
+|---|---|---|
+| `LocalObjectStore(root)` | development and tests: each object a file at its key under `root`, written to a temporary file and renamed in place | nothing |
+| `GcsObjectStore(bucket, *, client=None)` | a Cloud Storage bucket without a key: `storage.Client()` on the first call reads Application Default Credentials, on Cloud Run the runtime service account (`roles/storage.objectUser` on the bucket) | the **`gcs` extra** (`google-cloud-storage`) |
+| `S3ObjectStore(bucket, *, endpoint=, access_key=, secret_key=, region=None)` or `(bucket, *, client=)` | any S3 API through minio: keksdose's HMAC pair against `https://storage.googleapis.com` today, a development MinIO | the **`s3` extra** (`minio`) |
+
+The app mints the key (keksdose `feedback/<sha12>.<ext>`, Kurvenschmiede its keyed digest);
+the store makes none, keeps the bytes as given (no sealing: the provider's encryption at
+rest) and never creates a bucket. A key is what every backend can hold — at most 1024 bytes
+of UTF-8 (`MAX_KEY_BYTES`), `/`-separated segments of at most 255 (`MAX_SEGMENT_BYTES`), none
+empty or starting with a dot, no backslash or control character — so nothing climbs out of
+the local root and a key that works in development works in the bucket; anything else is a
+`ValueError` before the store is asked. Every failure is an `ObjectStoreError`, an
+`OSError` with the backend's exception chained (keksdose's `_as_os_error`: minio's and
+urllib3's errors are none); `read` of a missing object is `ObjectNotFoundError`, a
+`FileNotFoundError` too, the app's 404; `remove` of a missing object is no failure. The cloud
+clients are synchronous and imported lazily: each call runs in a worker thread, and a missing
+extra is an `ImportError` naming it. Build one store per process and share it.
+
+`await purge_objects(store, keys, *, reason, concurrency=PURGE_CONCURRENCY)` removes many,
+16 in flight, each key once, and never raises: it returns the keys it left, in the order
+given, and logs each with its exception and all of them in one line with `reason`
+(keksdose's `purge_objects`).
 
 ### `eifi1_server_kit.limiter`
 
@@ -1544,7 +1578,7 @@ never on a path outside their repository (a build must not need anything beside 
 uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.25.0/eifi1_server_kit-0.25.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client, the Paddle client, a router or the sync stamping (`[sync]`, 0.15), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
+With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15) or a cloud object store (`[gcs]`, `[s3]`, 0.26), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
 
 ```toml
 [project]
