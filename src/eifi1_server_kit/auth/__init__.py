@@ -17,6 +17,9 @@ the reference, cited ``file`` per rule.
   (:func:`totp_matched_step`), the replay rule, a step accepted once
   (:func:`totp_step_accepted`), and one 2FA challenge for one sign-in
   (:func:`two_factor_challenge_claims`, :func:`two_factor_challenge_is_spent`);
+* :mod:`~eifi1_server_kit.auth.sessions` — a session's life on the server (0.27):
+  :class:`SessionPolicy`, a shared computer's short session (:func:`session_expired`,
+  :func:`refresh_lifetime`, :func:`access_lifetime`, :func:`session_expires_at`);
 * :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes, with the account's text size
   and contrast (``docs/text-size-harmonization.md`` §6);
 * :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes.
@@ -84,6 +87,7 @@ from eifi1_server_kit.auth.schemas import (
     ProfileUpdate,
     RefreshRequest,
     RegisterRequest,
+    SharedDeviceChoice,
     TextSize,
     TokenResponse,
     TwoFactorChallenge,
@@ -91,6 +95,16 @@ from eifi1_server_kit.auth.schemas import (
     UtcDateTime,
     ZoneName,
     apply_zone_update,
+)
+from eifi1_server_kit.auth.sessions import (
+    SHARED_ABSOLUTE,
+    SHARED_ACCESS_LIFETIME,
+    SHARED_IDLE,
+    SessionPolicy,
+    access_lifetime,
+    refresh_lifetime,
+    session_expired,
+    session_expires_at,
 )
 from eifi1_server_kit.auth.tokens import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -108,6 +122,7 @@ from eifi1_server_kit.auth.tokens import (
     REFRESH_TOKEN_TYPE,
     RESERVED_CLAIMS,
     RESET_TTL,
+    SHARED_DEVICE_CLAIM,
     VERIFY_TTL,
     ChallengeKind,
     MintedToken,
@@ -118,6 +133,7 @@ from eifi1_server_kit.auth.tokens import (
     is_expired,
     mint,
     refresh_claims,
+    shared_device_of,
     token_is_revoked,
 )
 from eifi1_server_kit.auth.totp import (
@@ -172,6 +188,10 @@ __all__ = [
     "RESET_PER_ADDRESS",
     "RESET_PER_IP",
     "RESET_TTL",
+    "SHARED_ABSOLUTE",
+    "SHARED_ACCESS_LIFETIME",
+    "SHARED_DEVICE_CLAIM",
+    "SHARED_IDLE",
     "TAG_SEPARATOR",
     "TEXT_SIZES",
     "TOTP_DIGITS",
@@ -200,6 +220,8 @@ __all__ = [
     "RefreshRequest",
     "RegisterRequest",
     "RegistrationDecision",
+    "SessionPolicy",
+    "SharedDeviceChoice",
     "TextSize",
     "TokenResponse",
     "TwoFactorChallenge",
@@ -208,6 +230,7 @@ __all__ = [
     "ZoneName",
     "absent_account_check",
     "access_claims",
+    "access_lifetime",
     "addresses_for_reset",
     "apply_zone_update",
     "challenge_claims",
@@ -224,7 +247,11 @@ __all__ = [
     "normalise_email",
     "parse_env_list",
     "refresh_claims",
+    "refresh_lifetime",
     "registration_decision",
+    "session_expired",
+    "session_expires_at",
+    "shared_device_of",
     "tagged_variant",
     "token_is_revoked",
     "totp_matched_step",

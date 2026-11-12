@@ -194,8 +194,25 @@ class RegisterRequest(BaseModel):
     )
 
 
-class LoginRequest(BaseModel):
-    """``POST /auth/login {email, password}`` (§5.1; keksdose ``UserLogin``)."""
+class SharedDeviceChoice(BaseModel):
+    """The sign-in's "This is a shared computer" (ui-kit's ``SharedComputerChoice``; 0.27).
+
+    On every request that signs in: :class:`LoginRequest` has it, and an app mixes it into
+    its passkey finish (``class PasskeyLoginFinishRequest(SharedDeviceChoice): …``), which
+    the kit has no schema for. ``True`` starts a shared session, with the short life of
+    :class:`~eifi1_server_kit.auth.SessionPolicy`; a step between the form and the session
+    (the 2FA code, a required password change) carries it in its challenge
+    (``challenge_claims(…, shared_device=…)``).
+    """
+
+    #: Ticked on the sign-in form. ``false`` when left out, so a client from before the box
+    #: signs in as before; a boolean, never ``null``.
+    shared_device: bool = False
+
+
+class LoginRequest(SharedDeviceChoice):
+    """``POST /auth/login {email, password, shared_device}`` (§5.1; keksdose ``UserLogin``;
+    ``shared_device`` since 0.27, :class:`SharedDeviceChoice`)."""
 
     email: Email
     password: ExistingPassword

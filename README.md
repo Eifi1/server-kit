@@ -402,10 +402,11 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | The gate | `registration_decision(is_first_user=, on_env_list=, has_valid_invitation=)` → `RegistrationDecision.FIRST_ADMIN` / `INVITED` / `CLOSED` (`.allowed`, `.first_admin`); `parse_env_list`, `env_list_match` (`None` = no list set) |
 | Names | `full_name(first, last, locale)` ("First Last"; hu "Last First"; zh "LastFirst" for a CJK name, a Latin one as written; a missing part leaves the other), `first_name_of(first, last)` (0.11: the first name others see, `None` while the last name is blank — no first-word guessing), `name_incomplete(first, last, is_demo=)`, `erasure_identifiers(email, first, last, old_display_name)` |
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
-| Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=, extra=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale; a challenge's `extra` since 0.21: a passkey ceremony's `challenge`, the 2FA step's `totp_step`); `ChallengeKind` `2fa_challenge` (5 min), `password_change` (10 min), and since 0.21 the passkey ceremonies `webauthn_register` and `webauthn_auth` (5 min each, keksdose's and kastlan's strings; `CHALLENGE_LIFETIMES`); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
+| Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=, extra=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale; a challenge's `extra` since 0.21: a passkey ceremony's `challenge`, the 2FA step's `totp_step`); `ChallengeKind` `2fa_challenge` (5 min), `password_change` (10 min), and since 0.21 the passkey ceremonies `webauthn_register` and `webauthn_auth` (5 min each, keksdose's and kastlan's strings; `CHALLENGE_LIFETIMES`); (0.27) `challenge_claims(…, shared_device=True)` carries the sign-in's "This is a shared computer" to the step that starts the session (`SHARED_DEVICE_CLAIM` `"shared_device"`, written only when ticked), `shared_device_of(claims)` reads it back (missing, `null` or `false` is a normal session; anything else, shared); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
-| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `role` may be `null` since 0.21 — always answered, `null` for an account with no role, a kastlan user in no company; a subclass that narrows it to the app's enum keeps it a string; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
-| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `two_factor_challenge_claims(sub, *, last_step, now)` (the 2FA challenge, five minutes, the last accepted step under `TOTP_STEP_CLAIM` `"totp_step"`) and `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was minted: one challenge, one sign-in); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1 |
+| Sessions (0.27) | `SessionPolicy(access_lifetime=24 h, refresh_lifetime=30 d, shared_idle=15 min, shared_absolute=4 h, shared_access_lifetime=5 min)` (frozen; one per app, the two normal lifetimes its settings; a shared access token as long as the idle limit is refused); `session_expired(policy, *, shared, started_at, last_active, now)` (shared: `shared_idle` since the last refresh or `shared_absolute` since the start; normal: `refresh_lifetime` since the last refresh, never for its age; ended AT the limit; a `now` behind either instant ends nothing), `session_expires_at(policy, *, shared, started_at, last_active)` (the `expires_at` column), `refresh_lifetime(policy, *, shared, started_at, now)` (shared: `shared_idle`, never past the absolute end, zero there), `access_lifetime(…)` (shared: at most `shared_access_lifetime`, never past the end); `SHARED_IDLE`, `SHARED_ABSOLUTE`, `SHARED_ACCESS_LIFETIME` |
+| Schemas | `RegisterRequest`, `LoginRequest` (`shared_device`, `false` when left out, since 0.27; from the mixin `SharedDeviceChoice`, which an app adds to its passkey finish), `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `role` may be `null` since 0.21 — always answered, `null` for an account with no role, a kastlan user in no company; a subclass that narrows it to the app's enum keeps it a string; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `two_factor_challenge_claims(sub, *, last_step, now, shared_device=False)` (the 2FA challenge, five minutes, the last accepted step under `TOTP_STEP_CLAIM` `"totp_step"`; the shared-computer choice since 0.27) and `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was minted: one challenge, one sign-in); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1 |
 | Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
@@ -440,6 +441,62 @@ The 2FA challenge is a stateless JWT, so the code alone cannot make it single-us
 with `two_factor_challenge_claims(user.id, last_step=user.totp_last_step, now=now)`, and at
 `POST /auth/login/2fa` refuse it as `token_invalid` when
 `two_factor_challenge_is_spent(claims, user.totp_last_step)` — read with the row locked.
+
+**A shared computer's session is short on the server, and every sign-out ends it** (0.27;
+Marcel, 2026-11-12). A browser restores a closed tab WITH its `sessionStorage`, so a
+shared computer's tokens outlive the tab the client keeps them in, and every refresh used to
+re-mint 30 days (kastlan's finding). The sign-in carries the choice (`LoginRequest`'s
+`shared_device`; the app's passkey finish mixes in `SharedDeviceChoice`), a challenge
+carries it to the step that starts the session, and the app's session row keeps it
+(`shared_device`, `expires_at`). Then three call sites, each with the row's
+`shared_device`, `created_at` and `last_active`:
+
+```python
+policy = kit.SessionPolicy(access_lifetime=timedelta(minutes=settings.access_token_expire_minutes))
+
+# /login: the form's choice into the 2FA challenge, or into the session
+kit.two_factor_challenge_claims(user.id, last_step=user.totp_last_step, now=now, shared_device=body.shared_device)
+# /login/2fa, a passkey's finish: on to the password change's challenge, or into the session
+shared = kit.shared_device_of(claims)
+kit.challenge_claims(user.id, kit.ChallengeKind.PASSWORD_CHANGE, now=now, shared_device=shared)
+
+# 1. minting a pair, at sign-in and at every refresh
+kit.access_claims(
+    user.id,
+    now=now,
+    lifetime=kit.access_lifetime(policy, shared=row.shared_device, started_at=row.created_at, now=now),
+    extra={"sid": row.id},
+)
+kit.refresh_claims(
+    user.id,
+    now=now,
+    lifetime=kit.refresh_lifetime(policy, shared=row.shared_device, started_at=row.created_at, now=now),
+    extra={"sid": row.id},
+)
+# 2. /auth/refresh: refuse, else stamp
+if kit.session_expired(
+    policy, shared=row.shared_device, started_at=row.created_at, last_active=row.last_active, now=now
+):
+    raise kit.AuthError(kit.AuthErrorCode.SESSION_ENDED, "Session expired")
+row.last_active = now
+row.expires_at = kit.session_expires_at(policy, shared=row.shared_device, started_at=row.created_at, last_active=now)
+# 3. every request (get_current_user): the route's 401 when the row has ended — `expires_at > now` in SQL
+```
+
+A shared session ends 15 minutes after its last refresh and 4 hours after it started; a
+normal one, 30 days after its last refresh, as its refresh token would. The idle limit
+counts from the refresh, so no request writes; that is why a shared access token lives 5
+minutes, shorter than the refresh token: the client refreshes on the first 401 after its
+access token ends, and an access token as long as the idle limit (kastlan's 15 minutes)
+would end with its refresh token and sign a busy person out. A session left alone ends 10
+to 15 minutes after its last request.
+
+**Every sign-out ends the session on the server, shared or not**: the client calls the
+app's revoke for its own session (the session the access token's `sid` names) before it
+drops its tokens, and the server marks the row ended. A sign-out that cannot reach the
+server still signs out on the device; the limits above end the row. The table, its
+migration and the routes stay in the app. keksdose and Kurvenschmiede, which kept no
+session rows, add them (`user_sessions`, kastlan's shape).
 
 **Per IP a hard limit, per address only a delay** (§5.2). A lock per address would let
 anyone lock a known user out by failing on purpose, so `LoginFailureThrottle` counts

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 
 from eifi1_server_kit.auth import (
     AUTH_ERROR_STATUS,
@@ -23,6 +23,7 @@ from eifi1_server_kit.auth import (
     ProfileUpdate,
     RefreshRequest,
     RegisterRequest,
+    SharedDeviceChoice,
     TokenResponse,
     TwoFactorChallenge,
     UserResponse,
@@ -101,6 +102,34 @@ def test_the_password_rules_are_eight_characters_and_72_bytes() -> None:
     assert LoginRequest(email="ADA@example.com", password="x").email == "ada@example.com", "no minimum to sign in"
     with pytest.raises(ValidationError, match="at most 72 bytes"):
         LoginRequest(email="ada@example.com", password="a" * 73)
+
+
+def test_the_sign_in_carries_the_shared_computer_choice() -> None:
+    """``{email, password, shared_device}`` (0.27): ``false`` when the form leaves it out,
+    so a client that predates the box signs in as before; a boolean, never ``null``."""
+    ada = {"email": "ada@example.com", "password": "x"}
+    assert LoginRequest.model_validate(ada).shared_device is False
+    assert LoginRequest.model_validate({**ada, "shared_device": True}).shared_device is True
+    assert LoginRequest.model_validate({**ada, "shared_device": False}).shared_device is False
+    for bad in ("maybe", None, [True]):
+        with pytest.raises(ValidationError, match="shared_device"):
+            LoginRequest.model_validate({**ada, "shared_device": bad})
+
+
+def test_a_passkey_sign_in_takes_the_choice_from_the_mixin() -> None:
+    """The three apps' ``…/passkey/login/finish`` body, as they declare it, with the kit's
+    field mixed in — Kurvenschmiede's forbids unknown fields, so it must declare it."""
+
+    class PasskeyLoginFinishRequest(SharedDeviceChoice):
+        model_config = ConfigDict(extra="forbid")
+
+        challenge_token: str
+        credential: dict[str, Any]
+
+    finish = PasskeyLoginFinishRequest.model_validate({"challenge_token": "t", "credential": {}, "shared_device": True})
+    assert finish.shared_device is True
+    assert PasskeyLoginFinishRequest(challenge_token="t", credential={}).shared_device is False
+    assert issubclass(LoginRequest, SharedDeviceChoice)
 
 
 @pytest.mark.parametrize("field", ["first_name", "last_name"])

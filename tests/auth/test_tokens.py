@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -20,6 +21,7 @@ from eifi1_server_kit.auth import (
     REFRESH_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_LIFETIME,
     RESET_TTL,
+    SHARED_DEVICE_CLAIM,
     VERIFY_TTL,
     ChallengeKind,
     MintedToken,
@@ -30,6 +32,7 @@ from eifi1_server_kit.auth import (
     is_expired,
     mint,
     refresh_claims,
+    shared_device_of,
     token_is_revoked,
 )
 
@@ -164,6 +167,44 @@ def test_a_passkey_challenge_carries_its_ceremony() -> None:
     sign_in = challenge_claims("webauthn", ChallengeKind.WEBAUTHN_AUTH, now=NOW, extra={"challenge": "q2"})
     assert (sign_in["sub"], sign_in["type"], sign_in["challenge"]) == ("webauthn", "webauthn_auth", "q2")
     assert challenge_claims(7, ChallengeKind.TWO_FACTOR, now=NOW, extra={"totp_step": None})["totp_step"] is None
+
+
+def test_a_challenge_carries_the_shared_computer_choice() -> None:
+    """The choice is made on the first form, and the 2FA step or the password change starts
+    the session, so the challenge carries it (0.27). Written only when ticked: a normal
+    sign-in's challenge is what it was."""
+    assert SHARED_DEVICE_CLAIM == "shared_device"
+    for kind in (ChallengeKind.TWO_FACTOR, ChallengeKind.PASSWORD_CHANGE):
+        shared = challenge_claims(7, kind, now=NOW, shared_device=True)
+        assert shared[SHARED_DEVICE_CLAIM] is True
+        assert shared_device_of(json.loads(json.dumps(shared))) is True, "through the JWT's JSON"
+        normal = challenge_claims(7, kind, now=NOW)
+        assert SHARED_DEVICE_CLAIM not in normal and shared_device_of(normal) is False
+        assert challenge_claims(7, kind, now=NOW, shared_device=False) == normal
+    both = challenge_claims(7, ChallengeKind.TWO_FACTOR, now=NOW, extra={"totp_step": 3}, shared_device=True)
+    assert (both["totp_step"], both[SHARED_DEVICE_CLAIM]) == (3, True)
+
+
+def test_the_choice_survives_every_step_to_the_session() -> None:
+    """``/login`` → ``/login/2fa`` → ``/login/set-password``: each step mints the next
+    challenge from the one it redeemed, and the last starts the session."""
+    for ticked in (True, False):
+        two_factor = json.loads(
+            json.dumps(challenge_claims(7, ChallengeKind.TWO_FACTOR, now=NOW, shared_device=ticked))
+        )
+        change = challenge_claims(7, ChallengeKind.PASSWORD_CHANGE, now=NOW, shared_device=shared_device_of(two_factor))
+        assert shared_device_of(json.loads(json.dumps(change))) is ticked
+
+
+@pytest.mark.parametrize(
+    ("value", "shared"),
+    [(True, True), (False, False), (None, False), ("false", True), (0, True), (1, True), ("", True), ([], True)],
+)
+def test_a_claim_this_server_never_writes_reads_as_shared(value: Any, shared: bool) -> None:
+    """Missing, ``null`` or ``false`` is a normal session; anything else in a token this
+    server signed is its own bug, read as the shorter life."""
+    assert shared_device_of({SHARED_DEVICE_CLAIM: value}) is shared
+    assert shared_device_of({}) is False
 
 
 @pytest.mark.parametrize("extra", [{"type": "access"}, {"exp": 0}, {"sub": "8"}, {"iat": 0}, {"email": "a@b.c"}])
