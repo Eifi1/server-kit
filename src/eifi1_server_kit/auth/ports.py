@@ -510,7 +510,9 @@ class AfterCommit(Protocol):
 
 
 class TokenSigner(Protocol):
-    """The app's JWT library behind the kit's claims (the kit keeps no JWT dependency, §8)."""
+    """The app's JWT library behind the kit's claims (the kit keeps no JWT dependency, §8).
+    Ready-made since 0.30: :class:`~eifi1_server_kit.auth.jwt_signer.JwtSigner`, the ``jwt``
+    extra's (HS256 on PyJWT)."""
 
     def sign(self, claims: Mapping[str, Any]) -> str:
         """The signed token for these claims (``exp`` included)."""
@@ -522,7 +524,8 @@ class TokenSigner(Protocol):
 class PasswordHasher(Protocol):
     """The app's password hashing (the kit depends on no hasher, ``auth.passwords``): bcrypt
     in all four apps, its cost the app's setting. The kit refuses a password over
-    ``MAX_PASSWORD_BYTES`` before it asks."""
+    ``MAX_PASSWORD_BYTES`` before it asks. Ready-made since 0.30:
+    :class:`~eifi1_server_kit.auth.bcrypt_hasher.BcryptHasher`, the ``bcrypt`` extra's."""
 
     def hash(self, password: str) -> str:
         """A new hash of the password."""

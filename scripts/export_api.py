@@ -89,6 +89,9 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     ("eifi1_server_kit.auth.mails", "docs/auth-harmonization.md", "§12"),
     ("eifi1_server_kit.auth.passkeys", "docs/auth-harmonization.md", "§12"),
     ("eifi1_server_kit.auth.sql", "docs/auth-harmonization.md", "§12"),
+    # The ports' ready signer and hasher (0.30), behind the `jwt` and `bcrypt` extras.
+    ("eifi1_server_kit.auth.jwt_signer", "docs/auth-harmonization.md", "§12"),
+    ("eifi1_server_kit.auth.bcrypt_hasher", "docs/auth-harmonization.md", "§12"),
     ("eifi1_server_kit.user_admin", "docs/user-admin-harmonization.md", "§7"),
     ("eifi1_server_kit.settings", "docs/settings-harmonization.md", "§6"),
     ("eifi1_server_kit.demo", "docs/landing-demo-harmonization.md", "§6"),
