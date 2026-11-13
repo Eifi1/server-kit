@@ -817,8 +817,8 @@ async def _people_grew(store: UserStore[Any], before: int, by: int, message: str
 async def check_user_store(
     store: UserStore[Any],
     *,
-    role: str = "member",
-    other_role: str = "admin",
+    role: str = "MEMBER",
+    other_role: str = "ADMIN",
     add_demo: Callable[[NewAccount], Awaitable[AccountRow]] | None = None,
 ) -> None:
     """Does the app's account store keep the port's promises (§12.3)? Raises
@@ -828,7 +828,9 @@ async def check_user_store(
     value for every :data:`~eifi1_server_kit.auth.ports.ACCOUNT_FIELDS` member to one, clears
     the nullable ones again, and deletes both at the end, so it runs on the app's test
     database as it is. ``role`` and ``other_role`` are two of the app's role values (its
-    column may be an enum). A new account must be active, with every member ``NewAccount``
+    column may be an enum), by default :class:`~eifi1_server_kit.auth.service.AccountPolicy`'s
+    ``default_role`` and ``admin_role`` (upper case since 0.30, so a column that holds only
+    the app's names takes them). A new account must be active, with every member ``NewAccount``
     does not carry None; ``sessions_invalid_before`` is checked only on a row that has the
     member (an app without the ``iat`` cut-off ignores the write).
 
@@ -1123,7 +1125,7 @@ async def check_one_time_token_store(store: OneTimeTokenStore[Any], *, user_id: 
 
 
 async def check_invitation_store(
-    store: InvitationStore[Any], *, inviter_id: int, user_id: int, role: str = "member"
+    store: InvitationStore[Any], *, inviter_id: int, user_id: int, role: str = "MEMBER"
 ) -> None:
     """Does the app's invitation store keep the port's promises (§12.3, auth §4.4)? Raises
     :class:`AssertionError` naming the first that fails.
@@ -1132,7 +1134,8 @@ async def check_invitation_store(
     invitation is sent by ``inviter_id`` and one is accepted by ``user_id``. It adds five
     invitations to fresh addresses (open, expired, accepted, revoked, to another address)
     and asserts only on those, so it runs on the app's test database as it is; ``listing``'s
-    order is checked over every row it answers. ``role`` is one of the app's role values.
+    order is checked over every row it answers. ``role`` is one of the app's role values,
+    by default the policy's ``default_role`` (upper case since 0.30).
     ``revoke`` may keep the row with its ``revoked_at`` or delete it, as the port allows; a
     kept one is still listed, since ``listing`` leaves out only accepted ones.
     """

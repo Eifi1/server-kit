@@ -34,6 +34,7 @@ from eifi1_server_kit.dev_switch import (
     database_is_local,
     dev_switch_enabled,
     effective_today,
+    origin_is_local,
     require_dev_switch,
     validate_dev_switch,
 )
@@ -498,3 +499,56 @@ def test_it_is_the_proof_the_gate_takes() -> None:
     laptop = "postgresql+asyncpg://kastlan:kastlan_dev@127.0.0.1:5432/kastlan"
     for url, on in ((tunnel, False), (laptop, True)):
         assert dev_switch_enabled(flag=True, local_run=partial(database_is_local, url), production=False) is on
+
+
+# --- origin_is_local (0.30): is the site served where the internet cannot reach it? -------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:5176",
+        "http://LOCALHOST:5176/path?q=1",
+        "http://localhost.:5176",  # the root's trailing dot
+        "http://127.0.0.1:8000",
+        "http://127.8.9.10",
+        "http://[::1]:5176",
+        "http://0.0.0.0:5176",  # a dev server bound to every interface
+        "http://app.localhost",
+        "http://raspberry.local:5176",
+        "http://build.internal",
+        "http://staunlabor.test",
+        "http://nas.home.arpa",
+        "http://192.168.1.20:5176",  # a phone on the desk, over the LAN
+        "http://10.0.0.5",
+        "http://172.16.0.1",
+        "http://169.254.10.1",
+        "http://[fe80::1]",
+        "http://[fd12:3456::1]",
+    ],
+)
+def test_an_origin_on_this_machine_or_a_private_network_is_local(url: str) -> None:
+    assert origin_is_local(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://staunlabor.app",
+        "https://www.staunlabor.app",
+        "https://localhost.example.com",  # a name that only begins like one
+        "https://evil-localhost",
+        "https://mylocal",
+        "https://test",
+        "https://8.8.8.8",
+        "https://172.32.0.1",  # past 172.16.0.0/12
+        "https://100.64.0.1",  # shared address space: a carrier's, not the desk's
+        "https://[2001:4860:4860::8888]",
+        "",
+        "localhost:5176",  # no scheme, so no host: unreadable
+        "http://[::1",  # unparsable
+        "http://",
+    ],
+)
+def test_an_origin_the_internet_may_reach_or_one_unreadable_is_not_local(url: str) -> None:
+    assert origin_is_local(url) is False

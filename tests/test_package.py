@@ -29,6 +29,8 @@ def test_the_package_is_typed() -> None:
 def test_every_exported_name_exists() -> None:
     for module_name in (
         "eifi1_server_kit.auth",
+        "eifi1_server_kit.auth.bcrypt_hasher",
+        "eifi1_server_kit.auth.jwt_signer",
         "eifi1_server_kit.auth.mails",
         "eifi1_server_kit.auth.passkeys",
         "eifi1_server_kit.auth.ports",
@@ -96,10 +98,12 @@ def test_the_feedback_router_names_its_extra_without_fastapi(monkeypatch: pytest
 def test_the_account_layer_loads_no_web_framework_and_no_webauthn() -> None:
     """The ports, the service, the mails and the passkey helpers run without FastAPI, httpx,
     SQLAlchemy or py_webauthn (auth §12.3): a command-line tool builds an ``AccountService``,
-    and an app without passkeys installs no ``passkeys`` extra. A fresh interpreter."""
+    and an app without passkeys installs no ``passkeys`` extra. Nor PyJWT or bcrypt (0.30):
+    an app with its own signer and hasher installs neither extra. A fresh interpreter."""
     probe = (
         "import sys, eifi1_server_kit.auth.ports, eifi1_server_kit.auth.service, eifi1_server_kit.auth.mails;"
-        "print(sorted({name.split('.')[0] for name in sys.modules} & {'fastapi', 'httpx', 'sqlalchemy', 'webauthn'}))"
+        "print(sorted({name.split('.')[0] for name in sys.modules}"
+        " & {'bcrypt', 'fastapi', 'httpx', 'jwt', 'sqlalchemy', 'webauthn'}))"
     )
     loaded = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout
     assert loaded.strip() == "[]"

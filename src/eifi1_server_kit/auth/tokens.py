@@ -28,7 +28,8 @@ hashed. The table, the delete-on-redeem and the address check stay in the app.
 
 **Session claims** — the payload of the access and refresh JWTs. The kit does NOT sign:
 each app keeps its JWT library (PyJWT in all three) and its secret, and hands these dicts
-to ``jwt.encode``. What is shared is the shape (§6.2):
+to ``jwt.encode``, or since 0.30 to :class:`~eifi1_server_kit.auth.jwt_signer.JwtSigner`,
+the ``jwt`` extra's. What is shared is the shape (§6.2):
 
 * the access token carries what the server needs to authorise — ``sub``, ``type``,
   ``iat``, ``exp`` (kastlan also ``company_id``, ``roles`` and a ``sid``) — and **no

@@ -60,6 +60,15 @@ s3 = ["minio>=7.2.20"]
 # py_webauthn, as all three apps do; `auth.passkeys` imports it lazily, so the account routes
 # without passkeys, the ports and the service need nothing. The apps' floor, no ceiling.
 passkeys = ["webauthn>=2.0.0"]
+# `auth.jwt_signer.JwtSigner` (0.30), the account layer's `TokenSigner` ready-made: HS256 with
+# PyJWT, the library all four apps sign with. Imported only by that module; the ports, the
+# service and the claims (`auth.tokens`) need nothing. The apps' floor, no ceiling.
+jwt = ["pyjwt>=2.10.0"]
+# `auth.bcrypt_hasher.BcryptHasher` (0.30), the account layer's `PasswordHasher` ready-made, on
+# pyca's bcrypt as keksdose, Kurvenschmiede and Staunlabor hash. Imported only by that module.
+# The apps' floor, no ceiling: 4.x truncates past 72 bytes and 5.x raises, and the hasher
+# answers the same on both.
+bcrypt = ["bcrypt>=4.0.0"]
 
 [project.urls]
 Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"
@@ -69,6 +78,13 @@ dev = [
     # The `sql` extra's stores are tested on SQLite in memory through its asyncio driver, the
     # same statements an app runs on asyncpg (auth-harmonization §12.3, decision C).
     "aiosqlite>=0.21.0",
+    # `auth.sql.alembic_render_item` is tested by rendering: Alembic's own autogenerate writes
+    # the account tables' migration, and the test runs it on an empty database with nothing of
+    # the kit in scope. The kit never imports Alembic; the apps' floor, no ceiling.
+    "alembic>=1.14.0",
+    # The `bcrypt` extra, so `BcryptHasher` is tested against the library's own hashes and
+    # refusals (a password past 72 bytes, a malformed hash).
+    "bcrypt>=4.0.0",
     # `auth.soft_webauthn.SoftAuthenticator` (re-exported by `auth.testing`) builds attestation objects and authenticator data in
     # CBOR, as a browser's authenticator does; py_webauthn (the passkeys extra) depends on it.
     "cbor2>=5.6.0",
@@ -95,6 +111,9 @@ dev = [
     # `BillingSettings` from the environment through it too. A dev dependency only: the kit
     # uses its `NoDecode` marker where it is installed (2.7 has it), and needs nothing else.
     "pydantic-settings>=2.7.0",
+    # The `jwt` extra, so `JwtSigner` is tested against PyJWT's own encoding and refusals
+    # (another algorithm, `alg: none`, an expired or unsigned token).
+    "pyjwt>=2.10.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
