@@ -88,6 +88,7 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     ("eifi1_server_kit.auth.router", "docs/auth-harmonization.md", "§12"),
     ("eifi1_server_kit.auth.mails", "docs/auth-harmonization.md", "§12"),
     ("eifi1_server_kit.auth.passkeys", "docs/auth-harmonization.md", "§12"),
+    ("eifi1_server_kit.auth.sql", "docs/auth-harmonization.md", "§12"),
     ("eifi1_server_kit.user_admin", "docs/user-admin-harmonization.md", "§7"),
     ("eifi1_server_kit.settings", "docs/settings-harmonization.md", "§6"),
     ("eifi1_server_kit.demo", "docs/landing-demo-harmonization.md", "§6"),
