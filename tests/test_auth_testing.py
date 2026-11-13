@@ -163,6 +163,55 @@ async def test_check_user_store_fails_on_a_store_that_counts_only_active_account
         await check_user_store(ActiveOnly())
 
 
+async def test_count_active_counts_active_people_with_the_role() -> None:
+    store = InMemoryUserStore()
+    admin = await store.add(new_account("a@example.test"))
+    await store.apply(admin, {"role": "ADMIN"})
+    await store.add(new_account("m@example.test"))
+    demo = await store.add_demo(new_account("demo@example.test"))
+    await store.apply(demo, {"role": "ADMIN"})
+    assert await store.count_active(role="ADMIN") == 1
+    await store.apply(admin, {"is_active": False})
+    assert await store.count_active(role="ADMIN") == 0
+
+
+async def test_check_user_store_fails_on_a_store_that_counts_any_role() -> None:
+    class AnyRole(InMemoryUserStore):
+        async def count_active(self, *, role: str) -> int:
+            return sum(row.is_active and not row.is_demo for row in self.rows.values())
+
+    with pytest.raises(AssertionError, match="count_active: an account with another role"):
+        await check_user_store(AnyRole())
+
+
+async def test_check_user_store_fails_on_a_store_that_counts_inactive_holders() -> None:
+    class Inactive(InMemoryUserStore):
+        async def count_active(self, *, role: str) -> int:
+            return sum(row.role == role and not row.is_demo for row in self.rows.values())
+
+    with pytest.raises(AssertionError, match="count_active: a deactivated account does not count"):
+        await check_user_store(Inactive())
+
+
+async def test_check_user_store_fails_on_a_store_that_counts_demo_holders() -> None:
+    class DemoHolders(InMemoryUserStore):
+        async def count_active(self, *, role: str) -> int:
+            return sum(row.is_active and row.role == role for row in self.rows.values())
+
+    store = DemoHolders()
+    with pytest.raises(AssertionError, match="count_active: a demo account is no person"):
+        await check_user_store(store, add_demo=store.add_demo)
+
+
+async def test_check_user_store_fails_on_a_store_that_counts_nothing() -> None:
+    class Nothing(InMemoryUserStore):
+        async def count_active(self, *, role: str) -> int:
+            return 0
+
+    with pytest.raises(AssertionError, match="count_active: each new active account"):
+        await check_user_store(Nothing())
+
+
 async def test_check_user_store_fails_on_a_store_that_skips_a_none() -> None:
     class SkipsNone(InMemoryUserStore):
         async def apply(self, row: MemoryAccountRow, changes: Mapping[str, Any]) -> MemoryAccountRow:
@@ -224,7 +273,7 @@ async def test_check_user_store_fails_on_a_store_that_loses_the_account_it_chang
     class Forgets(InMemoryUserStore):
         async def apply(self, row: MemoryAccountRow, changes: Mapping[str, Any]) -> MemoryAccountRow:
             await super().apply(row, changes)
-            self.rows.pop(row.id)
+            self.rows.pop(row.id, None)
             return row
 
     with pytest.raises(AssertionError, match="apply: get still finds the account"):
@@ -830,3 +879,8 @@ async def test_check_session_store_fails_on_a_session_that_starts_idle() -> None
 
     with pytest.raises(AssertionError, match="start: last_active is started_at"):
         await check_session_store(StartsIdle(), user_id=1, other_user_id=2)
+
+
+async def test_check_user_store_runs_with_one_role_only() -> None:
+    """An app with a single role passes it as both; the role-change check then has nothing to say."""
+    await check_user_store(InMemoryUserStore(), role="member", other_role="member")

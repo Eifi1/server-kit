@@ -445,6 +445,14 @@ class SqlUserStore[UserT: AccountColumns]:
             query = query.where(people)
         return int(await self._session.scalar(query) or 0)
 
+    async def count_active(self, *, role: str) -> int:
+        query = select(func.count()).select_from(self._model).where(self._model.is_active.is_(True))
+        query = query.where(self._model.role == role)
+        people = self.people()
+        if people is not None:
+            query = query.where(people)
+        return int(await self._session.scalar(query) or 0)
+
     async def add(self, new: NewAccount) -> UserT:
         row = _new(self._model, {field.name: getattr(new, field.name) for field in fields(new)})
         self._session.add(row)

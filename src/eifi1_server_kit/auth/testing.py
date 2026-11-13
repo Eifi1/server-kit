@@ -290,6 +290,9 @@ class InMemoryUserStore:
     async def count_people(self) -> int:
         return sum(not row.is_demo for row in self.rows.values())
 
+    async def count_active(self, *, role: str) -> int:
+        return sum(row.is_active and row.role == role and not row.is_demo for row in self.rows.values())
+
     async def add(self, new: NewAccount) -> MemoryAccountRow:
         kind = MemoryCutoffAccountRow if self.cutoff else MemoryAccountRow
         row = kind(id=next(self._ids), created_at=self.now(), **_fields(new))
@@ -829,6 +832,7 @@ async def check_user_store(
     """
     token = secrets.token_hex(8)
     people = await store.count_people()
+    holders = await store.count_active(role=role)
     ada = NewAccount(
         email=_address(token, 1),
         password_hash=f"check-hash-{token}-1",
@@ -863,6 +867,10 @@ async def check_user_store(
     _check(getattr(first, "is_demo", False) is False, "add: a new account is no demo account")
     _check(getattr(first, "sessions_invalid_before", None) is None, "add: a new account has no session cut-off")
     people = await _people_grew(store, people, 2, "count_people: each new account counts")
+    _check(
+        await store.count_active(role=role) == holders + 2,
+        "count_active: each new active account with the role counts",
+    )
 
     # 2. The lookups.
     found = await store.get(first.id)
@@ -880,6 +888,14 @@ async def check_user_store(
     _check(list(await store.by_emails([])) == [], "by_emails: no addresses, no accounts")
 
     # 3. apply: every member the kit may change, then the nullable ones back to None.
+    await store.apply(second, {"is_active": False})
+    _check(await store.count_active(role=role) == holders + 1, "count_active: a deactivated account does not count")
+    await store.apply(second, {"is_active": True, "role": other_role})
+    if other_role != role:
+        _check(
+            await store.count_active(role=role) == holders + 1,
+            "count_active: an account with another role does not count",
+        )
     changes = _account_changes(token, other_role)
     applied = await store.apply(second, changes)
     _check(applied.id == second.id, "apply: answers the account it changed")
@@ -913,6 +929,7 @@ async def check_user_store(
         )
         _check(getattr(demo, "is_demo", False) is True, "add_demo: the account it made is a demo account")
         people = await _people_grew(store, people, 0, "count_people: a demo account is no person")
+        _check(await store.count_active(role=role) == holders + 1, "count_active: a demo account is no person")
         await store.delete(demo)
 
     # 5. delete.
