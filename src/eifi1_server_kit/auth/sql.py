@@ -288,7 +288,7 @@ class OneTimeTokenColumns(_PointsAtAccounts):
 
 class InvitationColumns(_PointsAtAccounts):
     """An invitation: an address, the role it gives, the app's ``scope``, and its token's
-    digest. Accepted, revoked or expired, it stays listed until the admin removes it (§4.4)."""
+    digest. Revoked or expired, it stays on the admin's list (§4.4); accepted, it leaves it."""
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     email: Mapped[str] = mapped_column(String(EMAIL_WIDTH), index=True, nullable=False)

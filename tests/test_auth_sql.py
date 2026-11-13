@@ -41,6 +41,15 @@ from eifi1_server_kit.auth.sql import (
     SqlSessionStore,
     SqlUserStore,
 )
+from eifi1_server_kit.auth.testing import (
+    check_admin_action_log,
+    check_after_commit,
+    check_invitation_store,
+    check_one_time_token_store,
+    check_passkey_store,
+    check_session_store,
+    check_user_store,
+)
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.user_admin import AdminAction, admin_action_record
 
@@ -647,3 +656,51 @@ async def test_an_instant_comes_back_the_same_instant_in_utc_whatever_zone_it_wa
     assert row is not None
     assert (row.started_at, row.started_at.tzinfo) == (NOW, UTC)
     assert (row.expires_at, row.expires_at.tzinfo) == (NOW, UTC)
+
+
+# ── The ports' contract suites, on these stores ─────────────────────────────
+
+
+async def _ids(session: AsyncSession, *emails: str) -> list[int]:
+    return [(await _user(session, email)).id for email in emails]
+
+
+async def test_the_user_store_keeps_the_contract_with_and_without_a_demo(session: AsyncSession) -> None:
+    await check_user_store(SqlUserStore(session, User))
+
+    async def add_demo(new: NewAccount) -> Account:
+        row = await SqlUserStore(session, Account).add(new)
+        row.is_demo = True
+        await session.flush()
+        return row
+
+    await check_user_store(SqlUserStore(session, Account), add_demo=add_demo)
+
+
+async def test_the_session_store_keeps_the_contract(session: AsyncSession) -> None:
+    one, two = await _ids(session, "s1@example.org", "s2@example.org")
+    await check_session_store(SqlSessionStore(session, UserSession), user_id=one, other_user_id=two)
+
+
+async def test_the_link_store_keeps_the_contract(session: AsyncSession) -> None:
+    one, two = await _ids(session, "t1@example.org", "t2@example.org")
+    await check_one_time_token_store(SqlOneTimeTokenStore(session, OneTimeToken), user_id=one, other_user_id=two)
+
+
+async def test_the_invitation_store_keeps_the_contract(session: AsyncSession) -> None:
+    one, two = await _ids(session, "i1@example.org", "i2@example.org")
+    await check_invitation_store(SqlInvitationStore(session, Invitation), inviter_id=one, user_id=two)
+
+
+async def test_the_passkey_store_keeps_the_contract(session: AsyncSession) -> None:
+    one, two = await _ids(session, "p1@example.org", "p2@example.org")
+    await check_passkey_store(SqlPasskeyStore(session, Passkey, SpentChallenge), user_id=one, other_user_id=two)
+
+
+async def test_the_admin_log_keeps_the_contract(session: AsyncSession) -> None:
+    one, two = await _ids(session, "l1@example.org", "l2@example.org")
+    await check_admin_action_log(SqlAdminActionLog(session, AdminActionRecord), actor_id=one, target_user_id=two)
+
+
+async def test_the_after_commit_queue_keeps_the_contract(session: AsyncSession) -> None:
+    await check_after_commit(SqlAfterCommit(session), commit=session.commit, rollback=session.rollback)

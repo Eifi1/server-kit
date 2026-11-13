@@ -65,7 +65,7 @@ dev = [
     # The `sql` extra's stores are tested on SQLite in memory through its asyncio driver, the
     # same statements an app runs on asyncpg (auth-harmonization §12.3, decision C).
     "aiosqlite>=0.21.0",
-    # `auth.testing.SoftAuthenticator` builds attestation objects and authenticator data in
+    # `auth.soft_webauthn.SoftAuthenticator` (re-exported by `auth.testing`) builds attestation objects and authenticator data in
     # CBOR, as a browser's authenticator does; py_webauthn (the passkeys extra) depends on it.
     "cbor2>=5.6.0",
     # The tests drive the CORS middleware through a real FastAPI app beside Starlette's
