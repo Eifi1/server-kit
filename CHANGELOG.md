@@ -10,10 +10,23 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
-The admin half of the account layer (docs/auth-harmonization.md §12.3–§12.6,
-docs/user-admin-harmonization.md §3–§6, Marcel 2026-11-13: the admin goes into the kits too).
-Additive for 0.29 — no 0.29 Protocol gains a method, no `[sql]` table a column — but for the
-console mailer's default (**Changed**, security).
+## [0.30.0] (2026-11-13)
+
+server-kit 0.30.0: the admin half of the account layer (docs/auth-harmonization.md §12.3–§12.6,
+docs/user-admin-harmonization.md §3–§6, Marcel 2026-11-13: the admin goes into the kits too),
+the erasure, a demo's fixed-end session, and the gaps Staunlabor's 0.29 pilot found. A
+**minor** with **one breaking change** (the console mailer's default); everything else is
+additive for 0.29: no 0.29 Protocol gains a method, no `[sql]` table a column, so an app's 0.29
+migration needs nothing new. Staunlabor adopts it first, Kurvenschmiede moves onto the account
+layer with it.
+
+### ⚠ BREAKING CHANGES
+
+* **mail (security):** `ConsoleMailer` logs only the kind by default — no address, no link, no
+  body: on a deploy without mail its lines reached the hosted log for 30 days with reset and
+  verification links in them. `ConsoleMailer(show_content=True)` logs them as before, for local
+  development. The admin's shown-once link on the console (auth §12.5 item 11) is in the
+  answer and unchanged.
 
 ### Added
 
@@ -70,18 +83,37 @@ console mailer's default (**Changed**, security).
   `deletion_not_requested` (409). The ui-kit's words come in ui-kit 0.64; `account_inactive` is
   in its union already and is now the admin mail's answer.
 
+* **auth.sql:** `UtcDateTime` is public (the private `_UtcDateTime` stays as an alias), and
+  `alembic_render_item(type_, obj, autogen_context)` goes into an app's `env.py`, so
+  `alembic revision --autogenerate` writes `sa.DateTime(timezone=True)` instead of the kit's
+  private type without an import (Staunlabor's pilot).
+* **auth.sql:** `prune(*, before, now=None) -> int` on `SqlSessionStore` (ended sessions, with
+  their IP and device), `SqlOneTimeTokenStore` (expired links), `SqlInvitationStore` (expired
+  or revoked, never accepted) and `SqlPasskeyStore` (spent challenges), and
+  `prune_account_rows(...) -> AccountPrune` for a scheduled job. A `before` after `now` is
+  refused: a row not yet expired is in use, and an unexpired spent challenge is what stops a
+  replay. On the store classes only; the ports keep no prune.
+* **auth.jwt_signer** (`[jwt]` extra, PyJWT ≥ 2.10): `JwtSigner(secret)`, the ports' signer
+  ready-made — HS256 only, `exp` required, `alg: none` and other algorithms refused, `verify`
+  answers `None` on every failure.
+* **auth.bcrypt_hasher** (`[bcrypt]` extra, bcrypt ≥ 4): `BcryptHasher(rounds=12)`; `verify`
+  is `False` for a password over 72 bytes, a broken hash or an unencodable password, never a
+  500; `hash` refuses over 72 bytes (`ValueError`) instead of hashing the first 72.
+* **dev_switch:** `origin_is_local(url)`, the site's half of "is this a deployment?" beside
+  `database_is_local` (an unparsable URL is not local; `.home.arpa` is).
+* **auth.passkeys:** `rp_id_fits(rp_id, origin)`; `RelyingParty` logs one warning when its RP id
+  does not fit an origin and builds as in 0.29 (a LAN dev server keeps starting; its passkeys
+  fail in the browser).
+
 ### Changed
 
-* **mail (security):** `ConsoleMailer` logs only the kind by default — no address, no link, no
-  body: on a deploy without mail its lines reached the hosted log for 30 days with reset and
-  verification links in them. `ConsoleMailer(show_content=True)` logs them as before, for local
-  development. The admin's shown-once link on the console (auth §12.5 item 11) is in the
-  answer and unchanged.
 * **auth:** `SessionsEndedReason` gains `PASSWORD_CHANGE_REQUIRED`: an app's exhaustive `match`
   on the reason adds the case (keksdose's `sessions_ended` hook is the one that matches today).
 * **auth:** a signed-in request and the sessions list also refuse a session row whose
   `expires_at` has passed (the policy's own check agrees for every session the kit starts and
   refreshes; it makes `start_session`'s end hold on the server).
+* **auth.testing:** the contract suites' role defaults are the policy's upper-case `"ADMIN"` and
+  `"MEMBER"` (were lower-case); a store relying on the old defaults passes its roles.
 
 ### Documentation
 
@@ -90,6 +122,11 @@ console mailer's default (**Changed**, security).
   the demo's `start_session`, what an app on `[sql]` gets (no table, no column: the 0.29
   migration needs nothing), and what stays app-side. The mail section: `show_content=True` for
   local development.
+* **README:** "Adopting the account layer", from Staunlabor's pilot: mounting, the stores, the
+  migration, and the unit of work's `Depends(..., scope="function")` — without it FastAPI 0.162
+  commits after the answer, and a failed commit looks like success; a request budget on the
+  account routes through `include_router(dependencies=...)`.
+* **auth.sql:** the admin log's group columns and the links' extra index, as 0.29 fixed them.
 
 ## [0.29.0] (2026-11-13)
 
