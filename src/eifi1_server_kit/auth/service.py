@@ -46,7 +46,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import urlencode
 
@@ -171,6 +171,7 @@ __all__ = [
     "IssuedSession",
     "SessionsEndedReason",
     "SignedIn",
+    "StartedSession",
 ]
 
 logger = logging.getLogger("eifi1_server_kit.auth")
@@ -200,6 +201,9 @@ _NOBODY = "webauthn"
 _REFUSED = "Passkey sign-in refused: %s"
 
 _APP_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+#: The refresh token's claim of a session with a fixed end (:meth:`AccountService.start_session`):
+#: the end as a POSIX timestamp, carried from refresh to refresh.
+_END_CLAIM = "end"
 
 
 class SessionsEndedReason(enum.StrEnum):
@@ -371,6 +375,19 @@ class SignedIn[UserT: AccountRow = Any]:
 
 
 @dataclass(frozen=True, slots=True)
+class StartedSession[UserT: AccountRow = Any]:
+    """A session an app started itself (:meth:`AccountService.start_session`, 0.30): its row,
+    the access token, the refresh token only when one was asked for, and when the session
+    ends at the latest — the access token's end too when there is no refresh token."""
+
+    user: UserT
+    session: SessionRow
+    access_token: str
+    refresh_token: str | None
+    expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class IssuedInvitation[InvT: InvitationRow = Any]:
     """An invitation minted or re-minted: its link (the only time the raw token is in the
     server's hands) and whether its mail went out."""
@@ -382,6 +399,12 @@ class IssuedInvitation[InvT: InvitationRow = Any]:
 
 def _expired(moment: datetime | None, now: datetime) -> bool:
     return moment is None or _aware(moment) <= now
+
+
+def _end_of(claims: Mapping[str, Any]) -> datetime | None:
+    """A refresh token's fixed end (``_END_CLAIM``), or None for a session that slides."""
+    end = claims.get(_END_CLAIM)
+    return datetime.fromtimestamp(end, UTC) if isinstance(end, int | float) else None
 
 
 def _unspent(invitation: InvitationRow) -> bool:
@@ -465,27 +488,80 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             )
         )
 
+    async def _access_claims(self, user: UserT, session: SessionRow) -> dict[str, Any]:
+        return {**(await self._extras(self._hooks.claims, user, session)), "sid": session.sid}
+
     async def _pair(
-        self, user: UserT, session: SessionRow, *, now: datetime, extras: _Extras | None = None
+        self,
+        user: UserT,
+        session: SessionRow,
+        *,
+        now: datetime,
+        extras: _Extras | None = None,
+        end: datetime | None = None,
     ) -> IssuedSession[UserT]:
         """An access and a refresh token for ``session``, minted at ``now``; both carry its
-        ``sid``, the access token the ``claims`` hook's too."""
+        ``sid``, the access token the ``claims`` hook's too. ``end``: a session with a fixed
+        end (:meth:`start_session`): neither token outlives it, and the refresh token carries
+        it on (``end``), so no refresh ever moves the session past it."""
         policy = self._policy.sessions
         shared, started = session.shared_device, session.started_at
-        claims = {**(await self._extras(self._hooks.claims, user, session)), "sid": session.sid}
-        access = access_claims(
-            user.id,
-            now=now,
-            lifetime=access_lifetime(policy, shared=shared, started_at=started, now=now),
-            extra=claims,
-        )
-        refresh = refresh_claims(
-            user.id,
-            now=now,
-            lifetime=refresh_lifetime(policy, shared=shared, started_at=started, now=now),
-            extra={"sid": session.sid},
-        )
+        access_life = access_lifetime(policy, shared=shared, started_at=started, now=now)
+        refresh_life = refresh_lifetime(policy, shared=shared, started_at=started, now=now)
+        refresh_extra: dict[str, Any] = {"sid": session.sid}
+        if end is not None:
+            access_life, refresh_life = min(access_life, end - now), min(refresh_life, end - now)
+            refresh_extra[_END_CLAIM] = end.timestamp()
+        access = access_claims(user.id, now=now, lifetime=access_life, extra=await self._access_claims(user, session))
+        refresh = refresh_claims(user.id, now=now, lifetime=refresh_life, extra=refresh_extra)
         return IssuedSession(user, session, self._signer.sign(access), self._signer.sign(refresh), dict(extras or {}))
+
+    async def start_session(
+        self,
+        user: UserT,
+        *,
+        expires_at: datetime,
+        refresh: bool = False,
+        shared_device: bool = False,
+        ip: str | None = None,
+        device: str | None = None,
+    ) -> StartedSession[UserT]:
+        """A session for an account the app has just made, with a fixed end (auth §12.6, 0.30):
+        Kurvenschmiede's ``demo_router`` and keksdose's 60-minute demo. The demo routes stay
+        the app's; this is the one entry they need.
+
+        A session row (``sid``) that ends at ``expires_at`` (naive is UTC), and its access
+        token with the ``sid`` and the ``claims`` hook's claims, living to that end. Without
+        ``refresh`` (the demo's) there is no refresh token, and since only ``/auth/refresh``
+        moves a row's ``expires_at``, the session keeps its end. With ``refresh``, a refresh
+        token too; the policy's lifetimes still hold, cut to the end, and no refresh moves the
+        session past it. ``shared_device`` keeps the shared limits (auth §6.2): nothing moves
+        a shared session's idle limit but a refresh, so one started without a refresh token
+        ends there, before a later ``expires_at``. ``last_login_at`` is the app's to stamp.
+        An end that has passed is a :class:`ValueError`."""
+        now = self._now()
+        end = _aware(expires_at)
+        if end <= now:
+            raise ValueError("expires_at lies ahead: a session cannot start already ended")
+        limit = min(
+            end, session_expires_at(self._policy.sessions, shared=shared_device, started_at=now, last_active=now)
+        )
+        session = await self._sessions.start(
+            NewSession(
+                sid=mint().raw,
+                user_id=user.id,
+                started_at=now,
+                expires_at=limit,
+                shared_device=shared_device,
+                device=device,
+                ip_address=ip,
+            )
+        )
+        if refresh:
+            issued = await self._pair(user, session, now=now, end=end)
+            return StartedSession(user, session, issued.access_token, issued.refresh_token, end)
+        access = access_claims(user.id, now=now, lifetime=limit - now, extra=await self._access_claims(user, session))
+        return StartedSession(user, session, self._signer.sign(access), None, limit)
 
     def _cutoff(self, user: UserT, now: datetime) -> dict[str, Any]:
         """The ``iat`` cut-off, where the app's row has one (§12.3 seam 4): a new app ends
@@ -524,6 +600,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             session is None
             or not session.is_active
             or str(session.user_id) != str(sub)
+            or _expired(session.expires_at, self._now())
             or session_expired(
                 self._policy.sessions,
                 shared=session.shared_device,
@@ -693,8 +770,11 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         expires_at = session_expires_at(
             self._policy.sessions, shared=session.shared_device, started_at=session.started_at, last_active=now
         )
+        end = _end_of(claims)
+        if end is not None:
+            expires_at = min(expires_at, end)
         await self._sessions.touch(session, last_active=now, expires_at=expires_at)
-        return await self._pair(user, session, now=now)
+        return await self._pair(user, session, now=now, end=end)
 
     # --- the sessions ----------------------------------------------------------------------
 
@@ -733,7 +813,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 current=row.sid == signed_in.session.sid,
             )
             for row in await self._sessions.live(signed_in.user.id)
-            if not session_expired(
+            if not _expired(row.expires_at, now)
+            and not session_expired(
                 policy, shared=row.shared_device, started_at=row.started_at, last_active=row.last_active, now=now
             )
         ]
