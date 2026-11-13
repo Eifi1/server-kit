@@ -10,6 +10,86 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+The admin half of the account layer (docs/auth-harmonization.md §12.3–§12.6,
+docs/user-admin-harmonization.md §3–§6, Marcel 2026-11-13: the admin goes into the kits too).
+Additive for 0.29 — no 0.29 Protocol gains a method, no `[sql]` table a column — but for the
+console mailer's default (**Changed**, security).
+
+### Added
+
+* **user_admin (layer 2):** `user_admin_router(UserAdminDeps(...))` (`user_admin.router`, the
+  `fastapi` extra) on the app's `AuthDeps`: its stores, `current_user` and, unless the app
+  passes its own, `admin_guard`, on the router. `GET /admin/users` (the roster with
+  `summary.active_admins` and `levels`), `POST /admin/users/{id}/active`, `POST …/role` (or
+  `PUT …/roles` with `role_sets`), `POST` and `DELETE …/password-change`, `POST …/mail`,
+  `PUT …/reviewer` (with `AdminPolicy.review_locales`), `POST …/erase` (operator mode only),
+  `GET /admin/actions`, `GET /admin/attention`, `GET /admin/mail` (`{mail_backend}`, before any
+  mail) and `POST /admin/mail/test`. Over `UserAdminService`, `AdminPolicy`, `UserAdminHooks`
+  (`to_row`, `attention`, `confirmation`, `role_changing`, `activating`, `group_names`) and
+  `ADMIN_ACTIONS` (`user_admin.service`), on layer 1's rules. The kit settles where the apps
+  differed: no change writes no row; the refusals in the order account, self, account-wide,
+  last admin, confirmation; a demo target is `demo_refused`; deactivating ends every session
+  and clears nothing else; reactivating withdraws a pending deletion (`deletion_cancel`, then
+  `reactivate`); a forced password change ends every session; the admin's mail refuses an
+  inactive account and a verified address's verification, is charged to the recipient's
+  window, and logs `{sent}`.
+* **user_admin.scope:** `AdminScope` (§12.4: which accounts an admin sees and acts on, their
+  roles as one or a set, the grantable ones, the last-admin count, the account-wide refusal,
+  the log's fields) and `GlobalScope`. A company scope is the app's (kastlan's, later); the
+  kit's tests run a company-scope fake through the same router.
+* **user_admin.ports:** `RosterStore` (`page`, `counts` → `RosterCounts`,
+  `deletion_requested`) and `AcceptedInvitations` (`forget_accepted`, optional), new protocols
+  beside 0.29's. **auth.sql:** `SqlRosterStore` and `SqlInvitationStore.forget_accepted`, over
+  the tables as they are. **auth.testing:** `InMemoryInvitationStore.forget_accepted`.
+  **user_admin.testing** (new): `InMemoryRosterStore`, `check_roster_store`,
+  `check_accepted_invitations`.
+* **The erasure** (user-admin §6.4): `AccountService.erase(user, *, actor_id, feedback=None)`
+  (the app's `AuthHooks.erase` hook, the feedback through `erase_author`, its files to the new
+  `AuthHooks.purge_files` after the commit, the accepted invitations forgotten, the log
+  scrubbed, the sessions and links ended, an `erase` row, the row deleted);
+  `AccountService.erase_if_due(user_id, *, feedback=None)` and
+  `user_admin.erase_due_accounts(ids, erase_one)` → `ErasureRun` for the `after_days` job, one
+  account per transaction.
+* **auth:** `AccountService.start_session(user, *, expires_at, refresh=False,
+  shared_device=False, ip=None, device=None)` → `StartedSession` (auth §12.6): a session with a
+  fixed end for an app's demo, its access token living to that end, a refresh token only when
+  asked, which never moves the session past it. `AccountService.end_sessions(user, reason)` and
+  `send_account_mail(user, kind)`.
+* **auth:** `AccountPolicy.invitable_roles` (Staunlabor's pilot; `None`: unchecked, as in
+  0.29): an invitation naming another role is `422 role_not_grantable`, and the admin's role
+  change gives the same roles. `AuthDeps.offered_locales` (`None`: unchecked): the sign-up's,
+  the invitation's and the profile's locale is one of the app's, one 422 for the three;
+  `RegisterRequest` and `InvitationCreate` gain `ProfileUpdate`'s `offered_locales` knob.
+* **auth:** `AuthLimiters(mail_test=MAIL_TEST_PER_ACCOUNT)`, the test mail's window (3 in 10
+  minutes per admin).
+* **user_admin:** `AdminActionPage[RowT]` (`{actions, total}`), `AdminActionRow.target` (a
+  `PersonRef`, default `None`), `ReviewerResult`, `MailBackendInfo`, `ErasureResult`.
+* **user_admin:** `AccountErrorCode` gains `user_not_found` (404), `role_not_grantable` (422),
+  `reviewer_is_admin`, `account_inactive`, `email_already_verified` and
+  `deletion_not_requested` (409). The ui-kit's words come in ui-kit 0.64; `account_inactive` is
+  in its union already and is now the admin mail's answer.
+
+### Changed
+
+* **mail (security):** `ConsoleMailer` logs only the kind by default — no address, no link, no
+  body: on a deploy without mail its lines reached the hosted log for 30 days with reset and
+  verification links in them. `ConsoleMailer(show_content=True)` logs them as before, for local
+  development. The admin's shown-once link on the console (auth §12.5 item 11) is in the
+  answer and unchanged.
+* **auth:** `SessionsEndedReason` gains `PASSWORD_CHANGE_REQUIRED`: an app's exhaustive `match`
+  on the reason adds the case (keksdose's `sessions_ended` hook is the one that matches today).
+* **auth:** a signed-in request and the sessions list also refuse a session row whose
+  `expires_at` has passed (the policy's own check agrees for every session the kit starts and
+  refreshes; it makes `start_session`'s end hold on the server).
+
+### Documentation
+
+* **README:** "`eifi1_server_kit.user_admin` — layer 2: the admin routes": mounting it in the
+  global scope, the routes with their codes, what the kit settles, the erasure and its job,
+  the demo's `start_session`, what an app on `[sql]` gets (no table, no column: the 0.29
+  migration needs nothing), and what stays app-side. The mail section: `show_content=True` for
+  local development.
+
 ## [0.29.0] (2026-11-13)
 
 server-kit 0.29.0: the account layer (docs/auth-harmonization.md §12, Marcel 2026-11-13: the kits take sign-in,

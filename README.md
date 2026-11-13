@@ -770,6 +770,148 @@ answers 401.
 - **The edge and the per-IP windows** are the limiter's (`client_ip`, `vouched_hops`): the
   router keys every IP window by the app's `client_address` and needs nothing else.
 
+### `eifi1_server_kit.user_admin` — layer 2: the admin routes
+
+The admin half of the account layer (auth §12.3–§12.4, user-admin §3–§6, admin §2.4 and §9.2;
+0.30): the roster, the four actions, the reviewer scope, the log, the overview, the mail
+routes and the operator's erasure, which every app served from its own copy. On layer 1's
+rules (`parse_roster_query`, `refuse_self`, `refuse_last_admin`, `confirmation_level`,
+`require_confirmation`, `admin_action_record`, `AdminAttention`) and on 0.29's `AuthDeps`: the
+same stores, the same `current_user`, and `admin_guard(auth)` unless the app passes its own
+guard. The ports (`user_admin.ports`), the scope (`user_admin.scope`) and the service
+(`user_admin.service`) need no FastAPI; the routes are `user_admin.router`, behind the
+`fastapi` extra.
+
+**Mounting it** (the global scope: keksdose, Kurvenschmiede, Staunlabor), beside 0.29's routers:
+
+```python
+from eifi1_server_kit.auth.sql import SqlRosterStore
+from eifi1_server_kit.user_admin.router import UserAdminDeps, user_admin_router
+from eifi1_server_kit.user_admin.service import AdminPolicy
+
+async def roster_store(session: AsyncSession = Depends(db_session)) -> SqlRosterStore[User]:
+    return SqlRosterStore(session, User)
+
+admin = UserAdminDeps(
+    auth=deps,                    # the app's AuthDeps
+    roster=roster_store,
+    hooks=admin_hooks,            # optional: a dependency answering UserAdminHooks
+    feedback=feedback_service,    # optional: the erasure anonymises the person's feedback
+    policy=AdminPolicy(review_locales=UI_LOCALE_CODES, review_areas=REVIEW_AREAS),
+)
+app.include_router(user_admin_router(admin), prefix="/api/v1")
+app.include_router(invitations_admin_router(deps), prefix="/api/v1")  # 0.29's: the same guard
+```
+
+A custom guard goes to both: `UserAdminDeps(guard=g)` and `invitations_admin_router(deps,
+guard=g)`. kastlan (later) mounts it twice: its company admin with `scope=` its company scope,
+`guard=` its company-admin check and `role_sets=True`, and its platform with the global scope
+under `prefix="/platform"`.
+
+| Route | Answer | Codes | Limit |
+|---|---|---|---|
+| `GET /admin/users?limit&offset&sort&q&role&state` | `UserListResponse[row_model]` with `summary.active_admins` and `levels` | 422 (`RosterQueryError`) | — |
+| `POST /admin/users/{id}/active {active, confirm_email?}` | the row | `user_not_found`, `demo_refused`, `self_action`, `other_companies` (a scope's), `last_admin`, `confirmation_required`, `confirmation_mismatch`, the `activating` hook's | — |
+| `POST /admin/users/{id}/role {role}` (`role_sets`: `PUT …/roles {roles}`) | the row | `role_not_grantable` (422), `self_action`, `last_admin`, `confirmation_*`, the `role_changing` hook's | — |
+| `POST` / `DELETE /admin/users/{id}/password-change` | the row | `other_companies`, `confirmation_*` (a body a proxy dropped fails closed) | — |
+| `POST /admin/users/{id}/mail {kind}` | `MailResult` (`link` on the console only) | `account_inactive`, `email_already_verified`, `confirmation_*` (an app's raised level) | `verification_resend` / `reset_address` (recipient) |
+| `PUT /admin/users/{id}/reviewer {locales, areas}` (with `review_locales`) | `ReviewerResult` | `reviewer_is_admin`, 422 (unknown locale or area) | — |
+| `POST /admin/users/{id}/erase {confirm_email}` (`operator` mode only) | `erasure_result_model` | `self_action`, `other_companies`, `deletion_not_requested`, `confirmation_*` | — |
+| `GET /admin/actions?limit&offset&target` | `AdminActionPage[action_row_model]` (actor and target as people) | 422 | — |
+| `GET /admin/attention` | `attention_model` | — | — |
+| `GET /admin/mail` | `MailBackendInfo` (`{mail_backend}`) | — | — |
+| `POST /admin/mail/test` | `MailTestResult` | `demo_refused` | `mail_test` (3 in 10 minutes per admin) |
+
+Every route is behind the guard: `401 not_signed_in` / `session_ended`, `403 admin_required`.
+**New codes for the ui-kit's words (ui-kit 0.64):** `user_not_found` (404),
+`role_not_grantable` (422), `reviewer_is_admin`, `email_already_verified`,
+`deletion_not_requested` (409), and `account_inactive` (409, already in the ui-kit's union) as
+the admin mail's answer.
+
+**What the kit settles where the apps differed** (each app's adopt note names its own):
+- **No change, no row**: deactivating an inactive account, the role it has, a password change
+  already required, the same review scope: the row as it is, no confirmation asked, no log row.
+- **The order**: the account (`user_not_found`, then `demo_refused` for a demo account), then
+  `self_action`, the scope's account-wide refusal, `last_admin`, then the confirmation the
+  server decided (with the app's raised level, `UserAdminHooks.confirmation`).
+- **Deactivating** ends every session (`AccountService.end_sessions`: the rows, the `iat`
+  cut-off where the row has one, the pending address change, `sessions_ended(user,
+  DEACTIVATED)`), logs `{sessions_ended: true}`, and clears nothing else. **Reactivating**
+  withdraws a pending deletion first (`deletion_cancel`, the `on_deletion_withdrawn` hook),
+  then logs `reactivate`.
+- **A role change** gives only grantable roles (`AdminPolicy.grantable`, else
+  `AccountPolicy.invitable_roles`, else every role but the reviewer role: one source with the
+  invitations), never takes your own admin role away nor the last active admin's, is
+  acknowledged, logs `{from, to}` (`{added, removed}` for sets), clears the review scope with
+  the role, and keeps the sessions.
+- **A forced password change** ends every session (`PASSWORD_CHANGE_REQUIRED`), also on a
+  deactivated account (it waits for the return) and on oneself; withdrawing it keeps them ended.
+- **The admin's mail** refuses a deactivated account and a verified address's verification,
+  is charged to the recipient's public window, commits its link before mailing it, and logs
+  `{sent}` after.
+- **The reviewer scope** gives the reviewer role with the locales (the app's, `normalize_locales`)
+  and takes it away with none (the default role); an admin is refused.
+- **The overview** counts the people, the new ones of seven days and the open invitations; the
+  deletion requests only in `operator` mode; the app's `attention` hook adds `feedback_waiting`
+  and its `extra` tiles; a demo admin sees no count.
+
+**The erasure** (user-admin §6.4), `AccountService.erase(user, *, actor_id, feedback=None)`,
+for the operator's route and the job alike: the `AuthHooks.erase` hook (the app's own rows: what
+an erasure deletes or hands over stays the app's; its counts ride on the answer and the row),
+the feedback through `FeedbackService.erase_author` with `erasure_identifiers` (its files to
+`AuthHooks.purge_files` after the commit), the invitations the account accepted deleted where
+the store has `forget_accepted`, the log scrubbed of the account's address and those
+invitations', every session and link ended, an `erase` row (the admin or no actor, no target,
+`{feedback_anonymised, …}`), and the row deleted (`[sql]`'s sessions, links and passkeys
+cascade; the log's keys are `SET NULL`). **The `after_days` job** is the app's scheduled job:
+
+```python
+async def erase_one(user_id: int) -> bool:  # one transaction per account
+    async with sessions() as session, session.begin():
+        return await accounts_on(session).erase_if_due(user_id, feedback=feedback_on(session))
+
+async with sessions() as session:
+    ids = await SqlRosterStore(session, User).deletion_requested()
+run = await erase_due_accounts(ids, erase_one)  # ErasureRun(erased, skipped, failed)
+```
+
+`erase_if_due` re-reads the row and erases only a deactivated account whose request is due
+(`deletion_due`, the mail's date included), never in `operator` mode; a failure is logged and
+holds back no other.
+
+**A demo** (auth §12.6): `AccountService.start_session(user, *, expires_at, refresh=False,
+shared_device=False, ip=None, device=None)` → `StartedSession(user, session, access_token,
+refresh_token, expires_at)` starts a session row that ends at `expires_at`, with an access token
+(its `sid`, the `claims` hook's) living to that end and no refresh token unless asked; with one,
+no refresh moves the session past its end. Only `/auth/refresh` moves a row's `expires_at`, and
+since 0.30 a signed-in request and the sessions list refuse a row past it. The demo routes stay
+the app's (Kurvenschmiede's `demo_router`, keksdose's demo).
+
+| Area | Names |
+|---|---|
+| Ports (`user_admin.ports`) | `RosterStore` (`page(query, *, admin_role, reviewer_role)`, `counts(*, since)` → `RosterCounts(people, new, deletion_requests)`, `deletion_requested()`), `AcceptedInvitations` (`forget_accepted(user_id)`, optional, runtime-checkable) |
+| Scope (`user_admin.scope`) | `AdminScope` (`find`, `roster`, `counts`, `roles_of`, `grantable_roles`, `set_roles`, `active_admins`, `refuse_last_admin`, `refuse_account_wide`, `record_fields`), `GlobalScope` |
+| Service (`user_admin.service`) | `UserAdminService`, `AdminPolicy(roles, grantable, reviewer_role, review_locales, review_areas, states, sort_keys)`, `UserAdminHooks(to_row, attention, confirmation, role_changing, activating, group_names)`, `ADMIN_ACTIONS`, `erase_due_accounts`, `ErasureRun` |
+| Routes (`user_admin.router`) | `UserAdminDeps(auth, roster, scope, hooks, feedback, guard, policy, role_sets, row_model, action_row_model, attention_model, erasure_result_model, active_change_model, role_change_model, roles_change_model, mail_request_model)`, `user_admin_router(deps, *, prefix="/admin", tags=("admin",))`, `no_admin_hooks` |
+| Account layer (0.30) | `AccountService.start_session`, `end_sessions`, `send_account_mail`, `erase`, `erase_if_due`; `StartedSession`; `AuthHooks.erase`, `purge_files`; `SessionsEndedReason.PASSWORD_CHANGE_REQUIRED`; `AccountPolicy.invitable_roles`; `AuthDeps.offered_locales`; `AuthLimiters(mail_test=MAIL_TEST_PER_ACCOUNT)` |
+| Answers (`user_admin`) | `AdminActionPage[RowT]`, `AdminActionRow.target`, `ReviewerResult`, `MailBackendInfo`, `ErasureResult`; `AccountErrorCode` `user_not_found`, `role_not_grantable`, `reviewer_is_admin`, `account_inactive`, `email_already_verified`, `deletion_not_requested` |
+| Testing (`user_admin.testing`) | `InMemoryRosterStore(rows)`, `check_roster_store(roster, users, *, admin_role, member_role, reviewer_role, add_demo=None)`, `check_accepted_invitations(store, *, inviter_id, user_id, other_user_id)` |
+
+**On `[sql]` (Staunlabor):** 0.30 adds **no table and no column**, so the 0.29 migration
+needs nothing new. It adds `SqlRosterStore(session, User)` (the roster, the overview's counts
+and the job's candidates, over `AccountColumns` as it is; demo accounts left out where the
+model has `DemoAccountColumn`) and `SqlInvitationStore.forget_accepted` (deletes rows of the
+invitations table as it is). Run `check_roster_store(SqlRosterStore(session, User),
+SqlUserStore(session, User))` and `check_accepted_invitations(SqlInvitationStore(session,
+Invitation), …)` beside 0.29's suites. No 0.29 Protocol gained a method.
+
+**Stays app-side:** what an erasure deletes or hands over (the `erase` hook), keksdose's API
+tokens and push devices at a deactivation (the `sessions_ended` hook), plans and billing,
+Kurvenschmiede's transfer and teams, keksdose's health, jobs, metrics, push, legal changes,
+support, demo budget and user message routes, kastlan's company routes (membership removal,
+the user PATCH) and its RLS, the demo routes, the scheduler's wiring of the job, and a row lock
+for the job (the port has none; keksdose's `with_for_update` is its own).
+
 ### `eifi1_server_kit.user_admin`
 
 User administration and the account's own settings (user-admin contract §3–§7).
@@ -1480,8 +1622,14 @@ request still running, or the key used with another body) is not sent and not re
 **Set `reply_to`** from the
 app's `*_EMAIL_REPLY_TO` setting, whose default is `support_address(from_address)`, i.e.
 `support@<the sender's domain>`. Cloudflare Email Routing forwards `support@` on all three
-domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` logs
-the mail with its link — development only; kastlan passes `logging.WARNING`.
+domains, and nobody reads `noreply@`. `ConsoleMailer(level=logging.INFO)` is the transport of
+an app without mail. **Since 0.30 it logs only the kind** (security): on a deploy without a
+mail provider its lines reach the hosted log for 30 days, where a reset or verification link
+is a credential and the address is the person's. A local setup that reads links from the log
+passes `show_content=True` (e.g. `ConsoleMailer(show_content=settings.database_is_local)`),
+which logs the recipient, subject, headers and text as before; the admin's shown-once link
+on the console (auth §12.5 item 11) is in the answer, not the log, either way. kastlan passes
+`logging.WARNING`.
 
 **The admin's test mail** (0.15, admin §9.2): `test_mail_message(locale, *, app_name,
 backend, sent_at)` → `HtmlMailMessage` in the admin's language (seven, through `pick_entry`'s
