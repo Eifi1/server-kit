@@ -167,8 +167,18 @@ def test_render_mail_writes_the_rows_own_language() -> None:
     assert english.subject == "Reset your password"
 
 
-async def test_the_console_mailer_logs_the_link(caplog: pytest.LogCaptureFixture) -> None:
-    mailer: Mailer = ConsoleMailer()
+async def test_the_console_mailer_logs_only_the_kind_unless_asked(caplog: pytest.LogCaptureFixture) -> None:
+    """0.30 (security): on a deploy without mail the console's lines reach the hosted log for
+    30 days, and a reset or verification link in them is a credential; the address is the
+    person's. By default only the kind is logged; ``show_content=True`` is local development's."""
+    message = MailMessage(subject="Confirm", text=f"Confirm: {LINK}", headers={"Reply-To": "s@example.com"})
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
+        assert await ConsoleMailer().send("ada@example.com", message, kind="verification")
+    assert "[email:console] verification" in caplog.text
+    for secret in (LINK, "ada@example.com", "Confirm", "Reply-To"):
+        assert secret not in caplog.text, secret
+    caplog.clear()
+    mailer: Mailer = ConsoleMailer(show_content=True)
     message = MailMessage(subject="Confirm", text=f"Confirm: {LINK}")
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
         assert await mailer.send("ada@example.com", message, kind="verification")
@@ -201,7 +211,7 @@ async def test_a_notice_is_sent_and_logged_under_its_word(caplog: pytest.LogCapt
     """The kind is what an operator greps the logs and Resend's ``Idempotency-Key`` for."""
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
         assert await ConsoleMailer().send("ada@example.com", MESSAGE, kind=AccountNoticeKind.ACCOUNT_DELETION)
-    assert "[email:console] account_deletion to=" in caplog.text
+    assert "[email:console] account_deletion" in caplog.text and "ada@example.com" not in caplog.text
     resend = _Resend(200)
     assert await resend.client().send("ada@example.com", MESSAGE, kind=AccountNoticeKind.EMAIL_CHANGE_NOTICE)
     assert resend.requests[0].headers["Idempotency-Key"].startswith("email_change_notice-")
@@ -519,7 +529,7 @@ async def test_resend_sends_the_headers_in_its_payload() -> None:
 async def test_the_console_mailer_logs_the_headers(caplog: pytest.LogCaptureFixture) -> None:
     message = render_mail("en", RESET, link=LINK, name="Ada", hours=1, unsubscribe=WAY_OUT)
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
-        assert await ConsoleMailer().send("ada@example.com", message, kind="share_granted")
+        assert await ConsoleMailer(show_content=True).send("ada@example.com", message, kind="share_granted")
     assert "[email:console] share_granted to=ada@example.com" in caplog.text
     assert f"List-Unsubscribe: <{ONE_CLICK}>\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\n" in caplog.text
 
@@ -576,7 +586,9 @@ async def test_a_409_on_the_key_is_not_sent_and_not_retried(caplog: pytest.LogCa
 
 async def test_the_console_mailer_ignores_the_key(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):
-        assert await ConsoleMailer().send("ada@example.com", replace(MESSAGE, idempotency_key=KEY), kind="x_y")
+        assert await ConsoleMailer(show_content=True).send(
+            "ada@example.com", replace(MESSAGE, idempotency_key=KEY), kind="x_y"
+        )
     assert "[email:console] x_y to=ada@example.com" in caplog.text and KEY not in caplog.text
 
 

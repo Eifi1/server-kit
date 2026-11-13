@@ -593,20 +593,28 @@ class Mailer(Protocol):
 
 
 class ConsoleMailer:
-    """The development transport: log the mail, link included, instead of sending it.
+    """The transport of an app without mail: log the mail instead of sending it.
 
-    A fresh checkout needs no credentials — you verify an account by reading the backend
-    log (keksdose's default). kastlan logs at ``WARNING`` so the line shows under its
-    default level; pass ``level``. Never in production: the link in the log is a
-    credential.
+    **By default only the kind is logged** (0.30, security): a deploy without a mail provider
+    (Staunlabor's start) runs on it too, and there its log lines land in the hosted log for
+    30 days — a reset or verification link there is a credential, the address the person's.
+    The admin still gets an account mail's link once in the answer while mail goes to the
+    console (``MailResult.link``, auth §12.5 item 11). **``show_content=True``** logs the
+    recipient, the subject, the headers and the text, link included, as before 0.30: local
+    development's, where a fresh checkout verifies an account by reading the backend log
+    (keksdose's default) — pass it only there (``show_content=settings.database_is_local``).
+    kastlan logs at ``WARNING`` so the line shows under its default level; pass ``level``.
     """
 
-    def __init__(self, *, level: int = logging.INFO, log: logging.Logger = logger) -> None:
+    def __init__(self, *, level: int = logging.INFO, log: logging.Logger = logger, show_content: bool = False) -> None:
         self._level = level
         self._log = log
+        self._show = show_content
 
     async def send(self, to: str, message: MailMessage, *, kind: str = "other") -> bool:
-        if message.headers:
+        if not self._show:
+            self._log.log(self._level, "[email:console] %s (content not logged; show_content=True shows it)", kind)
+        elif message.headers:
             headers = "".join(f"{name}: {value}\n" for name, value in message.headers.items())
             self._log.log(
                 self._level,
