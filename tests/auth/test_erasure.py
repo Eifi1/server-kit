@@ -62,7 +62,7 @@ async def test_a_new_app_ends_sessions_by_the_rows_alone(world: World) -> None:
     await world.sign_in(user)
     assert await world.service().end_sessions(user, SessionsEndedReason.PASSWORD_CHANGE_REQUIRED) == 1
     assert not hasattr(user, "sessions_invalid_before")
-    assert SessionsEndedReason.PASSWORD_CHANGE_REQUIRED == "password_change_required"
+    assert str(SessionsEndedReason.PASSWORD_CHANGE_REQUIRED) == "password_change_required"
 
 
 # ── the admin's mails ───────────────────────────────────────────────────────
@@ -195,3 +195,25 @@ async def test_the_job_erases_only_an_account_whose_deletion_is_due(world: World
     world.clock.advance(days=2)
     assert await operator.erase_if_due(soon.id) is False, "an operator erases, never the job"
     assert await service.erase_if_due(soon.id, feedback=FakeFeedback()) is True  # type: ignore[arg-type]
+
+
+async def test_an_invitation_store_without_forget_accepted_leaves_the_invitations_to_the_app(world: World) -> None:
+    """An app's own store adds the method or forgets them in its ``erase`` hook; the kit
+    scrubs the account's own address all the same."""
+
+    class Plain:
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            if name == "forget_accepted":
+                raise AttributeError(name)
+            return getattr(self.inner, name)
+
+    user = world.account(is_active=False, deletion_requested_at=world.clock())
+    accepted = world.invitations.seed(email="old@example.com", accepted_at=world.clock(), accepted_by_user_id=user.id)
+    await world.log.add(
+        admin_action_record("invite", actor_id=None, target_user_id=None, target_email=user.email, now=world.clock())
+    )
+    await world.service(invitations=Plain(world.invitations)).erase(user, actor_id=None)
+    assert accepted.id in world.invitations.rows and world.log.rows[0].target_email is None

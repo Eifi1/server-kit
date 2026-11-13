@@ -789,14 +789,16 @@ from eifi1_server_kit.auth.sql import SqlRosterStore
 from eifi1_server_kit.user_admin.router import UserAdminDeps, user_admin_router
 from eifi1_server_kit.user_admin.service import AdminPolicy
 
+
 async def roster_store(session: AsyncSession = Depends(db_session)) -> SqlRosterStore[User]:
     return SqlRosterStore(session, User)
 
+
 admin = UserAdminDeps(
-    auth=deps,                    # the app's AuthDeps
+    auth=deps,  # the app's AuthDeps
     roster=roster_store,
-    hooks=admin_hooks,            # optional: a dependency answering UserAdminHooks
-    feedback=feedback_service,    # optional: the erasure anonymises the person's feedback
+    hooks=admin_hooks,  # optional: a dependency answering UserAdminHooks
+    feedback=feedback_service,  # optional: the erasure anonymises the person's feedback
     policy=AdminPolicy(review_locales=UI_LOCALE_CODES, review_areas=REVIEW_AREAS),
 )
 app.include_router(user_admin_router(admin), prefix="/api/v1")
@@ -869,6 +871,7 @@ cascade; the log's keys are `SET NULL`). **The `after_days` job** is the app's s
 async def erase_one(user_id: int) -> bool:  # one transaction per account
     async with sessions() as session, session.begin():
         return await accounts_on(session).erase_if_due(user_id, feedback=feedback_on(session))
+
 
 async with sessions() as session:
     ids = await SqlRosterStore(session, User).deletion_requested()

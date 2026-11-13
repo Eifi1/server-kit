@@ -32,7 +32,7 @@ class AdminWorld(World):
         **options: Any,
     ) -> None:
         super().__init__(**options)
-        self.roster = InMemoryRosterStore(self.users.rows)  # type: ignore[arg-type]
+        self.roster = InMemoryRosterStore(self.users.rows)
         self.admin_hooks: UserAdminHooks[Any] = UserAdminHooks()
         self.feedback: Any = None
         values: dict[str, Any] = {

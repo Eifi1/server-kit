@@ -44,7 +44,7 @@ async def test_every_admin_route_refuses_a_member_and_a_caller_without_a_session
     assert len(routes) == 15
     for route in routes:
         path = route.path.replace("{user_id}", "1").replace("{invitation_id}", "1")
-        for method in route.methods:
+        for method in route.methods or ():
             refused = await world.call(method, path, token=member, json={})
             assert (refused.status_code, code(refused)) == (403, "admin_required"), (method, path)
             anonymous = await world.call(method, path, json={})
@@ -674,3 +674,26 @@ async def test_the_roster_answers_the_levels_of_the_app_s_own_actions_too() -> N
         _, token = await world.admin_token()
         levels = (await world.call("GET", "/admin/users", token=token)).json()["levels"]
         assert (levels["transfer"], levels["plan"], levels["role"]) == ("type_email", "acknowledge", "acknowledge")
+
+
+async def test_without_hooks_or_feedback_the_router_runs_on_its_defaults(operator_world: AdminWorld) -> None:
+    from eifi1_server_kit.user_admin.router import UserAdminDeps
+
+    defaults = {name: UserAdminDeps.__dataclass_fields__[name].default for name in ("hooks", "feedback")}
+    world = AdminWorld(policy=operator_world.deps.policy, admin=defaults)
+    async with world.client:
+        _, token = await world.admin_token()
+        user = world.account(is_active=False, deletion_requested_at=world.clock())
+        assert (await world.call("GET", "/admin/attention", token=token)).json()["deletion_requests"] == 1
+        erased = await world.call("POST", f"/admin/users/{user.id}/erase", token=token, json=TYPED)
+        assert erased.json() == {"feedback_anonymised": 0}
+
+
+def test_the_router_names_its_extra_without_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+    import sys
+
+    monkeypatch.delitem(sys.modules, "eifi1_server_kit.user_admin.router", raising=False)
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+    with pytest.raises(ImportError, match=r"eifi1-server-kit\[fastapi\]"):
+        importlib.import_module("eifi1_server_kit.user_admin.router")
