@@ -10,6 +10,72 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.29.0] (2026-11-13)
+
+server-kit 0.29.0: the account layer (docs/auth-harmonization.md §12, Marcel 2026-11-13: the kits take sign-in,
+sign-up and the account over completely). A **minor**: new modules and names, **nothing
+breaking** (every change to an existing name is additive). Staunlabor is the first app on it.
+
+### Added
+
+* **auth (layer 2):** `auth_router(AuthDeps(...))`, `invitations_admin_router(...)` and the
+  dependencies `current_user(deps)`, `admin_guard(deps)` and `account_service(deps)`
+  (`auth.router`, the `fastapi` extra), over `AccountService` (`auth.service`), which runs
+  every account flow over the app's ports: register, login with the forced change's
+  challenge, set-password, refresh, logout everywhere, this session and the sessions list,
+  `/me` and its PATCH, the password change, the address change, verification, the reset,
+  invitations (check, accept, and the admin's list, create, re-send, revoke), the deletion
+  request and its terms, the export, and passkeys. `AccountPolicy`, `AccountLinks`,
+  `AuthHooks` (the six seams of §12.2 as optional coroutines, answered per request) and
+  `SessionsEndedReason`. The kit settles what the apps' copies did differently (§12.5): session
+  rows and a `sid` in both tokens; sign-up checks the invitation, then the gate, then
+  `email_taken`; every account mail after the commit (`AfterCommit.commit_now` then send where
+  the answer reports `sent`, `later` otherwise); a code on every refusal; a limit on every
+  anonymous redemption, on the refresh and on every signed-in password check; a forced change
+  and a reset end every session, and a reset also verifies the address; only open, unexpired
+  invitations attach at an address confirmation; passkeys usernameless with user verification
+  required, each challenge answered once.
+* **auth:** the account mails in seven languages (`auth.mails`: `AccountMailText`,
+  `ACCOUNT_MAIL_TEXTS`, `ACCOUNT_MAIL_KINDS`, `ACCOUNT_MAIL_VALUES`, `account_mail_texts`,
+  `mail_date`), lifted from Kurvenschmiede's with the app's name as `{app}`; an app may replace
+  a kind (`AuthDeps.mail_texts`), checked when the router is built.
+* **auth:** the passkey ceremonies over py_webauthn (`auth.passkeys`: `RelyingParty`,
+  `registration_options`, `authentication_options`, `verify_registration`,
+  `verify_authentication`, `PasskeyCheckError`, …), behind the new **`passkeys` extra**
+  (`webauthn>=2.0.0`), imported only when a ceremony runs.
+* **auth:** the routes' wire shapes: `SetPasswordRequest`, `PasswordChangeRequest`,
+  `TokenRequest`, `PasswordResetRequest`, `PasswordResetConfirm`, `PasswordResetState`,
+  `EmailVerificationStatus`, `EmailChangeState`, `EmailChangeConfirmed`, `InvitationCheck`,
+  `InvitationAccepted`, `SessionInfo`, `DeletionTerms`, `DeletionResult`, and the passkey
+  shapes; **user_admin:** `InvitationIssued` (the link on the console only, as `MailResult`).
+* **auth:** `AuthErrorCode` gains `not_signed_in`, `admin_required`, `password_unchanged`,
+  `password_change_not_required`, `email_unchanged`, `email_change_not_pending`,
+  `mail_not_sent`, `passkey_refused`, `passkey_registration_refused`, `passkey_not_found`,
+  `session_not_found`, `invitation_not_found`, `invitation_closed` and
+  `invitation_scope_invalid` (the ui-kit's words follow); `AuthError(..., headers=)`.
+* **auth:** `AuthLimiters` gains `redeem` and `refresh` (per IP), `password_check`,
+  `email_change` and `export` (per account), keksdose's numbers (`REDEEM_PER_IP`,
+  `REFRESH_PER_IP`, `PASSWORD_CHECK_PER_ACCOUNT`, `EMAIL_CHANGE_PER_ACCOUNT`,
+  `EXPORT_PER_ACCOUNT`); the old windows and constructor are as they were.
+* **auth.ports:** the ports the account layer runs on, each app's adapters or the `sql`
+  extra's stores: `AccountRow` (``is_demo`` and the ``iat`` cut-off optional), `UserStore`
+  (with `count_active(*, role)`, the last-admin rule's count), `SessionRow`/`SessionStore`
+  (0.27's rows), `OneTimeTokenRow`/`OneTimeTokenStore` (reset, verification, address change),
+  `InvitationRow`/`InvitationStore` (the scope opaque), `PasskeyRow`/`PasskeyStore` (one use per
+  challenge), `AdminActionRowView`/`AdminActionLog`, `AfterCommit` (`later`, `commit_now`),
+  `TokenSigner` and `PasswordHasher`, with the orders, defaults and edges each promises.
+* **auth.sql** (decision C, Staunlabor): the account tables as SQLAlchemy declarative mixins
+  (`users`, `user_sessions`, `one_time_tokens`, `invitations`, `passkeys` with the spent
+  challenges, `admin_actions`) and the stores over them, plus `SqlAfterCommit` (the work runs
+  after the session's commit, dropped on a rollback), behind the new **`sql` extra**
+  (`sqlalchemy[asyncio]>=2.0.0`). An app with one role and the global scope inherits them, adds
+  its columns and writes its own migration.
+* **auth.testing** (Staunlabor): in-memory stores for every port, `InMemoryAfterCommit`,
+  `FakePasswordHasher`, `HmacTokenSigner`, and a `check_*` contract suite per port that an
+  app runs against its own adapters (each check fails on a store that breaks it); and
+  `auth.soft_webauthn`'s `SoftAuthenticator` for passkey tests without a browser (user
+  verification switchable), re-exported lazily.
+
 ## [0.28.0] (2026-11-13)
 
 server-kit 0.28.0: the edge-token proof for the per-IP windows, ahead of the account layer

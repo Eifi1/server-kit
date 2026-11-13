@@ -39,9 +39,10 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.28 ↔ ui-kit 0.62**: that ui-kit
-release is tested against server-kit 0.27's API export, and 0.28 only adds
-`limiter.vouched_hops`, which no ui-kit part reads (the ui-kit showcase's Server kit pages
+package with its own version and changelog. **server-kit 0.29 ↔ ui-kit 0.62**: that ui-kit
+release is tested against server-kit 0.27's API export; 0.28 adds `limiter.vouched_hops` and
+0.29 the account layer, which ui-kit 0.63's `@eifi1/ui-kit/accounts` will read (the ui-kit
+showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
 `server-kit-api.json`).
@@ -601,6 +602,173 @@ leave half a name behind.
 **Subclass the schemas**: the app's fields (kastlan's company, keksdose's currency and its
 challenge's `encrypted`), its `role` enum, and `name_completion_exempt()` returning
 `self.is_demo` for keksdose's demo. `TokenResponse[MyUserResponse]` types the user.
+
+### `eifi1_server_kit.auth` — layer 2: the account routes
+
+Sign-up, sign-in, the session and the account's own settings, written once (auth §12, 0.29):
+the routes every app served from its own 6–12k-line copy, whose drift was where the faults
+were. The ports (`auth.ports`), the service (`auth.service`), the mails (`auth.mails`) and
+the passkey helpers (`auth.passkeys`) need no FastAPI; the routes are `auth.router`, behind
+the `fastapi` extra, and the passkey routes need the `passkeys` extra (py_webauthn) too.
+Not in this cut: the 2FA routes, the demo session, a company scope and `user_admin_router`
+(0.30); the hooks are generic so they can come later.
+
+**Mounting it**, once per app, beside the app's own routers:
+
+```python
+from eifi1_server_kit.auth import AuthLimiters
+from eifi1_server_kit.auth.passkeys import RelyingParty
+from eifi1_server_kit.auth.router import AuthDeps, auth_router, current_user, invitations_admin_router
+from eifi1_server_kit.auth.service import AccountLinks, AccountPolicy
+
+deps = AuthDeps(
+    users=user_store,
+    sessions=session_store,
+    tokens=token_store,
+    invitations=invitation_store,
+    log=admin_action_log,
+    after_commit=after_commit,
+    hooks=account_hooks,  # dependencies
+    signer=jwt_signer,
+    hasher=bcrypt_hasher,
+    mailer=mailer,
+    mail_backend=settings.mail_backend,
+    policy=AccountPolicy(
+        app="staunlabor",
+        app_name="Staunlabor",
+        contact="support@staunlabor.app",
+        links=AccountLinks(base_url=settings.app_base_url),
+        bootstrap=parse_env_list(settings.admin_emails),
+    ),
+    passkeys=passkey_store,
+    relying_party=RelyingParty(rp_id="staunlabor.app", rp_name="Staunlabor", origins=("https://staunlabor.app",)),
+    client_address=caller_address,  # the app's client_ip(..., trusted_hops=vouched_hops(...))
+)
+app.include_router(auth_router(deps), prefix="/api/v1")
+app.include_router(invitations_admin_router(deps), prefix="/api/v1")
+app.state.auth_limiters = AuthLimiters()
+install_contract_error_handlers(app)
+```
+
+`current_user(deps)` is the dependency every other router reuses (`FeedbackDeps.actor`, the
+review's reviewer: a mapping from that user, never a second bearer check), and
+`admin_guard(deps)` is built on it; `account_service(deps)` answers the request's
+`AccountService` for an app's own routes beside the kit's. Each is one callable per
+`AuthDeps`, so FastAPI runs it once per request.
+
+| Area | Names |
+|---|---|
+| Ports (`auth.ports`) | `AccountRow` (read-only; `is_demo` and the `iat` cut-off `sessions_invalid_before` optional), `UserStore[UserT]` (`get`, `by_email`, `by_emails`, `count_people`, `count_active(role=)` (0.29), `add(NewAccount)`, `apply(row, changes)` with `ACCOUNT_FIELDS` keys only, `delete`); `SessionRow`, `SessionStore` (`start(NewSession)`, `get`, `touch`, `end`, `end_all(user_id, keep=)`, `live`); `OneTimeTokenRow`, `OneTimeTokenStore` (`put`, `take`, `pending`, `drop`); `InvitationRow`, `InvitationStore` (`get`, `by_token_hash`, `open_for`, `listing`, `add(NewInvitation)`, `remint`, `accept`, `revoke`); `PasskeyRow`, `PasskeyStore` (`for_user`, `by_credential_id`, `add(NewPasskey)`, `used`, `rename`, `remove`, `spend_challenge`); `AdminActionLog`; `AfterCommit` (`later`, `commit_now`); `TokenSigner` (`sign`, `verify`); `PasswordHasher` (`hash`, `verify`) |
+| Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…)`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
+| Routes (`auth.router`) | `AuthDeps` (below), `auth_router(deps, *, prefix="/auth", tags=("auth",))`, `invitations_admin_router(deps, *, prefix="/admin/invitations", tags=("admin",), guard=None)`, `current_user(deps)`, `admin_guard(deps)`, `account_service(deps)`, `app_state_limiters`, `peer_address`, `no_hooks` |
+| Mails (`auth.mails`) | `AccountMailText` (`password_reset`, `verification`, `email_change`, `email_change_notice`, `invitation`, `account_deletion`, `account_deletion_operator`, `passkey_added_notice`), `ACCOUNT_MAIL_TEXTS` (seven languages each, `de-CH` formal with "ss"), `ACCOUNT_MAIL_KINDS` (the `kind` each is sent under), `ACCOUNT_MAIL_VALUES` (the placeholders each fills), `account_mail_texts(overrides)`, `mail_date(when, locale)` |
+| Passkeys (`auth.passkeys`) | `RelyingParty(rp_id, rp_name, origins)`, `registration_options`, `authentication_options`, `verify_registration` → `VerifiedPasskey`, `verify_authentication`, `credential_id_of`, `user_handle_of`, `PasskeyCheckError`, `DEFAULT_PASSKEY_NAME`, `base64url_encode` / `_decode`; py_webauthn imported only here, lazily |
+| Wire shapes (`auth`, 0.29) | `SetPasswordRequest`, `PasswordChangeRequest`, `TokenRequest`, `PasswordResetRequest` / `Confirm` / `State`, `EmailVerificationStatus`, `EmailChangeState`, `EmailChangeConfirmed`, `InvitationCheck`, `InvitationAccepted`, `SessionInfo`, `DeletionTerms`, `DeletionResult`, `PasskeyOptions`, `PasskeyRegistrationBegin` / `Finish`, `PasskeyLoginFinish`, `PasskeyRename`, `PasskeyResponse`; `user_admin.InvitationIssued` |
+| Limits (0.29) | `AuthLimiters(…, redeem=REDEEM_PER_IP, refresh=REFRESH_PER_IP, password_check=PASSWORD_CHECK_PER_ACCOUNT, email_change=EMAIL_CHANGE_PER_ACCOUNT, export=EXPORT_PER_ACCOUNT)`; the old windows as they were |
+
+**`AuthDeps`** (frozen, compared by identity): the dependencies `users`, `sessions`, `tokens`,
+`invitations`, `log`, `after_commit`, `hooks` (default `no_hooks`) and `passkeys` (mounts the
+passkey routes, with `relying_party`; one without the other is a `ValueError`); the objects
+`signer`, `hasher`, `mailer`, `mail_backend` (an admin's answer carries a link only while it
+is `"console"`), `policy`, `relying_party`; `demo_guard` (the app's factory for the
+never-list routes, as `FeedbackDeps` takes it); the app's bodies `register_model`,
+`profile_model`, `password_change_model`, `set_password_model`, `email_change_model`,
+`deletion_model`, `invitation_create_model`, `passkey_login_model`; the app's answers
+`me_model`, `token_model` (default `TokenResponse[me_model]`), `challenge_model`,
+`reset_state_model`, `invitation_check_model`, `invitation_accepted_model`,
+`invitation_row_model`, `invitation_issued_model`, `deletion_terms_model`,
+`deletion_result_model`; and `mail_texts` (the app's table in place of a kind; checked when
+the router is built), `client_address`, `limiters`, `now`, `sleep`.
+
+**`AuthHooks`** — what differs between the apps (§12.2's six seams), every member an optional
+coroutine; the `hooks` dependency answers them per request, on the request's own session, so a
+hook writes in the request's transaction. Each may raise a kit refusal; a mapping it answers
+rides on the route's answer, which the app's answer model declares.
+
+| Hook | Called | Seam |
+|---|---|---|
+| `on_register(user, invitation \| None, body)` | a sign-up, with its invitation (`None` for the first account) and the app's `register_model` body | 1 |
+| `on_invitation_redeemed(user, invitation)` | `/invitations/accept`; an address confirmation's open invitations | 1 |
+| `describe_invitation(invitation)` → extras | the check, the accept and the admin's rows (a team's name) | 1 |
+| `invitation_scope(admin, scope)` → stored mapping | an admin's `scope`; without it a scope is `invitation_scope_invalid` | 1 |
+| `claims(user, session)` → extra claims | every access token minted; may refuse a refresh | 2 |
+| `bind(user, claims)` | every signed-in request, after the kit's checks; may refuse | 2 |
+| `password_changing(user, body)` → extras | before a voluntary or forced change (keksdose's key wrap) | 3 |
+| `challenge_extras(user)` → extras | the forced change's challenge (keksdose's `encrypted`) | 3 |
+| `reset_extras(user, confirmed)` → extras | the reset's check (`False`) and confirm (`True`) | 3 |
+| `passkey_extensions(user \| None, ceremony)` → extensions | both ceremonies' options (keksdose's `prf`) | 3 |
+| `passkey_removing(user, passkey)` | before a passkey goes; may refuse | 3 |
+| `sessions_ended(user, reason)` | every "every session ends": `logout_everywhere`, `password_changed`, `password_reset`, `forced_change`, `deletion_requested` (and 0.30's `deactivated`) | 4 |
+| `deletion_terms(user)` → extras | `GET /auth/me/deletion` (Kurvenschmiede's hand-over count) | 5 |
+| `on_deletion_requested(user)` → extras | after the deactivation, before the mail | 5 |
+| `on_deletion_withdrawn(user)` | `withdraw_deletion` (0.30's admin) | 5 |
+| `export_data(user)` → `data` | the export's `data` | 5 |
+| `to_me(user)` → the app's `me_model` | `/auth/me` and every token answer's user | 6 |
+
+**The work after the commit** (`AfterCommit`, §12.5 item 2): the kit never commits but where
+a route's answer says whether its mail went out (an address change and its re-send, the
+verification's re-send, an invitation and its re-send, a deletion request): there it calls
+`commit_now()` and then sends, so a rollback never mails a dead link and the answer is true.
+Every other mail (the sign-up's verification, the reset, the passkey notice) goes to
+`later()`. The app's adapter commits the request's session in `commit_now` and runs the
+`later` queue from its session's commit event, each item on its own, dropping it on a
+rollback (Kurvenschmiede's `send_after_commit`).
+
+| Route | Answer | Codes | Limit |
+|---|---|---|---|
+| `POST /auth/register` | 201 `token_model` | `invitation_invalid`, `invitation_expired`, `registration_closed`, `email_taken` | `register` (IP) |
+| `POST /auth/login` | `token_model` or `challenge_model` | `invalid_credentials` | `login` (IP), `login_failures` (delay) |
+| `POST /auth/login/set-password` | `token_model` | `token_invalid`, `password_change_not_required`, `password_unchanged` | `challenge` (IP), `challenge_subject` |
+| `POST /auth/refresh` | `token_model` | `session_ended` | `refresh` (IP) |
+| `POST /auth/logout` | 204 | bearer | — |
+| `GET /auth/sessions` | `[SessionInfo]`, `current` marked | bearer | — |
+| `DELETE /auth/sessions/current` | 204, also when ended | `not_signed_in` | — |
+| `DELETE /auth/sessions/{session_id}` | 204 | `session_not_found` | — |
+| `GET` / `PATCH /auth/me` | `me_model` | bearer, 422 | — |
+| `POST /auth/me/password` | `token_model` (a fresh pair) | `password_incorrect`, `password_unchanged`, `demo_refused` | `password_check` |
+| `GET /auth/me/email` | `EmailChangeState` | bearer | — |
+| `POST /auth/me/email` | 202 `EmailChangeState` with `sent` | `password_incorrect`, `email_unchanged`, `email_taken`, `demo_refused` | `email_change`, `password_check`, `verification_resend` (recipient) |
+| `POST /auth/me/email/resend` | `EmailChangeState` with `sent` | `email_change_not_pending` | `email_change`, `verification_resend` |
+| `DELETE /auth/me/email` | 204 | bearer | — |
+| `POST /auth/me/email/confirm` | `EmailChangeConfirmed` | `token_invalid`, `token_expired`, `email_taken` | `redeem` (IP) |
+| `GET /auth/me/deletion` | `deletion_terms_model` | bearer | — |
+| `POST /auth/me/deletion` | 202 `deletion_result_model` | `password_incorrect`, `confirmation_required`, `confirmation_mismatch`, `last_admin`, `demo_refused` | `password_check` |
+| `GET /auth/me/export` | the JSON download | `demo_refused` | `export` |
+| `POST /auth/verify-email` | `EmailVerificationStatus` | `token_invalid`, `token_expired` | `redeem` |
+| `POST /auth/resend-verification` | `EmailVerificationStatus` | `mail_not_sent` (503) | `verification_resend` |
+| `POST /auth/password-reset/request` | 204, always | — | `reset_ip`, `reset_address` |
+| `POST /auth/password-reset/check` / `confirm` | `reset_state_model`, no tokens | `token_invalid`, `token_expired` | `redeem` |
+| `POST /auth/invitations/check` | `invitation_check_model` | `invitation_invalid`, `invitation_expired` | `redeem` |
+| `POST /auth/invitations/accept` | `invitation_accepted_model` | `invitation_invalid`, `invitation_expired`, `demo_refused` | `redeem` |
+| `POST /auth/passkey/register/begin` | `PasskeyOptions` | `password_incorrect`, `demo_refused` | `password_check` |
+| `POST /auth/passkey/register/finish` | 201 `PasskeyResponse` | `passkey_registration_refused` (400) | — |
+| `POST /auth/passkey/login/begin` | `PasskeyOptions` | — | — |
+| `POST /auth/passkey/login/finish` | `token_model` or `challenge_model` | `passkey_refused` (401) | `login` (IP) |
+| `GET /auth/passkeys`, `PATCH` / `DELETE /auth/passkeys/{passkey_id}` | `[PasskeyResponse]`, `PasskeyResponse`, 204 | `passkey_not_found` | — |
+| `GET /admin/invitations` | `[invitation_row_model]` | `admin_required` | — |
+| `POST /admin/invitations`, `POST /admin/invitations/{id}/resend` | 201 / 200 `invitation_issued_model` (`link` on the console only) | `invitation_scope_invalid`, `invitation_not_found`, `invitation_closed` | `verification_resend` (recipient) |
+| `DELETE /admin/invitations/{id}` | 204 (also when revoked before) | `invitation_not_found`, `invitation_closed` | — |
+
+"Bearer" is `401 not_signed_in` (with `WWW-Authenticate: Bearer`) without a usable access
+token and `401 session_ended` once its session is over; nothing else on a signed-in route
+answers 401.
+
+- **What the kit settles** (§12.5): session rows and a `sid` in both tokens; sign-up checks the
+  invitation, then the gate, then `email_taken`; the first account is the admin, an
+  invitation names the role, its exact address counts as verified (a tagged one gets its own
+  link); every refusal is coded; every anonymous redemption, the refresh and every signed-in
+  password check is limited, charged before the work; a forced change and a reset end every
+  session; a reset also verifies the address and answers no tokens; only open, unexpired
+  invitations attach at an address confirmation; every pending address change ends with the
+  sessions; passkeys are usernameless with user verification required (so a passkey sign-in
+  counts as both factors), and each challenge answers once (`spend_challenge`, after the
+  signature: only a genuine answer learns it is spent).
+- **The `iat` cut-off** is stamped only where the app's row has `sessions_invalid_before`
+  (keksdose, Kurvenschmiede, until every token carries a `sid`); a new app ends sessions
+  through the rows alone. Tokens minted in the same flow as a cut-off are stamped a
+  millisecond after it.
+- **The edge and the per-IP windows** are the limiter's (`client_ip`, `vouched_hops`): the
+  router keys every IP window by the app's `client_address` and needs nothing else.
 
 ### `eifi1_server_kit.user_admin`
 
@@ -1688,17 +1856,17 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.28.0/eifi1_server_kit-0.28.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.29.0/eifi1_server_kit-0.29.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15) or a cloud object store (`[gcs]`, `[s3]`, 0.26), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
+With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15), a cloud object store (`[gcs]`, `[s3]`, 0.26) or the account layer's passkeys and ready tables (`[passkeys]`, `[sql]`, 0.29, with `[fastapi]`), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
 
 ```toml
 [project]
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.28.0/eifi1_server_kit-0.28.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.29.0/eifi1_server_kit-0.29.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —

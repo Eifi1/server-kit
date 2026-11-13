@@ -123,6 +123,14 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
     # A submodule an app imports by its own path, not re-exported by its package: layer 2's
     # routes, behind the `fastapi` extra.
     public |= {
+        # The account layer (0.29): its ports, service, mails and passkeys, beside its routes.
+        "eifi1_server_kit.auth.mails",
+        "eifi1_server_kit.auth.passkeys",
+        "eifi1_server_kit.auth.ports",
+        "eifi1_server_kit.auth.router",
+        "eifi1_server_kit.auth.service",
+        # The ready account tables and their stores (decision C), behind the `sql` extra.
+        "eifi1_server_kit.auth.sql",
         "eifi1_server_kit.feedback.router",
         "eifi1_server_kit.notifications.router",
         "eifi1_server_kit.tours.router",

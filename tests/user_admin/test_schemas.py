@@ -23,6 +23,7 @@ from eifi1_server_kit.user_admin import (
     EmailChangeRequest,
     GroupRef,
     InvitationCreate,
+    InvitationIssued,
     InvitationRow,
     InvitationStatus,
     MailKind,
@@ -148,6 +149,23 @@ def test_a_mail_answer_carries_a_link_only_on_the_console() -> None:
     assert MailResult(sent=False, mail_backend="resend").link is None
     with pytest.raises(ValidationError, match="only while mail goes to the console"):
         MailResult(sent=True, mail_backend="resend", link="https://app.example/r?t=1")
+
+
+def test_an_invitation_answer_carries_its_link_only_on_the_console_too() -> None:
+    """0.29: the account layer's create and re-send answer, under MailResult's rule."""
+    row = {
+        "id": 1,
+        "email": "bob@example.com",
+        "locale": "en",
+        "created_at": "2026-11-13T12:00:00Z",
+        "expires_at": "2026-11-27T12:00:00Z",
+        "status": "open",
+        "sent": True,
+        "link": "https://app.example/register?invite=t",
+    }
+    assert InvitationIssued.model_validate({**row, "mail_backend": MAIL_BACKEND_CONSOLE}).link
+    with pytest.raises(ValidationError, match="only while mail goes to the console"):
+        InvitationIssued.model_validate({**row, "mail_backend": "resend"})
 
 
 def test_reviewer_update() -> None:
