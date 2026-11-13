@@ -51,6 +51,10 @@ gcs = ["google-cloud-storage>=3.0.0"]
 # `S3InvoiceFileStore` does against storage.googleapis.com with an HMAC pair; imported
 # lazily. keksdose's floor, no ceiling.
 s3 = ["minio>=7.2.20"]
+# `auth.router`'s passkey routes (layer 2, 0.29) verify the browser's WebAuthn answers with
+# py_webauthn, as all three apps do; `auth.passkeys` imports it lazily, so the account routes
+# without passkeys, the ports and the service need nothing. The apps' floor, no ceiling.
+passkeys = ["webauthn>=2.0.0"]
 
 [project.urls]
 Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"
@@ -90,6 +94,9 @@ dev = [
     # The `sync` extra, so the stamping hook and the tombstone filter are tested on SQLite
     # in memory.
     "sqlalchemy>=2.0.0",
+    # The `passkeys` extra, so the passkey ceremonies are tested against py_webauthn's own
+    # verification, with a software authenticator in the tests (no browser).
+    "webauthn>=2.0.0",
 ]
 
 [build-system]
