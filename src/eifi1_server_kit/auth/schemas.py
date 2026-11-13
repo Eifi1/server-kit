@@ -456,3 +456,227 @@ def apply_zone_update(
                 setattr(user, name, value)
             written[name] = value
     return written
+
+
+# --- the account layer's wire shapes (0.29, §12) ------------------------------------------
+#
+# The requests and answers of ``auth.router``'s routes that layer 1 had no shape for. The
+# names are keksdose's where it had one (the reference, §12 "where the contract is silent"),
+# and every class may be subclassed like the ones above: ``AuthDeps`` takes the app's
+# subclass of each body it reads and each answer an app extends.
+
+#: A one-time token as it arrives in a body: a link's, an invitation's. Bounded, no shape
+#: rule: an unknown token is the route's coded refusal, never a 422.
+_Token = Annotated[str, Field(min_length=1, max_length=256)]
+#: A signed challenge token (a JWT): longer than a one-time token.
+_ChallengeToken = Annotated[str, Field(min_length=1, max_length=4096)]
+
+
+class SetPasswordRequest(BaseModel):
+    """``POST /auth/login/set-password {challenge_token, new_password}`` (§5.1; keksdose
+    ``ForcedPasswordSetRequest``): the new password an admin required, set from the sign-in's
+    challenge. No current password: the sign-in that minted the challenge proved who this
+    is, by password or by passkey."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: _ChallengeToken
+    new_password: NewPassword
+
+
+class PasswordChangeRequest(BaseModel):
+    """``POST /auth/me/password {current_password, new_password}`` (§6.3; keksdose
+    ``SignInPasswordChangeRequest``, which adds its key wrap in a subclass)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: ExistingPassword
+    new_password: NewPassword
+
+
+class TokenRequest(BaseModel):
+    """``{token}``: the body of ``/verify-email``, ``/password-reset/check`` and
+    ``/invitations/check`` and ``/accept`` (keksdose ``EmailVerifyRequest``,
+    ``InvitationTokenRequest``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: _Token
+
+
+class PasswordResetRequest(BaseModel):
+    """``POST /auth/password-reset/request {email}``: always ``204`` (§4.5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: Email
+
+
+class PasswordResetConfirm(TokenRequest):
+    """``POST /auth/password-reset/confirm {token, new_password}``: no tokens in the answer
+    (§6.3: a reset is not a sign-in)."""
+
+    new_password: NewPassword
+
+
+class PasswordResetState(BaseModel):
+    """The answer of ``/password-reset/check`` and ``/confirm``: which account the link
+    resets, told to whoever holds the link (who holds the inbox). An app's fields ride in a
+    subclass (keksdose's ``encrypted``, its revoked API tokens) through ``reset_extras``."""
+
+    email: str
+
+
+class EmailVerificationStatus(BaseModel):
+    """``/verify-email`` and ``/resend-verification`` (keksdose's shape): which address, and
+    whether it is verified."""
+
+    email: str
+    email_verified: bool
+
+
+class EmailChangeState(BaseModel):
+    """``GET /auth/me/email`` and the answers of the request and its re-send (user-admin §6.2;
+    keksdose ``EmailChangeState``, with Kurvenschmiede's ``pending_expires_at``): the address
+    now, the change it waits on, and whether this answer's mail went out (``None`` on the
+    GET, which sent none)."""
+
+    email: str
+    pending_email: str | None = None
+    pending_expires_at: UtcDateTime | None = None
+    sent: bool | None = None
+
+
+class EmailChangeConfirmed(BaseModel):
+    """``POST /auth/me/email/confirm`` (user-admin §6.2): the new address, verified, and how
+    many open invitations for it were attached (§12.5 item 9)."""
+
+    email: str
+    email_verified: Literal[True] = True
+    invitations_attached: int = 0
+
+
+class InvitationCheck(BaseModel):
+    """``POST /auth/invitations/check {token}`` (§4.4): what an invitation is for, without
+    spending it. ``email`` fixes the sign-up's address (the kit's ``invitedEmail``);
+    ``account_exists`` sends the page to sign-in and accept instead (Kurvenschmiede). The
+    app's scope words (a team's name) ride in a subclass through ``describe_invitation``."""
+
+    email: str
+    expires_at: UtcDateTime
+    account_exists: bool
+    role: str | None = None
+
+
+class InvitationAccepted(BaseModel):
+    """``POST /auth/invitations/accept {token}``: the invitation an existing account took up
+    (§4.4). What it attached is the app's (``on_invitation_redeemed``), and the words for it
+    ride in a subclass through ``describe_invitation`` (Kurvenschmiede's team name, keksdose's
+    budget)."""
+
+    email: str
+    role: str | None = None
+
+
+class SessionInfo(BaseModel):
+    """One row of ``GET /auth/sessions`` (§6.3, user-admin §6.3): a signed-in device, the
+    caller's own marked ``current`` (§12.5 item 1). ``id`` is the session's ``sid``, which
+    ``DELETE /auth/sessions/{id}`` ends."""
+
+    id: str
+    device: str | None = None
+    ip_address: str | None = None
+    started_at: UtcDateTime
+    last_active: UtcDateTime
+    expires_at: UtcDateTime
+    shared_device: bool = False
+    current: bool = False
+
+
+class DeletionTerms(BaseModel):
+    """``GET /auth/me/deletion`` (user-admin §6.4; Kurvenschmiede ``DeletionTerms``): what a
+    deletion would do, said before it is asked for. ``days`` is ``None`` in ``operator``
+    mode, which promises no date. The app's counts ride in a subclass through
+    ``deletion_terms`` (Kurvenschmiede's ``hand_over_count``)."""
+
+    mode: Literal["after_days", "operator"]
+    days: int | None = None
+
+
+class DeletionResult(BaseModel):
+    """``POST /auth/me/deletion`` answers ``202`` (keksdose ``AccountDeletionResponse``): when
+    the erasure runs (``None`` in ``operator`` mode) and whether the confirming mail went out.
+    The app's outcomes (keksdose's revoked tokens, the guests told) ride in a subclass
+    through ``on_deletion_requested``."""
+
+    deletion_scheduled_at: UtcDateTime | None = None
+    mail_sent: bool
+
+
+# --- passkeys (0.29, §12.5 item 8) --------------------------------------------------------
+
+#: What the browser hands back from ``navigator.credentials``, serialised by
+#: ``@simplewebauthn/browser``: passed to py_webauthn as it is, which parses and refuses it
+#: far more precisely than a schema could (Kurvenschmiede ``WebAuthnCredentialJson``).
+WebAuthnCredentialJson = dict[str, Any]
+#: A passkey's name, as the account page shows it.
+MAX_PASSKEY_NAME_LENGTH = 120
+
+
+class PasskeyOptions(BaseModel):
+    """A ceremony's first half: the options for ``navigator.credentials``, and the signed
+    challenge token the second half brings back."""
+
+    options: dict[str, Any]
+    challenge_token: str
+
+
+class PasskeyRegistrationBegin(BaseModel):
+    """``POST /auth/passkey/register/begin {current_password}`` (Kurvenschmiede): a passkey
+    outlives a password change, a reset and every sign-out, so a session alone (a bench PC
+    left open) must not be enough to add one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: ExistingPassword
+
+
+class PasskeyRegistrationFinish(BaseModel):
+    """``POST /auth/passkey/register/finish {challenge_token, credential, name}``. A blank
+    name becomes ``"Passkey"``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: _ChallengeToken
+    credential: WebAuthnCredentialJson
+    name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=MAX_PASSKEY_NAME_LENGTH)] = ""
+
+
+class PasskeyLoginFinish(SharedDeviceChoice):
+    """``POST /auth/passkey/login/finish {challenge_token, credential, shared_device}``: the
+    usernameless sign-in's second half; ``shared_device`` as the password sign-in's (§5.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: _ChallengeToken
+    credential: WebAuthnCredentialJson
+
+
+class PasskeyRename(BaseModel):
+    """``PATCH /auth/passkeys/{id} {name}``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_PASSKEY_NAME_LENGTH)]
+
+
+class PasskeyResponse(BaseModel):
+    """One passkey as the account page lists it: no credential id and no key (user-admin
+    §6.5: a passkey leaves as its name, created and last used)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    created_at: UtcDateTime
+    last_used_at: UtcDateTime | None = None

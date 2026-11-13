@@ -57,6 +57,7 @@ __all__ = [
     "EmailChangeRequest",
     "GroupRef",
     "InvitationCreate",
+    "InvitationIssued",
     "InvitationRow",
     "InvitationStatus",
     "MailKind",
@@ -393,6 +394,22 @@ class InvitationRow(BaseModel):
     expires_at: datetime
     status: InvitationStatus
     link: str | None = None
+
+
+class InvitationIssued(InvitationRow):
+    """The answer to ``POST /admin/invitations`` and ``POST /admin/invitations/{id}/resend``
+    (§5; 0.29, the account layer): the row, whether its mail went out, and the transport —
+    :class:`MailResult`'s rule, so ``link`` is answered only while mail goes to the console
+    (§12.5 item 11 of the auth contract: an app without a transport shows the link once)."""
+
+    sent: bool
+    mail_backend: str
+
+    @model_validator(mode="after")
+    def _link_only_on_the_console(self) -> Self:
+        if self.link is not None and self.mail_backend != MAIL_BACKEND_CONSOLE:
+            raise ValueError("an invitation answer carries its link only while mail goes to the console")
+        return self
 
 
 # --- §6: the account's own settings -----------------------------------------------------
