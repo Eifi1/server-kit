@@ -10,7 +10,9 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
-The account layer (docs/auth-harmonization.md §12, Marcel 2026-11-13: the kits take sign-in,
+## [0.29.0] (2026-11-13)
+
+server-kit 0.29.0: the account layer (docs/auth-harmonization.md §12, Marcel 2026-11-13: the kits take sign-in,
 sign-up and the account over completely). A **minor**: new modules and names, **nothing
 breaking** (every change to an existing name is additive). Staunlabor is the first app on it.
 
@@ -55,8 +57,24 @@ breaking** (every change to an existing name is additive). Staunlabor is the fir
   `email_change` and `export` (per account), keksdose's numbers (`REDEEM_PER_IP`,
   `REFRESH_PER_IP`, `PASSWORD_CHECK_PER_ACCOUNT`, `EMAIL_CHANGE_PER_ACCOUNT`,
   `EXPORT_PER_ACCOUNT`); the old windows and constructor are as they were.
-* **auth.ports:** `UserStore.count_active(*, role)`, the last-admin rule's count (an adapter
-  adds it).
+* **auth.ports:** the ports the account layer runs on, each app's adapters or the `sql`
+  extra's stores: `AccountRow` (``is_demo`` and the ``iat`` cut-off optional), `UserStore`
+  (with `count_active(*, role)`, the last-admin rule's count), `SessionRow`/`SessionStore`
+  (0.27's rows), `OneTimeTokenRow`/`OneTimeTokenStore` (reset, verification, address change),
+  `InvitationRow`/`InvitationStore` (the scope opaque), `PasskeyRow`/`PasskeyStore` (one use per
+  challenge), `AdminActionRowView`/`AdminActionLog`, `AfterCommit` (`later`, `commit_now`),
+  `TokenSigner` and `PasswordHasher`, with the orders, defaults and edges each promises.
+* **auth.sql** (decision C, Staunlabor): the account tables as SQLAlchemy declarative mixins
+  (`users`, `user_sessions`, `one_time_tokens`, `invitations`, `passkeys` with the spent
+  challenges, `admin_actions`) and the stores over them, plus `SqlAfterCommit` (the work runs
+  after the session's commit, dropped on a rollback), behind the new **`sql` extra**
+  (`sqlalchemy[asyncio]>=2.0.0`). An app with one role and the global scope inherits them, adds
+  its columns and writes its own migration.
+* **auth.testing** (Staunlabor): in-memory stores for every port, `InMemoryAfterCommit`,
+  `FakePasswordHasher`, `HmacTokenSigner`, and a `check_*` contract suite per port that an
+  app runs against its own adapters (each check fails on a store that breaks it); and
+  `auth.soft_webauthn`'s `SoftAuthenticator` for passkey tests without a browser (user
+  verification switchable), re-exported lazily.
 
 ## [0.28.0] (2026-11-13)
 
