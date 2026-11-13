@@ -1,5 +1,6 @@
 """The ports the account service runs on: the rows, the sessions, the links, the invitations,
-the passkeys, the admin log, the work after the commit, and the app's JWT signer.
+the passkeys, the admin log, the work after the commit, and the app's JWT signer and
+password hasher.
 
 Layer 2 (``docs/auth-harmonization.md`` §12 in ``Eifi1/ui-kit``, on the pattern of
 :mod:`eifi1_server_kit.feedback.ports`). Each app implements these over its own session and
@@ -46,6 +47,7 @@ __all__ = [
     "OneTimeTokenStore",
     "PasskeyRow",
     "PasskeyStore",
+    "PasswordHasher",
     "SessionRow",
     "SessionStore",
     "TokenSigner",
@@ -497,3 +499,15 @@ class TokenSigner(Protocol):
 
     def verify(self, token: str) -> Mapping[str, Any] | None:
         """The claims of a token this app signed and that has not expired, or None."""
+
+
+class PasswordHasher(Protocol):
+    """The app's password hashing (the kit depends on no hasher, ``auth.passwords``): bcrypt
+    in all four apps, its cost the app's setting. The kit refuses a password over
+    ``MAX_PASSWORD_BYTES`` before it asks."""
+
+    def hash(self, password: str) -> str:
+        """A new hash of the password."""
+
+    def verify(self, password: str, password_hash: str) -> bool:
+        """Whether the password matches the hash; never raises for a malformed hash."""
