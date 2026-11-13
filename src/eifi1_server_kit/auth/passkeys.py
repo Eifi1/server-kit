@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -52,6 +53,8 @@ __all__ = [
     "verify_registration",
 ]
 
+logger = logging.getLogger(__name__)
+
 #: What a passkey added with a blank name is called (Kurvenschmiede ``DEFAULT_NAME``): the
 #: same word in every language the apps speak.
 DEFAULT_PASSKEY_NAME = "Passkey"
@@ -66,7 +69,8 @@ def rp_id_fits(rp_id: str, origin: str) -> bool:
     ``https://www.staunlabor.app``; ``localhost`` fits ``http://localhost:5176`` and not
     ``http://192.168.1.20:5176``), held once for :class:`RelyingParty` and an app's boot
     check, which may only warn on a developer's machine (Staunlabor's and Kurvenschmiede's
-    ``webauthn_rp_id_fits``, 0.29).
+    ``webauthn_rp_id_fits``, 0.29). An app that only mounts passkeys where they can work asks
+    it before it builds a :class:`RelyingParty`.
 
     It does not know the public suffix list (``app`` alone fits ``https://staunlabor.app``
     here and is refused by every browser): that refusal is the browser's, and a second copy
@@ -85,12 +89,13 @@ class RelyingParty:
     ``localhost`` in development), ``rp_name`` what the authenticator shows, and ``origins``
     the exact page origins an answer may come from (``https://staunlabor.app``).
 
-    Since 0.30 every origin must fit the RP id (:func:`rp_id_fits`), or construction is a
-    :class:`ValueError` naming each that does not: a browser refuses every ceremony on such a
-    page, in the person's browser and in no log, so the mistake is caught where it is made.
-    An app whose development page does not fit (a dev server opened over the LAN) asks
-    :func:`rp_id_fits` first and builds no relying party there; its passkey routes stay
-    unmounted and the password still works."""
+    Every origin should fit the RP id (:func:`rp_id_fits`): a browser refuses every ceremony
+    on a page that does not, in the person's browser and in no log. Since 0.30 construction
+    says so, once, as a WARNING naming the RP id and each origin that does not fit, and
+    builds all the same, as 0.29 did: a dev server opened over the LAN still starts and its
+    passwords work, and a wrong RP id opens nothing, since the browser refuses the ceremony.
+    An app that would rather not offer passkeys where they cannot work asks
+    :func:`rp_id_fits` first and builds no relying party there."""
 
     rp_id: str
     rp_name: str
@@ -103,9 +108,11 @@ class RelyingParty:
             raise ValueError("origins are one or more http(s) origins")
         misfits = [origin for origin in self.origins if not rp_id_fits(self.rp_id, origin)]
         if misfits:
-            raise ValueError(
-                f"rp_id {self.rp_id!r} does not fit {', '.join(map(repr, misfits))}: it is neither"
-                " the origin's host nor a suffix of it at a dot, so no browser runs a passkey ceremony there"
+            logger.warning(
+                "The passkeys' rp_id %r does not fit %s: it is neither the origin's host nor a suffix of it"
+                " at a dot, so no browser runs a passkey ceremony there",
+                self.rp_id,
+                ", ".join(map(repr, misfits)),
             )
 
 
