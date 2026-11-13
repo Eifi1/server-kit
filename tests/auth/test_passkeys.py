@@ -11,6 +11,7 @@ from eifi1_server_kit.auth.passkeys import (
     base64url_encode,
     credential_id_of,
     registration_options,
+    rp_id_fits,
     user_handle_of,
     verify_registration,
 )
@@ -30,6 +31,49 @@ RP = RelyingParty(rp_id="app.example", rp_name="App", origins=("https://app.exam
 def test_a_relying_party_is_a_lower_case_domain_and_its_origins(rp_id: str, origins: tuple[str, ...]) -> None:
     with pytest.raises(ValueError):
         RelyingParty(rp_id=rp_id, rp_name="App", origins=origins)
+
+
+@pytest.mark.parametrize(
+    ("rp_id", "origin"),
+    [
+        ("app.example", "https://app.example"),
+        ("app.example", "https://www.app.example"),
+        ("app.example", "https://APP.example:8443/path"),
+        ("localhost", "http://localhost:5176"),
+        ("staunlabor.app", "https://staunlabor.app"),
+    ],
+)
+def test_an_rp_id_fits_its_origin_s_host_or_a_suffix_of_it_at_a_dot(rp_id: str, origin: str) -> None:
+    assert rp_id_fits(rp_id, origin) is True
+
+
+@pytest.mark.parametrize(
+    ("rp_id", "origin"),
+    [
+        ("app.example", "https://other.example"),
+        ("app.example", "https://evilapp.example"),  # a suffix, but not at a dot
+        ("www.app.example", "https://app.example"),  # longer than the host
+        ("localhost", "http://192.168.1.20:5176"),  # a dev server reached over the LAN
+        ("app.example", "https://app.example.evil"),
+        ("", "https://app.example"),
+        ("app.example", "https://"),
+        ("app.example", "http://[::1"),
+    ],
+)
+def test_an_rp_id_that_is_not_its_origin_s_host_nor_a_suffix_does_not_fit(rp_id: str, origin: str) -> None:
+    assert rp_id_fits(rp_id, origin) is False
+
+
+def test_a_relying_party_whose_rp_id_does_not_fit_an_origin_is_refused_naming_it() -> None:
+    """A browser refuses every ceremony for such an origin, in the person's browser and in no
+    log, so the mistake is the construction's."""
+    with pytest.raises(ValueError, match=r"rp_id 'app\.example' does not fit 'https://other\.example': it is neither"):
+        RelyingParty(rp_id="app.example", rp_name="App", origins=("https://app.example", "https://other.example"))
+
+
+def test_every_origin_under_the_rp_id_is_a_relying_party_s() -> None:
+    both = RelyingParty(rp_id="app.example", rp_name="App", origins=("https://app.example", "https://www.app.example"))
+    assert both.origins == ("https://app.example", "https://www.app.example")
 
 
 def test_base64url_round_trips_and_refuses_anything_else() -> None:
