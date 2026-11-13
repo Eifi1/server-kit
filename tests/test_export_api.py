@@ -131,6 +131,11 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         "eifi1_server_kit.auth.service",
         # The ready account tables and their stores (decision C), behind the `sql` extra.
         "eifi1_server_kit.auth.sql",
+        # The admin half (0.30): its ports, scope and service, beside its routes.
+        "eifi1_server_kit.user_admin.ports",
+        "eifi1_server_kit.user_admin.router",
+        "eifi1_server_kit.user_admin.scope",
+        "eifi1_server_kit.user_admin.service",
         "eifi1_server_kit.feedback.router",
         "eifi1_server_kit.notifications.router",
         "eifi1_server_kit.tours.router",
