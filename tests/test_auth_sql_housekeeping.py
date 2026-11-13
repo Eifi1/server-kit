@@ -267,6 +267,43 @@ async def test_a_naive_horizon_is_taken_as_utc(session: AsyncSession) -> None:
     assert await store.prune(before=BEFORE.replace(tzinfo=None)) == 2
 
 
+async def test_a_frozen_clock_ahead_of_the_real_one_admits_a_horizon_up_to_it(session: AsyncSession) -> None:
+    """An app's test with a frozen clock passes it as ``now``: its horizon is the test's."""
+    store = await _sessions(session)
+    frozen = utc_now() + timedelta(days=400)
+    with pytest.raises(ValueError, match="has not passed"):
+        await store.prune(before=frozen)  # the real clock has not got there
+    assert await store.prune(before=frozen - timedelta(days=30), now=frozen) == 5
+    assert await store.prune(before=frozen, now=frozen.replace(tzinfo=None)) == 0  # naive: UTC
+
+
+async def test_the_refusal_is_relative_to_the_clock_given(session: AsyncSession) -> None:
+    store = await _sessions(session)
+    earlier = NOW - timedelta(days=60)
+    with pytest.raises(ValueError, match="has not passed"):
+        await store.prune(before=BEFORE, now=earlier)  # passed by the real clock, not by this one
+    with pytest.raises(ValueError, match="has not passed"):
+        await prune_account_rows(before=BEFORE, now=earlier, sessions=store)
+    assert len(await _sids(session)) == 5
+
+
+async def test_the_job_hands_its_clock_to_every_store(session: AsyncSession) -> None:
+    """Each store checks the horizon against the job's ``now``, not against the real clock."""
+    sessions = await _sessions(session)
+    passkeys = SqlPasskeyStore(session, Passkey, SpentChallenge)
+    await passkeys.spend_challenge("c" * 64, expires_at=NOW)
+    links = SqlOneTimeTokenStore(session, OneTimeToken)
+    ada = await _user(session, "links@example.org")
+    await links.put(OneTimeTokenKind.VERIFICATION, user_id=ada.id, token_hash="v", email=ada.email, expires_at=NOW)
+    invitations, _ = await _invitations(session)
+    frozen = utc_now() + timedelta(days=400)
+    pruned = await prune_account_rows(
+        before=frozen, now=frozen, sessions=sessions, passkeys=passkeys, links=links, invitations=invitations
+    )
+    # Everything has expired by then; the accepted invitation and the allow-list entry stay.
+    assert pruned == AccountPrune(sessions=5, challenges=1, links=1, invitations=5)
+
+
 async def test_pruning_challenges_deletes_the_expired_ones_which_may_then_be_spent_again(
     session: AsyncSession,
 ) -> None:
