@@ -800,3 +800,33 @@ def test_the_software_authenticator_is_loaded_through_the_testing_module_on_firs
     assert testing.SoftCredential is soft_webauthn.SoftCredential
     with pytest.raises(AttributeError, match="has no attribute 'Nothing'"):
         testing.Nothing  # noqa: B018
+
+
+async def test_check_user_store_fails_on_an_apply_that_drops_a_foreign_key() -> None:
+    class DropsForeign(InMemoryUserStore):
+        async def apply(self, row: MemoryAccountRow, changes: Mapping[str, Any]) -> MemoryAccountRow:
+            return await super().apply(row, {name: value for name, value in changes.items() if name in ACCOUNT_FIELDS})
+
+    with pytest.raises(AssertionError, match="apply: a key outside ACCOUNT_FIELDS raises ValueError"):
+        await check_user_store(DropsForeign())
+
+
+async def test_check_session_store_fails_on_live_without_the_sid_tie_break() -> None:
+    class NoTieBreak(InMemorySessionStore):
+        async def live(self, user_id: int) -> Sequence[MemorySessionRow]:
+            rows = [row for row in self.rows.values() if row.user_id == user_id and row.is_active]
+            return sorted(rows, key=lambda row: row.last_active, reverse=True)
+
+    with pytest.raises(AssertionError, match="live: the higher sid first on a tie"):
+        await check_session_store(NoTieBreak(), user_id=1, other_user_id=2)
+
+
+async def test_check_session_store_fails_on_a_session_that_starts_idle() -> None:
+    class StartsIdle(InMemorySessionStore):
+        async def start(self, new: NewSession) -> MemorySessionRow:
+            row = await super().start(new)
+            row.last_active = new.started_at - timedelta(hours=1)
+            return row
+
+    with pytest.raises(AssertionError, match="start: last_active is started_at"):
+        await check_session_store(StartsIdle(), user_id=1, other_user_id=2)

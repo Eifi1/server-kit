@@ -351,7 +351,7 @@ class InMemorySessionStore:
 
     async def live(self, user_id: int) -> Sequence[MemorySessionRow]:
         rows = [row for row in self.rows.values() if row.user_id == user_id and row.is_active]
-        return sorted(rows, key=lambda row: (row.last_active, row.started_at), reverse=True)
+        return sorted(rows, key=lambda row: (row.last_active, row.sid), reverse=True)
 
 
 class InMemoryOneTimeTokenStore:
@@ -892,6 +892,12 @@ async def check_user_store(
     )
     await store.apply(second, _ACCOUNT_CLEARS)
     _check_written(_found(await store.get(second.id), "apply: get still finds the account"), _ACCOUNT_CLEARS, "apply")
+    try:
+        await store.apply(second, {"no_such_member": token})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("apply: a key outside ACCOUNT_FIELDS raises ValueError, never drops silently")
 
     # 4. A demo account is no person.
     if add_demo is not None:
@@ -924,9 +930,7 @@ async def check_session_store(store: SessionStore[Any], *, user_id: int, other_u
     ``user_id`` and ``other_user_id`` are two existing accounts (the rows' foreign key). The
     check ends every session of ``user_id``, so pass an account made for it; of
     ``other_user_id`` it starts one session and ends only that one. Every ``expires_at`` lies
-    ahead, so a store whose ``live`` also leaves out an expired session passes too. Not
-    checked: what ``last_active`` a new session starts with (the port does not say); the
-    check sets it with ``touch`` before it reads the order.
+    ahead, so a store whose ``live`` also leaves out an expired session passes too.
     """
     _two_accounts(user_id, other_user_id)
     token = secrets.token_hex(8)
@@ -959,7 +963,7 @@ async def check_session_store(store: SessionStore[Any], *, user_id: int, other_u
     _check_written(first, _fields(plain), "start")
     _check_written(shared, _fields(shared_new), "start")
     _check(all(row.is_active is True for row in (first, shared, third, others)), "start: a new session is active")
-    _check(isinstance(first.last_active, datetime), "start: last_active is set")
+    _check(_same_instant(first.last_active, plain.started_at), "start: last_active is started_at")
     found = await store.get(first.sid)
     _check(found is not None and found.sid == first.sid, "get: the session by its sid")
     _check(await store.get(f"check-{token}-absent") is None, "get: an unknown sid is None")
@@ -980,6 +984,9 @@ async def check_session_store(store: SessionStore[Any], *, user_id: int, other_u
     _check(
         ours == [shared.sid, third.sid, first.sid], "live: all three, the latest activity first, not the latest start"
     )
+    await store.touch(third, last_active=at(10), expires_at=at(172_800))
+    tied = [row.sid for row in await store.live(user_id) if row.sid in {shared.sid, third.sid}]
+    _check(tied == [third.sid, shared.sid], "live: the higher sid first on a tie")
     _check(others.sid in {row.sid for row in await store.live(other_user_id)}, "live: another account's own session")
 
     # 3. end: the row stays and is no longer active; ending it twice is no error.

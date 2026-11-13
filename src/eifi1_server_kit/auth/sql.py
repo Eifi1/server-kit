@@ -515,7 +515,7 @@ class SqlSessionStore[SessionT: SessionColumns]:
         rows = await self._session.scalars(
             select(model)
             .where(model.user_id == user_id, model.is_active.is_(True))
-            .order_by(model.last_active.desc(), model.sid)
+            .order_by(model.last_active.desc(), model.sid.desc())
         )
         return list(rows)
 
