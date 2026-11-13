@@ -22,11 +22,16 @@ app writes the same nine tables again, and the copies drift the way the routes d
 * :class:`AdminActionColumns`: the activity log, the fields
   :func:`~eifi1_server_kit.user_admin.admin_action_record` returns, plus ``scope``.
 
+0.30 adds no table and no column: :class:`SqlRosterStore` (the admin's user list, the
+overview's counts and the erasure job's candidates, :mod:`eifi1_server_kit.user_admin.ports`)
+reads the account table as it is, and :meth:`SqlInvitationStore.forget_accepted` deletes rows
+of the invitations table as it is.
+
 **The stores** implement :mod:`~eifi1_server_kit.auth.ports` over models built from these
 mixins, on the request's ``AsyncSession``: :class:`SqlUserStore`, :class:`SqlSessionStore`,
 :class:`SqlOneTimeTokenStore`, :class:`SqlInvitationStore`, :class:`SqlPasskeyStore`,
 :class:`SqlAdminActionLog`, and :class:`SqlAfterCommit` for the work that waits for the
-commit. Every write flushes and none commits, but :meth:`SqlAfterCommit.commit_now`, the one
+commit; and since 0.30 :class:`SqlRosterStore`. Every write flushes and none commits, but :meth:`SqlAfterCommit.commit_now`, the one
 place the port allows it. A store sets only mapped attributes: a value for a column the
 model lacks (a kastlan ``company_id`` on a log without one) is a :class:`ValueError`, never
 a plain attribute the flush silently leaves out.
@@ -59,6 +64,7 @@ try:
         JSON,
         BigInteger,
         Boolean,
+        ColumnElement,
         CursorResult,
         DateTime,
         ForeignKey,
@@ -68,12 +74,16 @@ try:
         String,
         TypeDecorator,
         UniqueConstraint,
+        and_,
         delete,
         event,
+        false,
         func,
+        or_,
         select,
         update,
     )
+    from sqlalchemy import cast as sql_cast
     from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.dialects.postgresql import insert as postgresql_insert
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -90,6 +100,9 @@ from eifi1_server_kit.auth.ports import ACCOUNT_FIELDS, NewAccount, NewInvitatio
 from eifi1_server_kit.auth.schemas import MAX_NAME_LENGTH, MAX_ZONE_LENGTH
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.clock import utc_now
+from eifi1_server_kit.translation_review.scope import LIKE_ESCAPE
+from eifi1_server_kit.user_admin.ports import RosterCounts
+from eifi1_server_kit.user_admin.roster import UserListQuery
 
 __all__ = [
     "ACCOUNTS_TABLE",
@@ -108,6 +121,7 @@ __all__ = [
     "SqlInvitationStore",
     "SqlOneTimeTokenStore",
     "SqlPasskeyStore",
+    "SqlRosterStore",
     "SqlSessionStore",
     "SqlUserStore",
 ]
@@ -630,6 +644,120 @@ class SqlInvitationStore[InvT: InvitationColumns]:
     async def revoke(self, invitation: InvT, *, at: datetime) -> None:
         invitation.revoked_at = at
         await self._session.flush()
+
+    async def forget_accepted(self, user_id: int) -> Sequence[str]:
+        """0.30's :class:`~eifi1_server_kit.user_admin.ports.AcceptedInvitations`: an erasure
+        deletes the invitations the account accepted (their ``accepted_by_user_id`` would be
+        ``SET NULL`` and keep the address), and answers their addresses for the log's scrub."""
+        model = self._model
+        rows = list(await self._session.scalars(select(model).where(model.accepted_by_user_id == user_id)))
+        for row in rows:
+            await self._session.delete(row)
+        await self._session.flush()
+        return [row.email for row in rows]
+
+
+class SqlRosterStore[UserT: AccountColumns]:
+    """:class:`~eifi1_server_kit.user_admin.ports.RosterStore` over a model built from
+    :class:`AccountColumns` (0.30): the admin's user list, the overview's counts and the
+    erasure job's candidates, people only — ``is_demo`` accounts left out where the model has
+    :class:`DemoAccountColumn`; an app with a system account of its own subclasses and narrows
+    :meth:`people`, as with :class:`SqlUserStore`. An app that sorts by a column of its own
+    (keksdose's ``plan``) subclasses and widens :meth:`sort_columns`."""
+
+    def __init__(self, session: AsyncSession, model: type[UserT]) -> None:
+        self._session = session
+        self._model = model
+
+    def people(self) -> ColumnElement[bool] | None:
+        """The ``WHERE`` clause of an account that is a person, or ``None`` for every row."""
+        demo = getattr(self._model, "is_demo", None)
+        return None if demo is None else demo.is_(False)
+
+    def sort_columns(self) -> Mapping[str, tuple[Any, ...]]:
+        """The columns of each sort key, in order (user-admin §3.1)."""
+        model = self._model
+        return {
+            "name": (model.last_name, model.first_name),
+            "email": (model.email,),
+            "role": (model.role,),
+            "created": (model.created_at,),
+            "last_login": (model.last_login_at,),
+        }
+
+    def _where(self, *clauses: ColumnElement[bool] | None) -> list[ColumnElement[bool]]:
+        return [clause for clause in (self.people(), *clauses) if clause is not None]
+
+    def _has_locales(self) -> ColumnElement[bool]:
+        # JSON: a scope set to None is stored as JSON null on some databases, not SQL NULL;
+        # through text both read alike, and an empty list grants nothing either.
+        text = func.coalesce(sql_cast(self._model.translation_review_locales, String), "null")
+        return text.not_in(("null", "[]"))
+
+    def _state(self, token: str, admin_role: str, reviewer_role: str | None) -> ColumnElement[bool]:
+        model = self._model
+        states: dict[str, ColumnElement[bool]] = {
+            "active": model.is_active.is_(True),
+            "deactivated": model.is_active.is_(False),
+            "unverified": model.email_verified_at.is_(None),
+            "verified": model.email_verified_at.is_not(None),
+            "password_change_required": model.password_change_required_at.is_not(None),
+            "deletion_scheduled": model.deletion_requested_at.is_not(None),
+            "never_logged_in": model.last_login_at.is_(None),
+            "admin": model.role == admin_role,
+            "reviewer": model.role == reviewer_role if reviewer_role is not None else self._has_locales(),
+        }
+        # ``invited`` and an app's own token: no account row of the kit's is one.
+        return states.get(token, false())
+
+    def _search(self, pattern: str) -> ColumnElement[bool]:
+        model = self._model
+        full = model.first_name + " " + model.last_name
+        reverse = model.last_name + " " + model.first_name
+        columns = (model.email, model.first_name, model.last_name, full, reverse)
+        return or_(*(column.ilike(pattern, escape=LIKE_ESCAPE) for column in columns))
+
+    async def page(
+        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None
+    ) -> tuple[Sequence[UserT], int]:
+        model = self._model
+        columns = self.sort_columns()
+        if unknown := [sort.key for sort in query.sort if sort.key not in columns]:
+            raise ValueError(f"the roster sorts by no {', '.join(unknown)}")
+        pattern = query.search_pattern
+        where = self._where(
+            None if pattern is None else self._search(pattern),
+            model.role.in_(query.role) if query.role else None,
+            or_(*(self._state(token, admin_role, reviewer_role) for token in query.state)) if query.state else None,
+        )
+        total = await self._session.scalar(select(func.count()).select_from(model).where(*where))
+        order = [
+            (column.desc() if descending else column.asc()).nulls_last()
+            for key, descending in query.sort
+            for column in columns[key]
+        ]
+        rows = await self._session.scalars(
+            select(model).where(*where).order_by(*order, model.id.asc()).limit(query.limit).offset(query.offset)
+        )
+        return list(rows), int(total or 0)
+
+    async def counts(self, *, since: datetime) -> RosterCounts:
+        model = self._model
+        query = select(
+            func.count(),
+            func.count().filter(model.created_at >= since),
+            func.count().filter(model.deletion_requested_at.is_not(None)),
+        ).select_from(model)
+        people, new, deletion_requests = (await self._session.execute(query.where(*self._where()))).one()
+        return RosterCounts(people=int(people), new=int(new), deletion_requests=int(deletion_requests))
+
+    async def deletion_requested(self) -> Sequence[int]:
+        model = self._model
+        asked = and_(model.deletion_requested_at.is_not(None), model.is_active.is_(False))
+        rows = await self._session.scalars(
+            select(model.id).where(*self._where(asked)).order_by(model.deletion_requested_at, model.id)
+        )
+        return list(rows)
 
 
 def _insert_once(model: type[object], values: Mapping[str, Any], dialect: str) -> Insert:

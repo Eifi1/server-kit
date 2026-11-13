@@ -447,6 +447,14 @@ class InMemoryInvitationStore:
         else:
             invitation.revoked_at = at
 
+    async def forget_accepted(self, user_id: int) -> Sequence[str]:
+        """0.30's optional :class:`~eifi1_server_kit.user_admin.ports.AcceptedInvitations`: an
+        erasure deletes the invitations the account accepted, and scrubs their addresses."""
+        gone = [row for row in self.rows.values() if row.accepted_by_user_id == user_id]
+        for row in gone:
+            del self.rows[row.id]
+        return [row.email for row in gone]
+
 
 class InMemoryPasskeyStore:
     """A :class:`~eifi1_server_kit.auth.ports.PasskeyStore` of :class:`MemoryPasskeyRow`, with
