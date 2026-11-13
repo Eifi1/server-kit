@@ -10,6 +10,67 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.27.0] (2026-11-13)
+
+server-kit 0.27.0: the backend half of round 0.62 (ui-kit 0.62) — Marcel, 2026-11-12/13: a
+session started on a computer marked as shared ends on the server's own clock, and every
+sign-out ends the session on the server. A **minor** with **one breaking change**
+(`app_base_url` is required in every mail key). Per-app steps: ui-kit's `docs/adopt-0.62.md`,
+the server-kit 0.27 section.
+
+### ⚠ BREAKING CHANGES
+
+* **notifications:** `MailMarker.idempotency_key(day, *, app_base_url)` and
+  `QueueService(queue, port, *, app_base_url, limit=QUEUE_FLUSH_LIMIT)` require `app_base_url`.
+  0.23 put the app's host into the Resend Idempotency-Key but left it optional, so a call site
+  that forgot it silently brought back the collision between two apps on one Resend team. Left
+  out it is Python's `TypeError`; `None` (a setting nobody set) is a `TypeError` saying the base
+  URL is required, so a `QueueService` refuses it when it is built. The 0.22 key without the
+  host is gone. The apps' code already passes it (keksdose `notification_queue_service.py`,
+  kastlan `overdue_mail.py`; Kurvenschmiede uses neither); an app test that builds either
+  without it must add it.
+
+### Added
+
+* **auth:** a shared computer's session ends on the server, 15 minutes idle or 4 hours. Chrome
+  and Firefox restore a closed tab with its `sessionStorage`, so the tab storage alone does not
+  end a shared session (kastlan's finding).
+  - `SharedDeviceChoice`, mixed into `LoginRequest` and `RegisterRequest`: `shared_device`,
+    false when the form leaves it out. An app adds it to its passkey finish.
+  - A challenge carries the choice to the step that starts the session:
+    `challenge_claims(..., shared_device=True)` and
+    `two_factor_challenge_claims(..., shared_device=True)` write `SHARED_DEVICE_CLAIM`
+    (`"shared_device"`), only when ticked; `shared_device_of(claims)` reads it back (anything
+    but missing, null or false reads as shared, the shorter life).
+  - `auth.sessions`: `SessionPolicy` (frozen; `access_lifetime` 24 h, `refresh_lifetime` 30 d,
+    `shared_idle` 15 min, `shared_absolute` 4 h, `shared_access_lifetime` 5 min),
+    `session_expired`, `session_expires_at`, `refresh_lifetime` and `access_lifetime`. A shared
+    session ends `shared_idle` after its last refresh or `shared_absolute` after it started; a
+    normal one `refresh_lifetime` after its last refresh. A shared access token lives at most
+    5 minutes, so somebody at work refreshes about every five and stays in until the 4 hours,
+    and a session left alone ends 10 to 15 minutes after its last request; a policy whose
+    shared access token is not shorter than the idle limit is refused.
+  - The README's auth section names the three call sites (minting a pair, `/auth/refresh`,
+    every request) and the sign-out contract: the client revokes its own session
+    (`DELETE /auth/sessions/current`) before it drops its tokens.
+* **objects:** `exists(key)` and `check()` on the port and every backend, `ensure_bucket()` on
+  `LocalObjectStore` and `S3ObjectStore` (keksdose's needs before it moves onto the store).
+  - `exists` reads the object's metadata, never its bytes; `False` means absent and only that,
+    a store that cannot say raises `ObjectStoreError`.
+  - `check()` makes one cheap request for a readiness probe and raises unless the store is
+    reachable and its bucket is there; it makes nothing. Cloud Storage lists at most one object,
+    which `roles/storage.objectUser` allows.
+  - `ensure_bucket()` is opt-in, for a development MinIO at the app's start; no save ever makes
+    a bucket, and `GcsObjectStore` has none.
+  - `ObjectStore` gains two members: an app's own implementation adds them (none of the three
+    apps has one).
+
+### Documentation
+
+* Kurvenschmiede keeps its feedback in plain text and has no customers: the notes in
+  `feedback`, `dev_switch` and `user_admin.audit` (and the README) no longer name its sealed
+  titles or its CUSTOMER role.
+
 ## [0.26.0] (2026-11-12)
 
 server-kit 0.26.0: one object store for the apps' stored files (Marcel, 2026-11-12:

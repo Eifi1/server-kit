@@ -39,9 +39,8 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.26 ↔ ui-kit 0.61**: that ui-kit
-release is tested against server-kit 0.25's API export, and 0.26 only adds `objects`, which no
-ui-kit part reads (the ui-kit showcase's Server kit pages
+package with its own version and changelog. **server-kit 0.27 ↔ ui-kit 0.62**: that ui-kit
+release is tested against this release's API export (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
 `server-kit-api.json`).
@@ -1651,7 +1650,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.26.0/eifi1_server_kit-0.26.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.27.0/eifi1_server_kit-0.27.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15) or a cloud object store (`[gcs]`, `[s3]`, 0.26), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -1661,7 +1660,7 @@ With the image guard, the Resend client, the Paddle client, a router, the sync s
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.26.0/eifi1_server_kit-0.26.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.27.0/eifi1_server_kit-0.27.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —
