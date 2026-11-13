@@ -10,6 +10,25 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.28.0] (2026-11-13)
+
+server-kit 0.28.0: the edge-token proof for the per-IP windows, ahead of the account layer
+(Marcel, 2026-11-13: keksdose, Kurvenschmiede and Staunlabor get the fixes as soon as
+possible). A **minor**: one new public name, **nothing breaking**; `client_ip` is unchanged.
+
+### Added
+
+* **limiter:** `vouched_hops(headers, *, trusted_hops, edge_header, edge_token) -> int`,
+  keksdose's `trusted_hops()` (audit 2026-10-12 B-1) lifted with the header's name as a
+  parameter. A Cloud Run backend's `run.app` URL is public, so a request that skips the edge
+  gets ONE appended `X-Forwarded-For` entry; with three hops trusted the window keyed on an
+  entry the caller wrote (Staunlabor measured 150 of 150 forged requests through the sign-in
+  window). Only a request carrying the edge's secret header, set by Caddy (`header_up`),
+  exactly once and equal in constant time, keeps every hop; any other counts one hop, the
+  caller. Zero or one hop needs no proof; above one with no token configured it answers one
+  and warns once per process (the safe error). The README shows the Caddy line and how to
+  measure it after a deploy.
+
 ## [0.27.0] (2026-11-13)
 
 server-kit 0.27.0: the backend half of round 0.62 (ui-kit 0.62) — Marcel, 2026-11-12/13: a

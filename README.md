@@ -39,8 +39,9 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.27 ↔ ui-kit 0.62**: that ui-kit
-release is tested against this release's API export (the ui-kit showcase's Server kit pages
+package with its own version and changelog. **server-kit 0.28 ↔ ui-kit 0.62**: that ui-kit
+release is tested against server-kit 0.27's API export, and 0.28 only adds
+`limiter.vouched_hops`, which no ui-kit part reads (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
 `server-kit-api.json`).
@@ -294,6 +295,43 @@ ip = client_ip(
     request.headers, request.client.host if request.client else None, trusted_hops=settings.trusted_proxy_hops
 )
 ```
+
+**A public backend URL needs the edge token: `vouched_hops(headers, *, trusted_hops,
+edge_header, edge_token)`** (0.28, keksdose's audit B-1). The hop count describes one path
+(Google's front end, the edge Caddy, the backend's own front end), but a Cloud Run backend's
+`run.app` URL is public too. A request sent there directly gets ONE appended entry, so with
+three hops trusted the entry the window keys on is one the caller wrote itself: Staunlabor
+measured 150 of 150 forged requests through the sign-in window (2026-11-13), and the same
+held for every app without keksdose's fix. The edge proves itself with a secret header it
+SETS, and only a request that carries it is counted with every hop; any other is counted from
+the one entry its own front end appended, the caller:
+
+```python
+hops = vouched_hops(
+    request.headers,
+    trusted_hops=settings.trusted_proxy_hops,
+    edge_header="x-keksdose-edge",  # the app's own name
+    edge_token=settings.edge_token,  # a secret, from the secret store
+)
+ip = client_ip(request.headers, request.client.host if request.client else None, trusted_hops=hops)
+```
+
+```caddyfile
+reverse_proxy {$BACKEND_URL} {
+    header_up X-Keksdose-Edge {$EDGE_TOKEN}  # sets the header: replaces what the browser sent
+}
+```
+
+- Zero or one hop needs no token. Above one without a token configured, every request counts
+  one hop and the kit logs a warning once: all callers share the edge's window, which limits
+  too much, never too little.
+- The value must arrive exactly once (Caddy's `header_up` without `+` replaces), compared in
+  constant time.
+- **Measure it** after a deploy: send more requests than a window allows (the sign-in's 30 in
+  5 minutes) straight to the backend's `run.app` URL, each with a fresh made-up
+  `X-Forwarded-For: 203.0.113.N, 198.51.100.N`. Unprotected, none is refused; protected, the
+  requests past the budget answer 429. Then the same through the public address: the
+  person's own window, not the edge's.
 
 ### `eifi1_server_kit.cors`
 
@@ -1650,7 +1688,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.27.0/eifi1_server_kit-0.27.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.28.0/eifi1_server_kit-0.28.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15) or a cloud object store (`[gcs]`, `[s3]`, 0.26), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -1660,7 +1698,7 @@ With the image guard, the Resend client, the Paddle client, a router, the sync s
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.27.0/eifi1_server_kit-0.27.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.28.0/eifi1_server_kit-0.28.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —
