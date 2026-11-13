@@ -168,13 +168,32 @@ def _as_utc(value: datetime) -> datetime:
 UtcDateTime = Annotated[datetime, AfterValidator(_as_utc)]
 
 
-class RegisterRequest(BaseModel):
+class SharedDeviceChoice(BaseModel):
+    """The sign-in's "This is a shared computer" (ui-kit's ``SharedComputerChoice``; 0.27).
+
+    On every request that starts a session: :class:`LoginRequest` and :class:`RegisterRequest`
+    (Marcel 2026-11-13: registering starts a session as a sign-in does) have it, and an app
+    mixes it into its passkey finish (``class PasskeyLoginFinishRequest(SharedDeviceChoice): …``), which
+    the kit has no schema for. ``True`` starts a shared session, with the short life of
+    :class:`~eifi1_server_kit.auth.SessionPolicy`; a step between the form and the session
+    (the 2FA code, a required password change) carries it in its challenge
+    (``challenge_claims(…, shared_device=…)``).
+    """
+
+    #: Ticked on the sign-in form. ``false`` when left out, so a client from before the box
+    #: signs in as before; a boolean, never ``null``.
+    shared_device: bool = False
+
+
+class RegisterRequest(SharedDeviceChoice):
     """``POST /auth/register`` (§4.2; keksdose ``UserCreate``).
 
     ``{email, password, first_name, last_name, locale, invite_token?}`` plus the app's
     fields in its subclass (kastlan's company, keksdose's currency). Unknown fields are
     refused: a role or a company id sent by a client is a 422, not silently dropped —
     they come from the invitation or the app's default, never from the form (§4.3).
+    ``shared_device`` (0.27, :class:`SharedDeviceChoice`): a new account made on a computer
+    marked as shared gets the same short session as a sign-in there.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -192,22 +211,6 @@ class RegisterRequest(BaseModel):
     device_timezone: Annotated[str | None, BeforeValidator(_known_zone_or_none)] = Field(
         default=None, max_length=MAX_ZONE_LENGTH
     )
-
-
-class SharedDeviceChoice(BaseModel):
-    """The sign-in's "This is a shared computer" (ui-kit's ``SharedComputerChoice``; 0.27).
-
-    On every request that signs in: :class:`LoginRequest` has it, and an app mixes it into
-    its passkey finish (``class PasskeyLoginFinishRequest(SharedDeviceChoice): …``), which
-    the kit has no schema for. ``True`` starts a shared session, with the short life of
-    :class:`~eifi1_server_kit.auth.SessionPolicy`; a step between the form and the session
-    (the 2FA code, a required password change) carries it in its challenge
-    (``challenge_claims(…, shared_device=…)``).
-    """
-
-    #: Ticked on the sign-in form. ``false`` when left out, so a client from before the box
-    #: signs in as before; a boolean, never ``null``.
-    shared_device: bool = False
 
 
 class LoginRequest(SharedDeviceChoice):

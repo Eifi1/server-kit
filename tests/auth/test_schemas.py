@@ -463,3 +463,13 @@ def test_the_zone_update_writes_the_report_and_nothing_for_a_demo() -> None:
     assert apply_zone_update(demo, patch, is_demo=True) == {}
     assert demo.device_timezone is None
     assert PROFILE_ZONE_FIELDS == ("device_timezone",)
+
+
+def test_registering_on_a_shared_computer_says_so() -> None:
+    """0.27 (Marcel 2026-11-13): registering starts a session, so it carries the choice too;
+    ``false`` when the form leaves it out."""
+    from eifi1_server_kit.auth import RegisterRequest
+
+    form = {"email": "ada@example.com", "password": "correct horse battery", "first_name": "Ada", "last_name": "L"}
+    assert RegisterRequest.model_validate(form).shared_device is False
+    assert RegisterRequest.model_validate({**form, "shared_device": True}).shared_device is True
