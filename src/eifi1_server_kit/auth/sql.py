@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal, cast
 
@@ -61,6 +61,7 @@ try:
         Boolean,
         CursorResult,
         DateTime,
+        Delete,
         ForeignKey,
         Insert,
         Integer,
@@ -95,6 +96,7 @@ __all__ = [
     "ACCOUNTS_TABLE",
     "EMAIL_WIDTH",
     "AccountColumns",
+    "AccountPrune",
     "AdminActionColumns",
     "DemoAccountColumn",
     "InvitationColumns",
@@ -112,6 +114,7 @@ __all__ = [
     "SqlUserStore",
     "UtcDateTime",
     "alembic_render_item",
+    "prune_account_rows",
 ]
 
 logger = logging.getLogger(__name__)
@@ -537,6 +540,21 @@ class SqlSessionStore[SessionT: SessionColumns]:
         )
         return list(rows)
 
+    async def prune(self, *, before: datetime) -> int:
+        """Delete the sessions that ended or expired before ``before`` and answer how many:
+        the inactive rows whose ``last_active`` is before it (an ended row keeps no time of
+        its ending, so its last activity stands for it), and every row whose ``expires_at``
+        is before it, ended or not. A row that is gone answers as an ended one: a token
+        naming it is ``session_ended``.
+
+        Not on the port (:class:`~eifi1_server_kit.auth.ports.SessionStore`), and run by no
+        route: a scheduled job's, through :func:`prune_account_rows`, which says why. Flushes
+        first, commits nothing; ``before`` must have passed."""
+        model = self._model
+        horizon = _horizon(before)
+        ended = model.is_active.is_(False) & (model.last_active < horizon)
+        return await _prune(self._session, delete(model).where(ended | (model.expires_at < horizon)))
+
 
 class SqlOneTimeTokenStore[TokenT: OneTimeTokenColumns]:
     """:class:`~eifi1_server_kit.auth.ports.OneTimeTokenStore` over a model built from
@@ -585,6 +603,15 @@ class SqlOneTimeTokenStore[TokenT: OneTimeTokenColumns]:
             .execution_options(synchronize_session="fetch")
         )
 
+    async def prune(self, *, before: datetime) -> int:
+        """Delete the links of every kind that expired before ``before`` and answer how many.
+        An expired link only ever answers ``token_expired``; gone, it answers
+        ``token_invalid``, and the person asks for a new one either way. Not on the port; see
+        :func:`prune_account_rows`. Flushes first, commits nothing; ``before`` must have
+        passed."""
+        model = self._model
+        return await _prune(self._session, delete(model).where(model.expires_at < _horizon(before)))
+
 
 class SqlInvitationStore[InvT: InvitationColumns]:
     """:class:`~eifi1_server_kit.auth.ports.InvitationStore` over a model built from
@@ -617,6 +644,20 @@ class SqlInvitationStore[InvT: InvitationColumns]:
             select(model).where(model.accepted_at.is_(None)).order_by(model.created_at.desc(), model.id.desc())
         )
         return list(rows)
+
+    async def prune(self, *, before: datetime) -> int:
+        """Delete the invitations that were never accepted and expired or were revoked before
+        ``before``, and answer how many. They leave the admin's list (which shows expired and
+        revoked ones, :meth:`listing`): one pruned cannot be re-sent, a new one is. An
+        accepted invitation stays, whatever its dates (it records how its account came in),
+        and so does an allow-list entry carried over, which has no expiry. Not on the port;
+        see :func:`prune_account_rows`. Flushes first, commits nothing; ``before`` must have
+        passed."""
+        model = self._model
+        horizon = _horizon(before)
+        # A NULL date compares as unknown, so a row is gone only by a date it has.
+        gone = (model.expires_at < horizon) | (model.revoked_at < horizon)
+        return await _prune(self._session, delete(model).where(model.accepted_at.is_(None), gone))
 
     async def add(self, new: NewInvitation) -> InvT:
         values = {field.name: getattr(new, field.name) for field in fields(new)}
@@ -698,6 +739,16 @@ class SqlPasskeyStore[PasskeyT: PasskeyColumns, ChallengeT: SpentChallengeColumn
             self._challenges, {"challenge_hash": challenge_hash, "expires_at": expires_at}, dialect
         )
         return _rowcount(await self._session.execute(statement)) == 1
+
+    async def prune(self, *, before: datetime) -> int:
+        """Delete the spent challenges that expired before ``before`` and answer how many. A
+        challenge past its expiry is refused by its own token, so its row guards nothing any
+        more; one that has not expired yet is what refuses a replay, which is why ``before``
+        must have passed. The passkeys themselves are never pruned. Not on the port (whose
+        ``spend_challenge`` may sweep on its own; this one does not); see
+        :func:`prune_account_rows`. Flushes first, commits nothing."""
+        challenges = self._challenges
+        return await _prune(self._session, delete(challenges).where(challenges.expires_at < _horizon(before)))
 
 
 class SqlAdminActionLog[ActionT: AdminActionColumns]:
@@ -820,3 +871,96 @@ def alembic_render_item(type_: str, obj: object, autogen_context: Any) -> str | 
         prefix = autogen_context.opts.get("sqlalchemy_module_prefix", "sa.") or ""
         return f"{prefix}DateTime(timezone=True)"
     return False
+
+
+# ── Pruning ─────────────────────────────────────────────────────────────────
+
+
+def _horizon(before: datetime) -> datetime:
+    """``before`` as an aware instant (a naive one is UTC, as :class:`UtcDateTime` takes it),
+    refused when it has not passed: a row that expires later is still in use (a session, a
+    link, a challenge that refuses a replay), so a horizon ahead of the clock is a slip of
+    the sign, never a retention."""
+    horizon = before.replace(tzinfo=UTC) if before.tzinfo is None else before
+    if horizon > utc_now():
+        raise ValueError(f"prune before an instant that has passed: {horizon.isoformat()} has not passed yet")
+    return horizon
+
+
+async def _prune(session: AsyncSession, statement: Delete) -> int:
+    """Flush, so a change this unit of work made counts even without autoflush, then delete,
+    taking the rows out of the session too ("fetch"); answer how many went."""
+    await session.flush()
+    return _rowcount(await session.execute(statement.execution_options(synchronize_session="fetch")))
+
+
+@dataclass(frozen=True, slots=True)
+class AccountPrune:
+    """How many rows :func:`prune_account_rows` deleted, per table; 0 for a store it was not
+    given."""
+
+    #: Sessions that ended or expired (:meth:`SqlSessionStore.prune`).
+    sessions: int = 0
+    #: Spent passkey challenges past their expiry (:meth:`SqlPasskeyStore.prune`).
+    challenges: int = 0
+    #: Reset, verification and address-change links past theirs (:meth:`SqlOneTimeTokenStore.prune`).
+    links: int = 0
+    #: Invitations never accepted, expired or revoked (:meth:`SqlInvitationStore.prune`).
+    invitations: int = 0
+
+    @property
+    def total(self) -> int:
+        """Every row deleted."""
+        return self.sessions + self.challenges + self.links + self.invitations
+
+
+async def prune_account_rows(
+    *,
+    before: datetime,
+    sessions: SqlSessionStore[Any] | None = None,
+    passkeys: SqlPasskeyStore[Any, Any] | None = None,
+    links: SqlOneTimeTokenStore[Any] | None = None,
+    invitations: SqlInvitationStore[Any] | None = None,
+) -> AccountPrune:
+    """Delete, through each store given, the rows that were done with before ``before``, and
+    answer how many went: an app's scheduled job. Each store's ``prune`` says which rows.
+
+    **Why.** The account tables keep rows that no request reads again, and nothing in the
+    kit deletes them: the ports have no prune, and a route does the person's work, not the
+    housekeeping. Left alone they stay **for ever**, and some carry personal data:
+
+    * an ended or expired **session** keeps the address it was signed in from
+      (``ip_address``) and the browser's User-Agent description (``device``). A privacy
+      policy has to say how long those are kept (storage limitation, GDPR Art. 5(1)(e)), and
+      "indefinitely" is no answer it can give;
+    * an expired **link** keeps an address (an address change's, the NEW one), and an
+      invitation never taken up keeps the invitee's address and the admin's note;
+    * **spent challenges** carry nothing personal, but grow by one row per passkey ceremony.
+
+    ``before`` is the app's retention, the one its privacy policy names
+    (``utc_now() - timedelta(days=30)``), and must have passed: a horizon ahead of the clock
+    is refused before anything is deleted. An app that keeps one table longer than another
+    calls the stores' ``prune`` itself. Accounts, passkeys, the admin log and accepted
+    invitations are not this job's.
+
+    Every store flushes and none commits: the caller's transaction is the job's, e.g. a
+    scheduler's route behind :func:`~eifi1_server_kit.jobs.require_jobs_token` on the
+    request's unit of work, or a command::
+
+        async with database.sessions() as session, session.begin():
+            pruned = await prune_account_rows(
+                before=utc_now() - timedelta(days=30),
+                sessions=SqlSessionStore(session, UserSession),
+                passkeys=SqlPasskeyStore(session, Passkey, SpentChallenge),
+                links=SqlOneTimeTokenStore(session, OneTimeToken),
+                invitations=SqlInvitationStore(session, Invitation),
+            )
+        logger.info("Pruned %d account rows: %s", pruned.total, pruned)
+    """
+    horizon = _horizon(before)
+    return AccountPrune(
+        sessions=0 if sessions is None else await sessions.prune(before=horizon),
+        challenges=0 if passkeys is None else await passkeys.prune(before=horizon),
+        links=0 if links is None else await links.prune(before=horizon),
+        invitations=0 if invitations is None else await invitations.prune(before=horizon),
+    )

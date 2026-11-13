@@ -5,6 +5,7 @@ in memory, as ``test_auth_sql``; a schema of its own, so the two files share not
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,24 +15,39 @@ from alembic import op
 from alembic.autogenerate import compare_metadata, produce_migrations, render_python_code
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import String, create_engine, inspect
+from sqlalchemy import String, create_engine, func, inspect, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import StaticPool
 
 from eifi1_server_kit.auth import sql
+from eifi1_server_kit.auth.ports import NewAccount, NewInvitation, NewSession
 from eifi1_server_kit.auth.sql import (
     AccountColumns,
+    AccountPrune,
     AdminActionColumns,
     InvitationColumns,
     OneTimeTokenColumns,
     PasskeyColumns,
     SessionColumns,
     SpentChallengeColumns,
+    SqlInvitationStore,
+    SqlOneTimeTokenStore,
+    SqlPasskeyStore,
+    SqlSessionStore,
+    SqlUserStore,
     UtcDateTime,
     alembic_render_item,
+    prune_account_rows,
 )
+from eifi1_server_kit.auth.tokens import OneTimeTokenKind
+from eifi1_server_kit.clock import utc_now
+
+#: A fixed instant in the past, so every horizon the tests prune at has passed.
+NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
+#: What the tests prune before: thirty days back.
+BEFORE = NOW - timedelta(days=30)
 
 
 class Base(DeclarativeBase):
@@ -132,3 +148,191 @@ def test_with_the_hook_autogenerate_writes_a_migration_that_runs_without_the_kit
         assert set(inspect(connection).get_table_names()) == set(Base.metadata.tables)
         compared = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(compared, Base.metadata) == []
+
+
+# ── Pruning ─────────────────────────────────────────────────────────────────
+
+
+async def _user(session: AsyncSession, email: str = "ada@example.org") -> User:
+    new = NewAccount(
+        email=email, password_hash="hash", first_name="Ada", last_name="Lovelace", locale="en", role="MEMBER"
+    )
+    return await SqlUserStore(session, User).add(new)
+
+
+async def _session_row(
+    store: SqlSessionStore[UserSession], sid: str, user_id: int, *, last_active: datetime, expires_at: datetime
+) -> UserSession:
+    row = await store.start(NewSession(sid=sid, user_id=user_id, started_at=last_active, expires_at=expires_at))
+    await store.touch(row, last_active=last_active, expires_at=expires_at)
+    return row
+
+
+async def _sessions(session: AsyncSession) -> SqlSessionStore[UserSession]:
+    """Five sessions about the horizon: two of them gone by it, three not."""
+    ada = await _user(session)
+    store = SqlSessionStore(session, UserSession)
+    day = timedelta(days=1)
+    # Active and unexpired, however long ago it was last used: in use.
+    await _session_row(store, "live", ada.id, last_active=NOW - 60 * day, expires_at=NOW + day)
+    # Ended, its last activity before the horizon: gone.
+    ended = await _session_row(store, "ended-long-ago", ada.id, last_active=NOW - 40 * day, expires_at=NOW + day)
+    await store.end(ended)
+    # Ended, but active after the horizon: kept until it is that old.
+    recent = await _session_row(store, "ended-lately", ada.id, last_active=NOW - day, expires_at=NOW + 29 * day)
+    await store.end(recent)
+    # Never ended, but expired before the horizon: gone.
+    await _session_row(store, "expired-long-ago", ada.id, last_active=NOW - 50 * day, expires_at=NOW - 31 * day)
+    # Expired after the horizon: kept.
+    await _session_row(store, "expired-lately", ada.id, last_active=NOW - 20 * day, expires_at=NOW - 10 * day)
+    return store
+
+
+async def _sids(session: AsyncSession) -> set[str]:
+    return set(await session.scalars(select(UserSession.sid)))
+
+
+async def test_pruning_sessions_deletes_the_ended_and_the_expired_before_the_horizon(session: AsyncSession) -> None:
+    store = await _sessions(session)
+    assert await store.prune(before=BEFORE) == 2
+    assert await _sids(session) == {"live", "ended-lately", "expired-lately"}
+    # The rows the session held are gone from it too, not only from the table.
+    assert await store.get("ended-long-ago") is None
+    assert await store.prune(before=BEFORE) == 0
+
+
+async def test_pruning_flushes_first_so_a_change_not_yet_written_counts(engine: AsyncEngine) -> None:
+    async with async_sessionmaker(engine, autoflush=False)() as session:
+        store = await _sessions(session)
+        live = await store.get("live")
+        assert live is not None
+        live.is_active = False  # ended in this unit of work, not flushed, and no autoflush
+        assert await store.prune(before=BEFORE) == 3
+        assert "live" not in await _sids(session)
+
+
+async def test_pruning_commits_nothing(engine: AsyncEngine) -> None:
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        await _sessions(session)
+        await session.commit()
+        assert await SqlSessionStore(session, UserSession).prune(before=BEFORE) == 2
+        await session.rollback()
+        assert len(await _sids(session)) == 5
+
+
+async def test_a_horizon_that_has_not_passed_is_refused(session: AsyncSession) -> None:
+    """A row that expires after now is still in use: a session, a link, a challenge that
+    refuses a replay. A horizon ahead of the clock is a slip of the sign, never a wish."""
+    store = await _sessions(session)
+    ahead = utc_now() + timedelta(minutes=1)
+    with pytest.raises(ValueError, match="has not passed"):
+        await store.prune(before=ahead)
+    with pytest.raises(ValueError, match="has not passed"):
+        await prune_account_rows(before=ahead, sessions=store)
+    assert len(await _sids(session)) == 5
+
+
+async def test_a_naive_horizon_is_taken_as_utc(session: AsyncSession) -> None:
+    store = await _sessions(session)
+    assert await store.prune(before=BEFORE.replace(tzinfo=None)) == 2
+
+
+async def test_pruning_challenges_deletes_the_expired_ones_which_may_then_be_spent_again(
+    session: AsyncSession,
+) -> None:
+    store = SqlPasskeyStore(session, Passkey, SpentChallenge)
+    assert await store.spend_challenge("old" * 21, expires_at=NOW - timedelta(days=2))
+    assert await store.spend_challenge("new" * 21, expires_at=NOW - timedelta(minutes=5))
+    assert await store.prune(before=NOW - timedelta(days=1)) == 1
+    assert await store.spend_challenge("old" * 21, expires_at=NOW) is True
+    assert await store.spend_challenge("new" * 21, expires_at=NOW) is False
+
+
+async def test_pruning_links_deletes_the_ones_expired_before_the_horizon(session: AsyncSession) -> None:
+    ada = await _user(session)
+    bob = await _user(session, "bob@example.org")
+    store = SqlOneTimeTokenStore(session, OneTimeToken)
+    reset, verify = OneTimeTokenKind.PASSWORD_RESET, OneTimeTokenKind.VERIFICATION
+    await store.put(reset, user_id=ada.id, token_hash="r1", email=ada.email, expires_at=BEFORE - timedelta(days=1))
+    await store.put(verify, user_id=ada.id, token_hash="v1", email=ada.email, expires_at=BEFORE + timedelta(days=1))
+    await store.put(reset, user_id=bob.id, token_hash="r2", email=bob.email, expires_at=BEFORE - timedelta(hours=1))
+    assert await store.prune(before=BEFORE) == 2
+    assert await store.pending(reset, ada.id) is None
+    assert await store.pending(verify, ada.id) is not None
+    assert await store.pending(reset, bob.id) is None
+
+
+async def _invitations(session: AsyncSession) -> tuple[SqlInvitationStore[Invitation], dict[str, int]]:
+    """One invitation per state, each named; three of them gone by the horizon."""
+    admin = await _user(session, "admin@example.org")
+    accepter = await _user(session, "accepter@example.org")
+    store = SqlInvitationStore(session, Invitation)
+    day = timedelta(days=1)
+
+    async def invite(name: str, expires_at: datetime | None) -> Invitation:
+        row = await store.add(
+            NewInvitation(
+                email=f"{name}@example.org",
+                token_hash=None if expires_at is None else name,  # type: ignore[arg-type]
+                expires_at=expires_at,  # type: ignore[arg-type]
+                locale="de-CH",
+                invited_by_user_id=admin.id,
+            )
+        )
+        return row
+
+    rows = {
+        "open": await invite("open", NOW + 14 * day),
+        "expired-long-ago": await invite("expired-long-ago", BEFORE - 10 * day),
+        "expired-lately": await invite("expired-lately", BEFORE + 10 * day),
+        "revoked-long-ago": await invite("revoked-long-ago", NOW + 14 * day),
+        "revoked-lately": await invite("revoked-lately", BEFORE - 5 * day),
+        "accepted-long-ago": await invite("accepted-long-ago", BEFORE - 10 * day),
+        "allow-list": await invite("allow-list", None),
+    }
+    await store.revoke(rows["revoked-long-ago"], at=BEFORE - day)
+    # Revoked after the horizon, but expired before it: gone all the same.
+    await store.revoke(rows["revoked-lately"], at=NOW - day)
+    await store.accept(rows["accepted-long-ago"], user_id=accepter.id, at=BEFORE - 20 * day)
+    return store, {name: row.id for name, row in rows.items()}
+
+
+async def test_pruning_invitations_deletes_the_unaccepted_ones_expired_or_revoked_before_the_horizon(
+    session: AsyncSession,
+) -> None:
+    store, ids = await _invitations(session)
+    assert await store.prune(before=BEFORE) == 3
+    kept = {row.email.split("@")[0] for row in await session.scalars(select(Invitation))}
+    # An accepted invitation is no prune's: it records how its account came in. An
+    # allow-list entry never expires.
+    assert kept == {"open", "expired-lately", "accepted-long-ago", "allow-list"}
+    assert await store.get(ids["revoked-long-ago"]) is None
+
+
+async def test_the_job_prunes_every_store_it_is_given_and_counts_each(session: AsyncSession) -> None:
+    sessions = await _sessions(session)
+    passkeys = SqlPasskeyStore(session, Passkey, SpentChallenge)
+    await passkeys.spend_challenge("c" * 64, expires_at=BEFORE - timedelta(days=1))
+    links = SqlOneTimeTokenStore(session, OneTimeToken)
+    ada = await _user(session, "links@example.org")
+    await links.put(
+        OneTimeTokenKind.EMAIL_CHANGE, user_id=ada.id, token_hash="e", email="new@example.org", expires_at=BEFORE
+    )
+    invitations, _ = await _invitations(session)
+    pruned = await prune_account_rows(
+        before=BEFORE + timedelta(seconds=1),
+        sessions=sessions,
+        passkeys=passkeys,
+        links=links,
+        invitations=invitations,
+    )
+    assert pruned == AccountPrune(sessions=2, challenges=1, links=1, invitations=3)
+    assert pruned.total == 7
+
+
+async def test_the_job_without_stores_prunes_nothing(session: AsyncSession) -> None:
+    await _sessions(session)
+    assert await prune_account_rows(before=BEFORE) == AccountPrune()
+    assert AccountPrune().total == 0
+    assert await session.scalar(select(func.count()).select_from(UserSession)) == 5
