@@ -170,7 +170,9 @@ class UserStore[UserT: AccountRow](Protocol):
 
     async def count_people(self) -> int:
         """Accounts that are people: demo accounts and an app's system account left out
-        (``registration_decision``'s "is this the first account")."""
+        (``registration_decision``'s "is this the first account"). A deactivated account
+        and one that asked for its deletion still count, or the next sign-up would be
+        "the first"."""
 
     async def count_active(self, *, role: str) -> int:
         """Active accounts that are people and hold ``role``: the last-admin rule's count
@@ -178,11 +180,14 @@ class UserStore[UserT: AccountRow](Protocol):
         Added in 0.29."""
 
     async def add(self, new: NewAccount) -> UserT:
-        """Insert and flush, so the id is set."""
+        """Insert and flush, so the id is set. What :class:`NewAccount` does not carry
+        starts as: ``is_active`` True, ``created_at`` now, every other member None (the
+        review scope, the stamps, the appearance); ``is_demo`` False where the app has it."""
 
     async def apply(self, row: UserT, changes: Mapping[str, Any]) -> UserT:
-        """Assign and flush. The keys are :data:`ACCOUNT_FIELDS`; an app without the
-        ``iat`` cut-off ignores ``sessions_invalid_before``."""
+        """Assign and flush. A key outside :data:`ACCOUNT_FIELDS` raises
+        :class:`ValueError`, never drops silently; an app without the ``iat`` cut-off
+        ignores ``sessions_invalid_before``."""
 
     async def delete(self, row: UserT) -> None:
         """Delete the account and flush; the app's foreign keys cascade or set null."""
@@ -235,7 +240,7 @@ class SessionStore[SessionT: SessionRow](Protocol):
     is never needed again once it ended, so an app may prune it."""
 
     async def start(self, new: NewSession) -> SessionT:
-        """Insert and flush."""
+        """Insert and flush, active, with ``last_active`` = ``started_at``."""
 
     async def get(self, sid: str) -> SessionT | None:
         """The session, active or not, or None."""
@@ -251,7 +256,9 @@ class SessionStore[SessionT: SessionRow](Protocol):
         password change); answer how many ended."""
 
     async def live(self, user_id: int) -> Sequence[SessionT]:
-        """The account's active sessions, the latest activity first."""
+        """The account's active sessions (``is_active``; the store knows no clock, so the
+        service drops the ones past ``expires_at``), the latest activity first, the higher
+        ``sid`` first on a tie."""
 
 
 # ── One-time links: reset, verification, address change ─────────────────────
@@ -277,8 +284,10 @@ class OneTimeTokenRow(Protocol):
 
 
 class OneTimeTokenStore[TokenT: OneTimeTokenRow](Protocol):
-    """The reset, verification and address-change links: at most one per account and kind
-    (kastlan keeps them as columns on ``users``; that is an adapter's business)."""
+    """The reset, verification and address-change links (``RESET``, ``VERIFY``,
+    ``EMAIL_CHANGE``; an invitation's link lives on the invitation): at most one per account
+    and kind (kastlan keeps them as columns on ``users``; that is an adapter's business).
+    Every lookup is by kind: a hash asked for under another kind is None."""
 
     async def put(
         self, kind: OneTimeTokenKind, *, user_id: int, token_hash: str, email: str, expires_at: datetime
@@ -360,7 +369,8 @@ class InvitationStore[InvT: InvitationRow](Protocol):
         included: the kit decides on the expiry."""
 
     async def listing(self) -> Sequence[InvT]:
-        """Every invitation that was not accepted, newest first: the admin's list."""
+        """Every invitation that was not accepted (open, expired and revoked ones), newest
+        first, the higher id first on a tie: the admin's list."""
 
     async def add(self, new: NewInvitation) -> InvT:
         """Insert and flush."""
@@ -418,7 +428,7 @@ class PasskeyStore[PasskeyT: PasskeyRow](Protocol):
     """The app's passkeys and the challenges already answered."""
 
     async def for_user(self, user_id: int) -> Sequence[PasskeyT]:
-        """The account's passkeys, oldest first."""
+        """The account's passkeys, oldest first, the lower id first on a tie."""
 
     async def by_credential_id(self, credential_id: bytes) -> PasskeyT | None:
         """The passkey with this credential id, or None."""
@@ -439,7 +449,8 @@ class PasskeyStore[PasskeyT: PasskeyRow](Protocol):
     async def spend_challenge(self, challenge_hash: str, *, expires_at: datetime) -> bool:
         """Record that this challenge was answered: True the first time, False when it was
         spent before (one use per challenge, Kurvenschmiede's table, §12.5 item 8). The row
-        may go once ``expires_at`` has passed."""
+        may go once ``expires_at`` has passed; a store may sweep expired rows here (there is
+        no separate prune: old session rows are the app's own clean-up)."""
 
 
 # ── The admin log ───────────────────────────────────────────────────────────
@@ -471,7 +482,8 @@ class AdminActionLog[ActionT: AdminActionRowView](Protocol):
         """Insert ``admin_action_record``'s mapping and flush."""
 
     async def page(self, *, target_user_id: int | None, limit: int, offset: int) -> tuple[Sequence[ActionT], int]:
-        """The newest first, and how many there are in all."""
+        """The rows about ``target_user_id`` (None: every row), the newest first, the higher
+        id first on a tie, and how many there are in all."""
 
     async def scrub_email(self, email: str) -> None:
         """An erasure: clear ``target_email`` wherever it is this address, flushed."""
@@ -489,7 +501,8 @@ class AfterCommit(Protocol):
         fails is logged, the rest run), and drops it on a rollback."""
 
     async def commit_now(self) -> None:
-        """Commit the request's transaction now. The one place the kit commits: a route whose
+        """Commit the request's transaction now, and so run the work queued with
+        :meth:`later`. The one place the kit commits: a route whose
         answer says whether its mail went out (``sent``: an address change, its re-send, an
         invitation and its re-send, an admin's mail) commits first and then sends, so a
         rollback never mails a dead link and the answer is still true (keksdose's plan and
