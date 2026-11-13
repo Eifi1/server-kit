@@ -7,8 +7,13 @@ import pytest
 from eifi1_server_kit.auth import (
     CHALLENGE_PER_IP,
     CHALLENGE_PER_SUBJECT,
+    EMAIL_CHANGE_PER_ACCOUNT,
+    EXPORT_PER_ACCOUNT,
     LOGIN_FAILURE_MAX_DELAY,
     LOGIN_PER_IP,
+    PASSWORD_CHECK_PER_ACCOUNT,
+    REDEEM_PER_IP,
+    REFRESH_PER_IP,
     REGISTER_PER_IP,
     RESET_PER_ADDRESS,
     RESET_PER_IP,
@@ -18,6 +23,7 @@ from eifi1_server_kit.auth import (
     LoginFailureThrottle,
     login_failure_delay,
 )
+from eifi1_server_kit.user_admin import EXPORT_PER_USER
 
 
 class _Clock:
@@ -102,6 +108,11 @@ def test_auth_limiters_are_per_instance_with_the_budgets() -> None:
         "reset_ip": RESET_PER_IP,
         "reset_address": RESET_PER_ADDRESS,
         "verification_resend": VERIFICATION_RESEND_PER_RECIPIENT,
+        "redeem": REDEEM_PER_IP,
+        "refresh": REFRESH_PER_IP,
+        "password_check": PASSWORD_CHECK_PER_ACCOUNT,
+        "email_change": EMAIL_CHANGE_PER_ACCOUNT,
+        "export": EXPORT_PER_ACCOUNT,
     }
     for name, budget in budgets.items():
         limiter = getattr(first, name)
@@ -115,6 +126,14 @@ def test_auth_limiters_are_per_instance_with_the_budgets() -> None:
     for name in budgets:
         assert getattr(first, name).hit("k") is None, f"{name} was not reset"
     assert first.login_failures._failures.count("ada@example.com") == 0
+
+
+def test_the_account_layer_s_windows_are_the_apps_numbers() -> None:
+    """0.29: keksdose's redemption, refresh, password-check and address-change windows, and
+    user-admin's export budget under its own name."""
+    assert (Budget(20, 300), Budget(120, 60)) == (REDEEM_PER_IP, REFRESH_PER_IP)
+    assert (Budget(10, 900), Budget(5, 3600)) == (PASSWORD_CHECK_PER_ACCOUNT, EMAIL_CHANGE_PER_ACCOUNT)
+    assert EXPORT_PER_ACCOUNT == EXPORT_PER_USER
 
 
 def test_an_app_keeps_its_own_numbers() -> None:

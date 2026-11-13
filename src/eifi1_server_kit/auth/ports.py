@@ -172,6 +172,11 @@ class UserStore[UserT: AccountRow](Protocol):
         """Accounts that are people: demo accounts and an app's system account left out
         (``registration_decision``'s "is this the first account")."""
 
+    async def count_active(self, *, role: str) -> int:
+        """Active accounts that are people and hold ``role``: the last-admin rule's count
+        (``refuse_last_admin``; the deletion request, and the admin's actions of 0.30).
+        Added in 0.29."""
+
     async def add(self, new: NewAccount) -> UserT:
         """Insert and flush, so the id is set."""
 

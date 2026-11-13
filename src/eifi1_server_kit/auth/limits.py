@@ -67,6 +67,24 @@ RESET_PER_ADDRESS = Budget(3, 3600)
 #: ``/auth/resend-verification``, per RECIPIENT address, not per IP (keksdose
 #: ``_resend_email_limiter``): what it protects is that inbox and the sender's reputation.
 VERIFICATION_RESEND_PER_RECIPIENT = Budget(10, 3600)
+#: The anonymous redemptions of a mailed token, per IP (0.29, §12.5 item 4; keksdose's
+#: ``_redeem_limiter``): ``/verify-email``, ``/password-reset/check`` and ``/confirm``,
+#: ``/invitations/check`` and ``/accept``, ``/me/email/confirm``. Their tokens are 256 bits,
+#: so a guess never lands; the window bounds a script hammering them for free.
+REDEEM_PER_IP = Budget(20, 300)
+#: ``/auth/refresh``, per IP (0.29; keksdose's ``_refresh_limiter``): generous, because a
+#: page that 401s several requests at once renews them all, and its 429 is transient to the
+#: client (§11.2), never a sign-out.
+REFRESH_PER_IP = Budget(120, 60)
+#: Every signed-in route that checks the current password again, per account (0.29;
+#: keksdose's ``_password_recheck_limiter``): the password and address changes, a new
+#: passkey, the deletion request. Every check is charged, the right password too, before the
+#: hash; per account is safe, since only a session of that account can charge it.
+PASSWORD_CHECK_PER_ACCOUNT = Budget(10, 900)
+#: An address change and its re-send, per account (0.29; keksdose's ``_email_change_limiter``).
+EMAIL_CHANGE_PER_ACCOUNT = Budget(5, 3600)
+#: The account export, per account (0.29): user-admin's ``EXPORT_PER_USER``, once a minute.
+EXPORT_PER_ACCOUNT = Budget(1, 60)
 
 #: Failures per address that cost nothing: a person mistyping a password a few times.
 LOGIN_FAILURES_FREE = 5
@@ -180,7 +198,9 @@ class AuthLimiters:
     :class:`LoginFailureThrottle`), ``challenge`` (per IP) and ``challenge_subject`` (per
     user id of the challenge token) for the 2FA and set-password steps, ``register`` (per
     IP), ``reset_ip`` and ``reset_address`` for the reset request, and
-    ``verification_resend`` (per recipient). Charge an IP window with ``hit`` and answer a
+    ``verification_resend`` (per recipient; the account layer charges every account mail to an
+    address there). Since 0.29 also ``redeem`` and ``refresh`` (per IP), ``password_check``,
+    ``email_change`` and ``export`` (per account). Charge an IP window with ``hit`` and answer a
     non-``None`` result with ``429`` and ``Retry-After``
     (:func:`~eifi1_server_kit.limiter.retry_after_header`); charge it BEFORE any hashing,
     so a shed request costs no bcrypt. Key every address window by
@@ -199,6 +219,11 @@ class AuthLimiters:
         verification_resend: Budget = VERIFICATION_RESEND_PER_RECIPIENT,
         login_failures: LoginFailureThrottle | None = None,
         clock: Clock = time.monotonic,
+        redeem: Budget = REDEEM_PER_IP,
+        refresh: Budget = REFRESH_PER_IP,
+        password_check: Budget = PASSWORD_CHECK_PER_ACCOUNT,
+        email_change: Budget = EMAIL_CHANGE_PER_ACCOUNT,
+        export: Budget = EXPORT_PER_ACCOUNT,
     ) -> None:
         self.login = login.limiter(clock)
         self.login_failures = login_failures or LoginFailureThrottle(clock=clock)
@@ -208,6 +233,11 @@ class AuthLimiters:
         self.reset_ip = reset_ip.limiter(clock)
         self.reset_address = reset_address.limiter(clock)
         self.verification_resend = verification_resend.limiter(clock)
+        self.redeem = redeem.limiter(clock)
+        self.refresh = refresh.limiter(clock)
+        self.password_check = password_check.limiter(clock)
+        self.email_change = email_change.limiter(clock)
+        self.export = export.limiter(clock)
 
     def reset(self) -> None:
         """Empty every window — the test seam."""
@@ -219,6 +249,11 @@ class AuthLimiters:
             self.reset_ip,
             self.reset_address,
             self.verification_resend,
+            self.redeem,
+            self.refresh,
+            self.password_check,
+            self.email_change,
+            self.export,
         ):
             limiter.reset()
         self.login_failures.reset()
