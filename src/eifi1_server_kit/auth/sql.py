@@ -52,7 +52,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import fields
 from datetime import UTC, datetime
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Literal, cast
 
 try:
     from sqlalchemy import (
@@ -110,6 +110,8 @@ __all__ = [
     "SqlPasskeyStore",
     "SqlSessionStore",
     "SqlUserStore",
+    "UtcDateTime",
+    "alembic_render_item",
 ]
 
 logger = logging.getLogger(__name__)
@@ -136,14 +138,18 @@ _SID_WIDTH = 64
 _JSON = JSON().with_variant(JSONB(), "postgresql")
 
 
-class _UtcDateTime(TypeDecorator[datetime]):
+class UtcDateTime(TypeDecorator[datetime]):
     """An instant, written in UTC and read back aware on every database.
 
     PostgreSQL's ``timestamptz`` keeps the zone itself; SQLite keeps none, and SQLAlchemy's
     SQLite type would drop an offset without converting the value. So the value goes in as
     UTC, and a naive one read back is UTC by construction: a store answers the same instant
     on the app's database and in its SQLite tests, and asyncpg never meets a naive value for
-    an aware column. A naive value written is taken as UTC, as the kit's clock means it."""
+    an aware column. A naive value written is taken as UTC, as the kit's clock means it.
+
+    Public since 0.30, for an app's own instant columns; ``_UtcDateTime``, its 0.29 name,
+    still answers. The database sees ``DateTime(timezone=True)`` and nothing else, which is
+    what a migration writes (:func:`alembic_render_item`)."""
 
     impl = DateTime(timezone=True)
     cache_ok = True
@@ -159,9 +165,13 @@ class _UtcDateTime(TypeDecorator[datetime]):
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
-def _aware() -> _UtcDateTime:
-    """Every instant is stored with its zone, as :class:`_UtcDateTime` describes."""
-    return _UtcDateTime()
+#: 0.29's name for :class:`UtcDateTime`, kept so nothing that imported it breaks.
+_UtcDateTime = UtcDateTime
+
+
+def _aware() -> UtcDateTime:
+    """Every instant is stored with its zone, as :class:`UtcDateTime` describes."""
+    return UtcDateTime()
 
 
 class _PointsAtAccounts:
@@ -782,3 +792,31 @@ class SqlAfterCommit:
 
     async def commit_now(self) -> None:
         await self._session.commit()
+
+
+# ── Migrations ──────────────────────────────────────────────────────────────
+
+
+def alembic_render_item(type_: str, obj: object, autogen_context: Any) -> str | Literal[False]:
+    """Alembic's ``render_item`` hook for an app's ``env.py``: :class:`UtcDateTime` is written
+    as ``sa.DateTime(timezone=True)``, everything else is left to Alembic (``False``)::
+
+        from eifi1_server_kit.auth.sql import alembic_render_item
+
+        context.configure(connection=connection, target_metadata=Base.metadata,
+                          render_item=alembic_render_item)
+
+    **Why.** Without it, ``alembic revision --autogenerate`` writes the kit's type by its
+    module path (``eifi1_server_kit.auth.sql._UtcDateTime()`` in 0.29) and imports nothing
+    for it, so the revision fails when it runs; and a revision that imported it would tie a
+    file that must describe the schema as it WAS to the kit's code as it is today. The
+    database never sees the type's work (the UTC on the way in and out is Python's): its
+    column is ``timestamptz``, so the plain type is the whole truth, and Alembic's comparison
+    of the models with the database finds nothing to change.
+
+    An app with a ``render_item`` of its own calls this one first and goes on when it answers
+    ``False``. Alembic is the app's: the kit imports nothing of it."""
+    if type_ == "type" and isinstance(obj, UtcDateTime):
+        prefix = autogen_context.opts.get("sqlalchemy_module_prefix", "sa.") or ""
+        return f"{prefix}DateTime(timezone=True)"
+    return False
