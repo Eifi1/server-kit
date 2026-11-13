@@ -125,7 +125,10 @@ async def kastlan() -> AsyncIterator[tuple[AdminWorld, Memberships]]:
             "guard": company_staff,
             "role_sets": True,
             "row_model": Row,
-            "policy": AdminPolicy(roles=("ADMIN", "MEMBER", *sorted(STAFF - {"ADMIN"}), "tenant"), reviewer_role=None),
+            "policy": AdminPolicy(
+                roles=("ADMIN", "MEMBER", *sorted(STAFF - {"ADMIN"}), "tenant", "REVIEWER"),
+                review_locales=("de-CH", "en", "fr"),
+            ),
         }
 
     world = AdminWorld(admin_of=options)
@@ -276,3 +279,22 @@ async def test_only_the_company_s_staff_pass_its_guard(kastlan: tuple[AdminWorld
     stranger = world.account(email="x@other.example", role="ADMIN")
     refused = await world.call("GET", "/admin/users", token=await world.token_of(stranger))
     assert (refused.status_code, code(refused)) == (403, "admin_required")
+
+
+async def test_with_role_sets_the_reviewer_role_joins_and_leaves_the_others(
+    kastlan: tuple[AdminWorld, Memberships],
+) -> None:
+    world, memberships = kastlan
+    _, token = await _company_admin(world, memberships)
+    manager = world.account(email="mia@acme.example")
+    memberships.of(manager.id, ACME).add("manager")
+    path = f"/admin/users/{manager.id}/reviewer"
+    given = await world.call("PUT", path, token=token, json={"locales": ["fr"]})
+    assert given.status_code == 200, given.text
+    assert memberships.of(manager.id, ACME) == {"manager", "REVIEWER"}
+    await world.call("PUT", path, token=token, json={"locales": []})
+    assert memberships.of(manager.id, ACME) == {"manager"}
+    only = world.account(email="rev@acme.example")
+    memberships.of(only.id, ACME).add("REVIEWER")
+    await world.call("PUT", f"/admin/users/{only.id}/reviewer", token=token, json={"locales": []})
+    assert memberships.of(only.id, ACME) == {"MEMBER"}, "never no role at all: the default one"

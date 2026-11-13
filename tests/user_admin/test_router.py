@@ -407,9 +407,18 @@ async def test_the_reviewer_scope_sets_the_role_with_its_locales_and_takes_it_aw
     assert (row.action, row.detail) == ("reviewer", {"locales": ["de-CH", "fr"], "areas": ["feedback"]})
     await world.call("PUT", path, token=token, json={"locales": ["fr", "de-CH"], "areas": ["feedback"]})
     assert len(world.log.rows) == 1, "no change, no row"
+    moved = await world.call("PUT", path, token=token, json={"locales": ["it"]})
+    assert moved.json()["role"] == "REVIEWER" and moved.json()["areas"] is None and len(world.log.rows) == 2
     gone = await world.call("PUT", path, token=token, json={"locales": [], "areas": ["auth"]})
     assert gone.json() == {"user_id": user.id, "role": "MEMBER", "locales": [], "areas": None}
     assert (user.translation_review_locales, user.translation_review_areas) == (None, None)
+
+
+async def test_a_member_given_no_locales_stays_a_member_and_nothing_is_logged(world: AdminWorld) -> None:
+    _, token = await world.admin_token()
+    user = world.account()
+    answer = await world.call("PUT", f"/admin/users/{user.id}/reviewer", token=token, json={"locales": []})
+    assert answer.json()["role"] == "MEMBER" and world.log.rows == []
 
 
 async def test_an_admin_is_no_reviewer_and_an_unknown_locale_is_refused(world: AdminWorld) -> None:
