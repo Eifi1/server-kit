@@ -22,7 +22,7 @@ from eifi1_server_kit.user_admin import (
 NONE, ACKNOWLEDGE, TYPE_EMAIL = ConfirmationLevel.NONE, ConfirmationLevel.ACKNOWLEDGE, ConfirmationLevel.TYPE_EMAIL
 
 
-def test_the_codes_are_the_contracts_and_every_one_but_the_password_is_a_409() -> None:
+def test_the_codes_are_the_contracts_and_every_state_refusal_is_a_409() -> None:
     assert [str(code) for code in AccountErrorCode] == [
         "last_admin",
         "self_action",
@@ -31,13 +31,22 @@ def test_the_codes_are_the_contracts_and_every_one_but_the_password_is_a_409() -
         "confirmation_required",
         "confirmation_mismatch",
         "password_incorrect",
+        # 0.30, the admin router.
+        "user_not_found",
+        "role_not_grantable",
+        "reviewer_is_admin",
+        "account_inactive",
+        "email_already_verified",
+        "deletion_not_requested",
     ]
     assert set(ACCOUNT_ERROR_STATUS) == set(AccountErrorCode)
     # A wrong current password on a signed-in route is a 400: a 401 would sign the user out.
     assert ACCOUNT_ERROR_STATUS[AccountErrorCode.PASSWORD_INCORRECT] == 400
-    assert {
-        status for code, status in ACCOUNT_ERROR_STATUS.items() if code is not AccountErrorCode.PASSWORD_INCORRECT
-    } == {409}
+    # An account the admin cannot see is not found; a role the app never gives is a bad value.
+    assert ACCOUNT_ERROR_STATUS[AccountErrorCode.USER_NOT_FOUND] == 404
+    assert ACCOUNT_ERROR_STATUS[AccountErrorCode.ROLE_NOT_GRANTABLE] == 422
+    others = {AccountErrorCode.PASSWORD_INCORRECT, AccountErrorCode.USER_NOT_FOUND, AccountErrorCode.ROLE_NOT_GRANTABLE}
+    assert {status for code, status in ACCOUNT_ERROR_STATUS.items() if code not in others} == {409}
     assert set(ACCOUNT_ERROR_DETAIL) == set(AccountErrorCode)
     assert not any("@" in detail for detail in ACCOUNT_ERROR_DETAIL.values()), "no detail echoes an address"
 

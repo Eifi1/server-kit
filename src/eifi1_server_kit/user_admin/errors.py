@@ -9,10 +9,13 @@ names something (kastlan's companies).
 
 A sibling of ``AuthError``, not a subclass: these refuse an action on an account that is
 signed in and allowed to act, which is a different family from "who are you". Every one
-is a ``409``: the request is well formed, and it is the state of the instance (or of the
-confirmation) that refuses it — Kurvenschmiede's reasoning for its last-admin and
-self refusals, and keksdose's status for a missing confirmation
-(``admin_user_actions_service.assert_confirmed``).
+that the state refuses is a ``409``: the request is well formed, and it is the state of the
+instance (or of the confirmation) that refuses it — Kurvenschmiede's reasoning for its
+last-admin and self refusals, and keksdose's status for a missing confirmation
+(``admin_user_actions_service.assert_confirmed``). Three are not: ``password_incorrect``
+(``400``, so no client reads it as an ended session), ``user_not_found`` (``404``) and
+``role_not_grantable`` (``422``, a value the app never gives, as keksdose's and kastlan's
+bodies refuse it).
 """
 
 from __future__ import annotations
@@ -49,13 +52,36 @@ class AccountErrorCode(enum.StrEnum):
     #: request (§6.2, §6.4). 400, not 401 — an app's client treats a 401 as an ended
     #: session and signs the user out, which would be the wrong answer to a typo.
     PASSWORD_INCORRECT = "password_incorrect"
+    #: The admin router (0.30): no account with this id in the admin's scope — none at all,
+    #: or one outside it (kastlan's other company). One answer for both, so the scope is no
+    #: oracle.
+    USER_NOT_FOUND = "user_not_found"
+    #: A role the app never gives through the role change: the reviewer role, which comes with
+    #: its scope through ``/reviewer`` (Kurvenschmiede), kastlan's ``tenant`` until it has a
+    #: portal (user-admin §4.1).
+    ROLE_NOT_GRANTABLE = "role_not_grantable"
+    #: A reviewer scope for an admin, who reviews every locale already; taking the admin role
+    #: away is the role change's, never the reviewer switch's (keksdose, Kurvenschmiede).
+    REVIEWER_IS_ADMIN = "reviewer_is_admin"
+    #: A mail to a deactivated account (keksdose, Kurvenschmiede): it has nothing to sign in
+    #: to, and a "not sent" would read as a mail failure.
+    ACCOUNT_INACTIVE = "account_inactive"
+    #: The verification mail for an address that is verified already: a link that changes
+    #: nothing (keksdose, Kurvenschmiede).
+    EMAIL_ALREADY_VERIFIED = "email_already_verified"
+    #: An erasure asked for an account that is not deactivated with its own deletion request
+    #: (user-admin §6.4, §10.3): deactivating somebody is not asking for their data to go.
+    DELETION_NOT_REQUESTED = "deletion_not_requested"
 
 
-#: Each code's status: ``409``, see the module docstring — except ``password_incorrect``,
-#: a ``400`` so no client reads it as an ended session.
+#: Each code's status: ``409``, see the module docstring — except ``password_incorrect``
+#: (``400``, so no client reads it as an ended session), ``user_not_found`` (``404``) and
+#: ``role_not_grantable`` (``422``).
 ACCOUNT_ERROR_STATUS: Mapping[AccountErrorCode, int] = {
     **dict.fromkeys(AccountErrorCode, 409),
     AccountErrorCode.PASSWORD_INCORRECT: 400,
+    AccountErrorCode.USER_NOT_FOUND: 404,
+    AccountErrorCode.ROLE_NOT_GRANTABLE: 422,
 }
 
 #: The English ``detail`` of each code, for logs and API clients; the pages show the
@@ -68,6 +94,12 @@ ACCOUNT_ERROR_DETAIL: Mapping[AccountErrorCode, str] = {
     AccountErrorCode.CONFIRMATION_REQUIRED: "This action needs an explicit confirmation",
     AccountErrorCode.CONFIRMATION_MISMATCH: "The typed address does not match the account",
     AccountErrorCode.PASSWORD_INCORRECT: "The current password is not correct",
+    AccountErrorCode.USER_NOT_FOUND: "User not found",
+    AccountErrorCode.ROLE_NOT_GRANTABLE: "This role is not given here",
+    AccountErrorCode.REVIEWER_IS_ADMIN: "An admin already reviews every locale",
+    AccountErrorCode.ACCOUNT_INACTIVE: "This account is deactivated",
+    AccountErrorCode.EMAIL_ALREADY_VERIFIED: "This address is already verified",
+    AccountErrorCode.DELETION_NOT_REQUESTED: "Only a deactivated account that asked for its deletion can be erased",
 }
 
 #: Keys the error body sets itself; :attr:`AccountError.extra` may not override them.

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from eifi1_server_kit.user_admin import (
     MAIL_BACKEND_CONSOLE,
@@ -15,21 +15,25 @@ from eifi1_server_kit.user_admin import (
     ActionConfirmation,
     ActiveChange,
     AdminAction,
+    AdminActionPage,
     AdminActionRow,
     AdminUserRow,
     ConfirmationLevel,
     DeletionRequest,
     EmailChangeConfirm,
     EmailChangeRequest,
+    ErasureResult,
     GroupRef,
     InvitationCreate,
     InvitationIssued,
     InvitationRow,
     InvitationStatus,
+    MailBackendInfo,
     MailKind,
     MailRequest,
     MailResult,
     PersonRef,
+    ReviewerResult,
     ReviewerUpdate,
     RoleChange,
     RolesChange,
@@ -294,3 +298,44 @@ def test_an_admin_action_row_takes_the_app_s_own_action() -> None:
         {"id": 12, "at": NOW, "action": "plan", "detail": {"from": "free", "to": "pro"}}
     )
     assert plan.action is AdminAction.PLAN
+
+
+# --- 0.30: the admin router's answers ------------------------------------------------------
+
+
+def test_an_action_row_names_its_target_as_a_person_and_a_page_counts_every_row() -> None:
+    row = AdminActionRow.model_validate(
+        {
+            "id": 3,
+            "at": NOW,
+            "action": "deactivate",
+            "target_user_id": 7,
+            "target": SimpleNamespace(id=7, email="ada@example.com", first_name="Ada", last_name="Lovelace"),
+        }
+    )
+    assert row.target == PersonRef(id=7, email="ada@example.com", first_name="Ada", last_name="Lovelace")
+    assert AdminActionRow(id=1, at=NOW, action="erase").target is None, "an erased account: no person"
+    page = AdminActionPage[AdminActionRow](actions=[row], total=40)
+    assert page.model_dump(mode="json")["total"] == 40
+    with pytest.raises(ValidationError):
+        AdminActionPage[AdminActionRow](actions=[], total=-1)
+
+
+def test_the_reviewer_answer_is_the_grant_as_stored() -> None:
+    answer = ReviewerResult(user_id=4, role="REVIEWER", locales=["fr"], areas=None)
+    assert answer.model_dump() == {"user_id": 4, "role": "REVIEWER", "locales": ["fr"], "areas": None}
+
+
+def test_the_transport_is_answered_on_its_own() -> None:
+    assert MailBackendInfo(mail_backend=MAIL_BACKEND_CONSOLE).model_dump() == {"mail_backend": "console"}
+
+
+def test_an_erasure_answers_what_it_anonymised_and_an_app_adds_its_counts() -> None:
+    assert ErasureResult().model_dump() == {"feedback_anonymised": 0}
+
+    class Handed(ErasureResult):
+        handed_over: dict[str, int] = Field(default_factory=dict)
+
+    assert Handed(feedback_anonymised=2, handed_over={"projects": 1}).handed_over == {"projects": 1}
+    with pytest.raises(ValidationError):
+        ErasureResult(feedback_anonymised=-1)
