@@ -273,7 +273,12 @@ class SessionColumns(_PointsAtAccounts):
 class OneTimeTokenColumns(_PointsAtAccounts):
     """A reset, verification or address-change link: the digest, never the token
     (:func:`~eifi1_server_kit.auth.mint`). One row per account and kind, so a new link
-    replaces the old and only the newest works."""
+    replaces the old and only the newest works.
+
+    ``user_id`` has an index of its own beside the unique ``(user_id, kind)``, whose leading
+    column would serve a lookup by account as well. One index more than needed, and fixed
+    all the same: it is 0.29's schema, which every app's models and migrations spell, so a
+    mixin that dropped it would make each app's next autogenerate drop it too."""
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     #: A :class:`~eifi1_server_kit.auth.tokens.OneTimeTokenKind` value.
@@ -369,7 +374,14 @@ class SpentChallengeColumns:
 class AdminActionColumns(_PointsAtAccounts):
     """One row of the activity log: :func:`~eifi1_server_kit.user_admin.admin_action_record`'s
     fields, so the record goes in as it is. The people stay named by ``target_email`` after an
-    erasure deletes their account (the keys are ``SET NULL``)."""
+    erasure deletes their account (the keys are ``SET NULL``).
+
+    The group columns, ``target_group_id`` and ``target_group_name``, are in every app's
+    table, groups or none: they are the record's own optional fields (a group the row is
+    about, and a deleted group's name), so the mixin carries them, and an app without groups
+    leaves them NULL. Fixed by 0.29's schema, as every column here. A field the mixin does
+    not carry (kastlan's ``company_id``) is a column the app adds itself, or the store
+    refuses the record."""
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     at: Mapped[datetime] = mapped_column(_aware(), default=utc_now, index=True, nullable=False)
