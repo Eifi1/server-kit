@@ -144,8 +144,11 @@ def _autogenerate(render_item: Any) -> str:
     """The upgrade Alembic's autogenerate writes for the models against an empty database,
     rendered as an app's ``env.py`` on PostgreSQL renders it (its JSONB as ``sa.Text()``)."""
     engine = create_engine("sqlite://")
-    with engine.connect() as connection:
-        script = produce_migrations(MigrationContext.configure(connection), Base.metadata)
+    try:
+        with engine.connect() as connection:
+            script = produce_migrations(MigrationContext.configure(connection), Base.metadata)
+    finally:
+        engine.dispose()
     assert script.upgrade_ops is not None
     on_postgresql = MigrationContext.configure(dialect_name="postgresql")
     return render_python_code(script.upgrade_ops, render_item=render_item, migration_context=on_postgresql)
@@ -165,12 +168,15 @@ def test_with_the_hook_autogenerate_writes_a_migration_that_runs_without_the_kit
     namespace: dict[str, Any] = {"sa": sqlalchemy, "op": op, "postgresql": postgresql}
     exec("def upgrade() -> None:\n" + code, namespace)
     engine = create_engine("sqlite://")
-    with engine.begin() as connection:
-        with Operations.context(MigrationContext.configure(connection)):
-            namespace["upgrade"]()
-        assert set(inspect(connection).get_table_names()) == set(Base.metadata.tables)
-        compared = MigrationContext.configure(connection, opts={"compare_type": True})
-        assert compare_metadata(compared, Base.metadata) == []
+    try:
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                namespace["upgrade"]()
+            assert set(inspect(connection).get_table_names()) == set(Base.metadata.tables)
+            compared = MigrationContext.configure(connection, opts={"compare_type": True})
+            assert compare_metadata(compared, Base.metadata) == []
+    finally:
+        engine.dispose()
 
 
 # ── Pruning ─────────────────────────────────────────────────────────────────
