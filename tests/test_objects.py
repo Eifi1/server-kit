@@ -54,6 +54,7 @@ class _GcsBucket:
         self.objects: dict[str, tuple[bytes, str, datetime]] = {}
         self.fail: dict[str, Exception] = {}
         self.calls = calls
+        self.listed: list[int | None] = []
 
     def call(self, op: str) -> None:
         self.calls.append((op, threading.get_ident()))
@@ -63,11 +64,12 @@ class _GcsBucket:
     def blob(self, name: str) -> _GcsBlob:
         return _GcsBlob(self, name)
 
-    def list_blobs(self, *, prefix: str | None = None) -> Iterator[_Listed]:
+    def list_blobs(self, *, prefix: str | None = None, max_results: int | None = None) -> Iterator[_Listed]:
+        self.listed.append(max_results)
         self.call("list")
-        for name in sorted(self.objects):
-            if name.startswith(prefix or ""):
-                yield _Listed(name, self.objects[name][2])
+        names = [name for name in sorted(self.objects) if name.startswith(prefix or "")]
+        for name in names[:max_results]:
+            yield _Listed(name, self.objects[name][2])
 
 
 @dataclass
@@ -90,6 +92,11 @@ class _GcsBlob:
         if self.name not in self.bucket.objects:
             raise gcs_errors.NotFound(f"No such object: {self.bucket.name}/{self.name}")
         return self.bucket.objects[self.name][0]
+
+    def exists(self) -> bool:
+        # The real one is a metadata GET that answers False for NotFound and raises the rest.
+        self.bucket.call("exists")
+        return self.name in self.bucket.objects
 
     def delete(self) -> None:
         self.bucket.call("delete")
@@ -147,6 +154,7 @@ class _MinioStub:
         self.listings: list[dict[str, object]] = []
         self.broken_body: Exception | None = None
         self.extra: list[_S3Listed] = []
+        self.bucket_present = True
 
     def call(self, op: str, bucket_name: str) -> None:
         self.calls.append((op, threading.get_ident()))
@@ -169,6 +177,20 @@ class _MinioStub:
         response = _S3Response(self.objects[object_name][0], self.broken_body)
         self.responses.append(response)
         return response
+
+    def stat_object(self, bucket_name: str, object_name: str) -> object:
+        self.call("stat", bucket_name)
+        if object_name not in self.objects:
+            raise _s3_error("NoSuchKey")
+        return self.objects[object_name]
+
+    def bucket_exists(self, bucket_name: str) -> bool:
+        self.call("bucket_exists", bucket_name)
+        return self.bucket_present
+
+    def make_bucket(self, bucket_name: str, location: str | None = None) -> None:
+        self.call("make_bucket", bucket_name)
+        self.bucket_present = True
 
     def remove_object(self, bucket_name: str, object_name: str) -> None:
         self.call("remove", bucket_name)
@@ -274,6 +296,26 @@ BAD_KEYS = [
     "x" * 256,
     "a/" * 512 + "b",
 ]
+
+
+async def test_exists_says_whether_an_object_is_there_without_reading_it(store: ObjectStore) -> None:
+    """keksdose's ``object_exists``: a HEAD before hanging a row on a key the client sent."""
+    assert await store.exists(KEY) is False
+    await store.save(KEY, b"x" * 1024)
+    assert await store.exists(KEY) is True
+    assert await store.exists("feedback") is False, "a prefix of a key is no object"
+    assert await store.exists("feedback/1ed84e1bc3c7") is False
+    await store.remove(KEY)
+    assert await store.exists(KEY) is False
+    with pytest.raises(ValueError, match="not an object key"):
+        await store.exists("../etc/passwd")
+
+
+async def test_check_passes_for_a_store_that_can_be_reached(store: ObjectStore) -> None:
+    """A readiness probe: one cheap request, which writes and creates nothing."""
+    await store.check()
+    await store.save(KEY, b"x")
+    await store.check()
 
 
 @pytest.mark.parametrize("key", BAD_KEYS)
@@ -407,6 +449,47 @@ async def test_a_local_store_with_no_root_yet_lists_nothing(tmp_path: Path) -> N
     assert (tmp_path / "not-yet" / "feedback" / "1ed84e1bc3c7.webp").is_file()
 
 
+async def test_a_local_check_passes_before_the_first_save_has_made_the_root(tmp_path: Path) -> None:
+    """The root is made on the first save, so a fresh checkout's probe passes when that save
+    could make it — and makes nothing itself."""
+    store = LocalObjectStore(tmp_path / "not" / "yet")
+    await store.check()
+    assert not (tmp_path / "not").exists()
+
+
+async def test_a_local_check_fails_where_no_save_could_succeed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "a-file").write_bytes(b"x")
+    for root in (tmp_path / "a-file", tmp_path / "a-file" / "under"):
+        with pytest.raises(ObjectStoreError, match="could not check"):
+            await LocalObjectStore(root).check()
+    monkeypatch.setattr(os, "access", lambda path, mode: False)
+    with pytest.raises(ObjectStoreError, match="not writable"):
+        await LocalObjectStore(tmp_path).check()
+
+
+async def test_a_local_exists_that_fails_is_a_store_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = LocalObjectStore(tmp_path)
+
+    def denied(self: Path, *args: Any, **kwargs: Any) -> Any:
+        raise PermissionError(errno.EACCES, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(ObjectStoreError, match="could not find") as caught:
+        await store.exists(KEY)
+    assert isinstance(caught.value.__cause__, PermissionError)
+
+
+async def test_ensure_bucket_makes_the_local_root_when_asked(tmp_path: Path) -> None:
+    """Opt-in, for development: the store itself never makes it before a save."""
+    store = LocalObjectStore(tmp_path / "uploads")
+    await store.ensure_bucket()
+    assert (tmp_path / "uploads").is_dir()
+    await store.ensure_bucket()
+    (tmp_path / "a-file").write_bytes(b"x")
+    with pytest.raises(ObjectStoreError, match="could not make the bucket"):
+        await LocalObjectStore(tmp_path / "a-file").ensure_bucket()
+
+
 # --- Cloud Storage -------------------------------------------------------------------------
 
 
@@ -463,6 +546,39 @@ async def test_the_gcs_listing_skips_names_that_are_no_key() -> None:
     for name in ("feedback/", "feedback/.keep", "feedback//double.png"):
         client.bucket(BUCKET).objects[name] = (b"", "text/plain", stamp)
     assert [item.key for item in await store.list_objects("feedback/")] == [KEY]
+
+
+async def test_gcs_exists_and_check_ask_one_cheap_question_each() -> None:
+    """``exists`` is the object's metadata, never its bytes; ``check`` lists at most one
+    object, which the runtime account's ``roles/storage.objectUser`` may — reading the
+    bucket's own metadata it may not."""
+    client = _GcsClient()
+    store = GcsObjectStore(BUCKET, client=client)
+    await store.save(KEY, b"x")
+    assert await store.exists(KEY) is True
+    await store.check()
+    assert [op for op, _ in client.calls] == ["upload", "exists", "list"]
+    assert client.bucket(BUCKET).listed == [1]
+    assert not hasattr(store, "ensure_bucket"), "a cloud bucket is the deploy's"
+
+
+@pytest.mark.parametrize(
+    ("op", "error"),
+    [
+        ("exists", gcs_errors.Forbidden("storage.objects.get denied")),
+        ("list", gcs_errors.NotFound("The specified bucket does not exist.")),
+        ("list", gcs_errors.Forbidden("storage.objects.list denied")),
+    ],
+)
+async def test_a_gcs_exists_or_check_that_cannot_say_is_a_store_failure(op: str, error: Exception) -> None:
+    """Never "absent" for an outage (keksdose: that told a user their own file did not
+    exist), and a missing bucket fails the probe."""
+    client = _GcsClient()
+    store = GcsObjectStore(BUCKET, client=client)
+    client.bucket(BUCKET).fail[op] = error
+    with pytest.raises(ObjectStoreError) as caught:
+        await (store.exists(KEY) if op == "exists" else store.check())
+    assert type(caught.value) is ObjectStoreError and caught.value.__cause__ is error
 
 
 async def test_gcs_builds_its_client_keyless_once_on_first_use(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -604,6 +720,58 @@ async def test_the_s3_listing_skips_entries_that_are_no_key() -> None:
     assert [item.key for item in await store.list_objects()] == [KEY]
 
 
+async def test_s3_exists_is_a_stat_and_its_absent_codes_are_false() -> None:
+    stub = _MinioStub()
+    store = _s3(stub)
+    await store.save(KEY, b"x")
+    assert await store.exists(KEY) is True
+    for code in ("NoSuchKey", "NoSuchBucket", "NotFound"):
+        stub.fail["stat"] = _s3_error(code)
+        assert await store.exists(KEY) is False
+    error = _s3_error("AccessDenied")
+    stub.fail["stat"] = error
+    with pytest.raises(ObjectStoreError) as caught:
+        await store.exists(KEY)
+    assert caught.value.__cause__ is error
+    assert "get" not in [op for op, _ in stub.calls], "never the object's bytes"
+
+
+async def test_s3_check_is_keksdoses_bucket_probe_and_a_missing_bucket_fails_it() -> None:
+    stub = _MinioStub()
+    store = _s3(stub)
+    await store.check()
+    stub.bucket_present = False
+    with pytest.raises(ObjectStoreError, match=f"no bucket {BUCKET!r}"):
+        await store.check()
+    error = MaxRetryError(cast(Any, None), "/", reason=None)
+    stub.fail["bucket_exists"] = error
+    with pytest.raises(ObjectStoreError) as caught:
+        await store.check()
+    assert caught.value.__cause__ is error
+    assert "make_bucket" not in [op for op, _ in stub.calls], "a probe creates nothing"
+
+
+async def test_s3_ensure_bucket_makes_a_development_minios_bucket_when_asked() -> None:
+    """keksdose's development MinIO made its bucket on the first upload; here only when the
+    app asks, never in a save, so production never creates one."""
+    stub = _MinioStub()
+    store = _s3(stub)
+    stub.bucket_present = False
+    await store.save(KEY, b"x")
+    assert "make_bucket" not in [op for op, _ in stub.calls]
+    await store.ensure_bucket()
+    await store.ensure_bucket()
+    assert [op for op, _ in stub.calls].count("make_bucket") == 1
+    stub.bucket_present = False
+    stub.fail["make_bucket"] = _s3_error("BucketAlreadyOwnedByYou")
+    await store.ensure_bucket()  # another process made it first
+    error = _s3_error("AccessDenied")
+    stub.fail["make_bucket"] = error
+    with pytest.raises(ObjectStoreError, match="could not make the bucket") as caught:
+        await store.ensure_bucket()
+    assert caught.value.__cause__ is error
+
+
 class _MinioRecorder:
     made: ClassVar[list[tuple[str, dict[str, object]]]] = []
 
@@ -700,6 +868,12 @@ class _CountingStore:
         raise AssertionError("not called")
 
     async def list_objects(self, prefix: str = "") -> list[StoredObject]:
+        raise AssertionError("not called")
+
+    async def exists(self, key: str) -> bool:
+        raise AssertionError("not called")
+
+    async def check(self) -> None:
         raise AssertionError("not called")
 
     async def remove(self, key: str) -> None:

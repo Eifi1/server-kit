@@ -74,8 +74,9 @@ class FeedbackActor:
     #: keksdose role ADMIN; kastlan ADMIN in the acting company; Kurvenschmiede role ADMIN.
     is_admin: bool
     is_demo: bool = False
-    #: The app's role name, for its ``public_viewer`` predicate (§9.2 decision 7):
-    #: Kurvenschmiede lets ADMIN, MEMBER and REVIEWER in, never CUSTOMER.
+    #: The app's role name, for its ``public_viewer`` predicate (§9.2 decision 7). keksdose
+    #: and Kurvenschmiede let every signed-in account in (Kurvenschmiede left out its
+    #: CUSTOMER until that role went, migration 0060).
     role: str | None = None
 
 

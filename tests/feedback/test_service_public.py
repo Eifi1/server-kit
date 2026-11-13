@@ -64,7 +64,8 @@ SHOT = "/api/v1/feedback/attachments/aaaaaaaaaaaa.png"
 
 
 def kurvenschmiede(viewer: FeedbackActor) -> bool:
-    """KS's predicate: never a CUSTOMER."""
+    """A predicate that leaves a role out, as Kurvenschmiede's did until its CUSTOMER went
+    (migration 0060); today every app's lets every signed-in account in."""
     return viewer.role != "CUSTOMER"
 
 
@@ -320,7 +321,7 @@ async def test_who_may_comment(world: World) -> None:
     row = await world.file(CUSTOMER)
     payload = FeedbackCommentCreate(body="x")
     with pytest.raises(FeedbackNotFoundError):
-        await world.service.comment(CUSTOMER, row.id, payload)  # KS: the author outside the predicate
+        await world.service.comment(CUSTOMER, row.id, payload)  # the author outside the predicate
     with pytest.raises(FeedbackNotFoundError):
         await world.service.comments(CUSTOMER, row.id)
     assert (await world.service.vote(CUSTOMER, row.id)).voted, "a vote is the author's own"

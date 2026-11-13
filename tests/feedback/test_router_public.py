@@ -64,6 +64,8 @@ async def require_admin(person: Annotated[FeedbackActor, Depends(current_actor)]
 
 
 def kurvenschmiede(viewer: FeedbackActor) -> bool:
+    """A predicate that leaves a role out, as Kurvenschmiede's did until its CUSTOMER went
+    (migration 0060)."""
     return viewer.role != "CUSTOMER"
 
 

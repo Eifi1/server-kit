@@ -5,17 +5,20 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
 from eifi1_server_kit.auth import (
     CHALLENGE_LIFETIMES,
+    SHARED_DEVICE_CLAIM,
     TOTP_DIGITS,
     TOTP_STEP_CLAIM,
     TOTP_STEP_SECONDS,
     TOTP_WINDOW,
     ChallengeKind,
+    shared_device_of,
     totp_matched_step,
     totp_step_accepted,
     two_factor_challenge_claims,
@@ -275,3 +278,13 @@ def test_anything_but_an_integer_or_none_is_spent(copy: object) -> None:
 @pytest.mark.parametrize(("copy", "last_step", "spent"), [(5, 5, False), (4, 5, True), (6, 5, True), (5, None, True)])
 def test_spent_when_the_copy_differs(copy: int, last_step: int | None, spent: bool) -> None:
     assert two_factor_challenge_is_spent({TOTP_STEP_CLAIM: copy}, last_step) is spent
+
+
+def test_the_2fa_challenge_carries_the_shared_computer_choice() -> None:
+    """0.27: ``/login`` mints the 2FA challenge with the form's choice, and ``/login/2fa``
+    reads it back to start the session it asked for. The step rule is untouched."""
+    claims = json.loads(json.dumps(two_factor_challenge_claims(7, last_step=12, now=NOW, shared_device=True)))
+    assert shared_device_of(claims) is True
+    assert not two_factor_challenge_is_spent(claims, 12)
+    normal = two_factor_challenge_claims(7, last_step=12, now=NOW)
+    assert SHARED_DEVICE_CLAIM not in normal and shared_device_of(normal) is False

@@ -171,12 +171,20 @@ def totp_step_accepted(matched: int | None, last_step: int | None) -> bool:
     return last_step is None or matched > last_step
 
 
-def two_factor_challenge_claims(sub: int | str, *, last_step: int | None, now: datetime) -> dict[str, Any]:
+def two_factor_challenge_claims(
+    sub: int | str, *, last_step: int | None, now: datetime, shared_device: bool = False
+) -> dict[str, Any]:
     """The 2FA challenge's payload: :func:`~eifi1_server_kit.auth.challenge_claims` of
     :attr:`~eifi1_server_kit.auth.ChallengeKind.TWO_FACTOR` (five minutes), with the
     account's last accepted step under :data:`TOTP_STEP_CLAIM` — ``None`` when it has
-    accepted none (keksdose ``create_2fa_challenge_token``, kastlan's the same)."""
-    return challenge_claims(sub, ChallengeKind.TWO_FACTOR, now=now, extra={TOTP_STEP_CLAIM: last_step})
+    accepted none (keksdose ``create_2fa_challenge_token``, kastlan's the same).
+
+    ``shared_device`` (0.27): the sign-in form's "This is a shared computer", which
+    ``/login/2fa`` reads back with :func:`~eifi1_server_kit.auth.shared_device_of` to
+    start the session it asked for."""
+    return challenge_claims(
+        sub, ChallengeKind.TWO_FACTOR, now=now, extra={TOTP_STEP_CLAIM: last_step}, shared_device=shared_device
+    )
 
 
 def two_factor_challenge_is_spent(claims: Mapping[str, Any], last_step: int | None) -> bool:

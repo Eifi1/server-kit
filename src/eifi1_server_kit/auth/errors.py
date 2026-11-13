@@ -37,7 +37,8 @@ class AuthErrorCode(enum.StrEnum):
     TOKEN_EXPIRED = "token_expired"
     #: Every definitive refusal of ``POST /auth/refresh`` (auth §11.2, decision 7): the
     #: refresh token is unknown, malformed, expired or no refresh token at all; the
-    #: cut-off or the session row revoked it; the account is deactivated or must choose a
+    #: cut-off or the session row revoked it, or the session ran past its limits
+    #: (``session_expired``, 0.27); the account is deactivated or must choose a
     #: new password. The session is over, and ui-kit's ``attachSessionRefresh`` signs the
     #: user out. The client decides by the STATUS — what may answer it, and what must not,
     #: is :mod:`~eifi1_server_kit.auth.tokens`' "Refreshing a session".

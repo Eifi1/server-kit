@@ -223,8 +223,9 @@ class FeedbackService[RowT: FeedbackRow]:
     Public feedback (0.11, §9.14), every part optional: ``replies``, ``comments``,
     ``votes`` and ``people`` are the app's stores on the request's session;
     ``public_viewer`` is the app's predicate on the viewer (``None``: no public parts —
-    kastlan); ``public_search`` whether ``q`` may search the title (False where it is
-    sealed — Kurvenschmiede). With ``public_viewer`` set, ``comments``, ``votes`` and
+    kastlan); ``public_search`` whether ``q`` may search the title (False for an app that
+    seals its titles; none does since Kurvenschmiede's migration 0059 unsealed its
+    feedback). With ``public_viewer`` set, ``comments``, ``votes`` and
     ``people`` are required and the repository must implement
     :class:`~eifi1_server_kit.feedback.PublicFeedbackRepository` (:class:`ValueError`).
 

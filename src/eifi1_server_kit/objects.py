@@ -7,9 +7,10 @@ storage.googleapis.com with an HMAC pair). Kurvenschmiede moves its feedback att
 of its database into a Cloud Storage bucket reached without a key, and the store is written
 once, here (Marcel, 2026-11-12: "mehr im ui und server kit sharen"):
 
-* :class:`ObjectStore` — the port: ``save``, ``read``, ``remove``, ``list_objects``, each
-  async. An app's adapters take one: its feedback
-  :class:`~eifi1_server_kit.feedback.AttachmentStorage`, its sweep, its erasure;
+* :class:`ObjectStore` — the port: ``save``, ``read``, ``remove``, ``list_objects``, and
+  (0.27) ``exists`` and ``check``, each async. An app's adapters take one: its feedback
+  :class:`~eifi1_server_kit.feedback.AttachmentStorage`, its sweep, its erasure, its
+  readiness probe;
 * :class:`LocalObjectStore` — files under a root directory: development and tests;
 * :class:`GcsObjectStore` — a Cloud Storage bucket through Google's own client and
   Application Default Credentials, on Cloud Run the runtime service account: no key to
@@ -44,6 +45,11 @@ with the backend's own exception chained: minio's ``S3Error`` and urllib3's erro
 ``_as_os_error`` (``invoice_file_store.py:211``) relabelled them. A missing object on
 ``read`` is an :class:`ObjectNotFoundError`, a :class:`FileNotFoundError` too: the app's
 404. ``remove`` of a missing object is no failure: what it promises holds.
+
+**No bucket is made behind the app's back** (0.27). ``check`` probes the store for a
+readiness probe and makes nothing; ``ensure_bucket``, on the local and the S3 store only, makes
+the root or the bucket when the app asks — a development MinIO's, as keksdose's made its own
+on the first upload. No save ever does: in production the deploy makes the bucket.
 
 **Calls run in a worker thread.** Google's and minio's clients are synchronous, so each call
 runs in :func:`asyncio.to_thread`, as keksdose's do; so does the local store's file I/O. Build
@@ -229,6 +235,20 @@ class ObjectStore(Protocol):
         store's prefix is: ``feedback/1e`` finds ``feedback/1ed84e1bc3c7.webp``), in key
         order. For a sweep: an object no row names has no name anywhere but the store."""
 
+    async def exists(self, key: str) -> bool:
+        """Is there an object under ``key``? (0.27; keksdose ``object_exists``,
+        ``invoice_file_store.py:127``.) Its metadata, never its bytes: asked before a row is
+        hung on a key the client sent, it must not cost what serving the file does.
+        ``False`` means absent, and only that: a store that cannot say raises
+        :class:`ObjectStoreError` (keksdose's swallowed every failure, and an outage told a
+        user their own upload did not exist)."""
+
+    async def check(self) -> None:
+        """Raise :class:`ObjectStoreError` unless the store can be reached and its bucket (the
+        local root) is there to use (0.27; keksdose ``healthcheck``): one cheap request, for
+        a readiness probe or an admin page. It reads no object's bytes, writes nothing and
+        makes nothing."""
+
 
 # --- the local disk -----------------------------------------------------------------------------
 
@@ -317,6 +337,39 @@ class LocalObjectStore:
 
         return await _in_thread("list", prefix, walk)
 
+    async def exists(self, key: str) -> bool:
+        path = self._path(key)
+
+        def regular() -> bool:
+            try:
+                return S_ISREG(path.stat().st_mode)
+            except FileNotFoundError, NotADirectoryError:
+                return False
+
+        return await _in_thread("find", key, regular)
+
+    async def check(self) -> None:
+        """The root, or before the first save has made it the nearest directory above it, is
+        a directory this process may write in: the first save can succeed. Makes nothing."""
+        root = self._root
+
+        def probe() -> None:
+            path = root
+            while not path.exists() and path != path.parent:
+                path = path.parent
+            if not path.is_dir():
+                raise NotADirectoryError(errno.ENOTDIR, "Not a directory", str(path))
+            if not os.access(path, os.W_OK | os.X_OK):
+                raise ObjectStoreError(errno.EACCES, "The local store's root is not writable", str(path))
+
+        await _in_thread("check", str(root), probe)
+
+    async def ensure_bucket(self) -> None:
+        """Make the root now (0.27), for a development setup that wants it before the first
+        save; a save makes it anyway. A file in its place is an :class:`ObjectStoreError`."""
+        root = self._root
+        await _in_thread("make the bucket", str(root), lambda: root.mkdir(parents=True, exist_ok=True))
+
 
 # --- Cloud Storage ----------------------------------------------------------------------------
 
@@ -332,7 +385,9 @@ class GcsObjectStore:
 
     The account needs ``roles/storage.objectUser`` on the bucket and nothing on the bucket
     itself: the store never creates, configures or deletes a bucket (Kurvenschmiede
-    ``deploy/gcp/README.md``, "The uploads bucket"). ``client`` is an app's own
+    ``deploy/gcp/README.md``, "The uploads bucket"), so it has no ``ensure_bucket``, and
+    ``check`` lists one object rather than reading the bucket's metadata, which that role
+    does not grant. ``client`` is an app's own
     ``storage.Client`` (another project, an emulator) or a test's stub; the client's own
     retry and timeout defaults apply.
     """
@@ -404,6 +459,18 @@ class GcsObjectStore:
 
         return await _in_thread("list", prefix, listing)
 
+    async def exists(self, key: str) -> bool:
+        _check_key(key)
+        # The object's metadata; the client answers False for NotFound and raises the rest.
+        return await _in_thread("find", key, lambda: bool(self._handle().blob(key).exists()))
+
+    async def check(self) -> None:
+        def probe() -> None:
+            # At most one object (``storage.objects.list``); a missing bucket is NotFound.
+            list(self._handle().list_blobs(max_results=1))
+
+        await _in_thread("check", self._name, probe)
+
 
 # --- S3 -----------------------------------------------------------------------------------------
 
@@ -441,9 +508,10 @@ class S3ObjectStore:
     ``endpoint`` is an http(s) origin — ``https://storage.googleapis.com``, a development
     MinIO's ``http://127.0.0.1:9000`` — with ``access_key`` and ``secret_key`` (blank: none)
     and ``region`` (``europe-west4`` spares minio asking the bucket where it is). Or
-    ``client``, an app's own ``Minio`` or a test's stub, in place of the four. The store never
-    creates a bucket: a development MinIO's is made once, beside the container
-    (``mc mb --ignore-existing``), as a cloud bucket is made by its deploy.
+    ``client``, an app's own ``Minio`` or a test's stub, in place of the four. No save creates
+    a bucket: a cloud bucket is made by its deploy, and a development MinIO's by
+    :meth:`ensure_bucket` when the app asks (0.27), or once beside the container
+    (``mc mb --ignore-existing``).
     """
 
     def __init__(
@@ -528,6 +596,50 @@ class S3ObjectStore:
             return sorted(found, key=attrgetter("key"))
 
         return await _in_thread("list", prefix, listing)
+
+    async def exists(self, key: str) -> bool:
+        _check_key(key)
+
+        def stat() -> bool:
+            from minio.error import S3Error
+
+            try:
+                self._client.stat_object(self._bucket, key)
+            except S3Error as exc:
+                if exc.code in _ABSENT_CODES:
+                    return False
+                raise
+            return True
+
+        return await _in_thread("find", key, stat)
+
+    async def check(self) -> None:
+        """keksdose's probe (``bucket_exists``, a HEAD on the bucket), with a missing bucket a
+        failure: keksdose's passed it."""
+
+        def probe() -> None:
+            if not self._client.bucket_exists(self._bucket):
+                raise ObjectStoreError(f"The object store has no bucket {self._bucket!r}")
+
+        await _in_thread("check", self._bucket, probe)
+
+    async def ensure_bucket(self) -> None:
+        """Make the bucket when it is missing (0.27): for a development MinIO, called by the
+        app at its start, never by a save (keksdose made its bucket on the first upload). A
+        bucket another process made first is no failure."""
+
+        def make() -> None:
+            from minio.error import S3Error
+
+            if self._client.bucket_exists(self._bucket):
+                return
+            try:
+                self._client.make_bucket(self._bucket)
+            except S3Error as exc:
+                if exc.code != "BucketAlreadyOwnedByYou":
+                    raise
+
+        await _in_thread("make the bucket", self._bucket, make)
 
 
 # --- the purge --------------------------------------------------------------------------------

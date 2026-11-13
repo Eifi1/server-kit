@@ -48,9 +48,10 @@ the STATUS what the answer means, so these answers are a contract:
 * **Definitive: ``401 {code: "session_ended"}``**, raised as
   ``AuthError(AuthErrorCode.SESSION_ENDED)``, for every refusal of the token or its
   account: unknown, malformed or expired; no refresh token (its ``type``); minted at or
-  before the cut-off (:func:`token_is_revoked`) or, in an app that keeps sessions, ended
-  by its row; a deactivated account; a required password change (§6.2, §6.3). The
-  ``detail`` may say which, for logs. Never a ``403``. The client signs the user out.
+  before the cut-off (:func:`token_is_revoked`); ended by its session row, or past the
+  row's limits (:func:`~eifi1_server_kit.auth.session_expired`, 0.27); a deactivated
+  account; a required password change (§6.2, §6.3). The ``detail`` may say which, for
+  logs. Never a ``403``. The client signs the user out.
 * **The route never turns its own failure into a 401.** A database error, a timeout or a
   bug stays a 5xx, which the client reads as transient: it keeps the session and tries
   again (after 1 s and 3 s). A 401 there would sign everyone out over an outage. Nothing
@@ -63,6 +64,11 @@ the STATUS what the answer means, so these answers are a contract:
   (signing in and its challenges, a reset, a verification link, the refresh itself) may
   answer 401 for a wrong credential: the client never refreshes on them (ui-kit's
   ``isSignedOutStep``).
+
+**A shared computer** (0.27): the sign-in's "This is a shared computer" reaches the step
+that starts the session in the challenge — ``challenge_claims(…, shared_device=True)``
+writes :data:`SHARED_DEVICE_CLAIM`, :func:`shared_device_of` reads it back — and the
+session's limits are :mod:`~eifi1_server_kit.auth.sessions`'.
 """
 
 from __future__ import annotations
@@ -207,6 +213,12 @@ CHALLENGE_LIFETIMES: Mapping[ChallengeKind, timedelta] = {
     ChallengeKind.WEBAUTHN_AUTH: timedelta(minutes=5),
 }
 
+#: The sign-in's "This is a shared computer" (0.27), carried by a challenge — the 2FA
+#: step's, the password change's — to the step that starts the session, so the session
+#: created there knows it (:func:`challenge_claims`' ``shared_device``,
+#: :func:`shared_device_of`). Only a ticked choice writes it.
+SHARED_DEVICE_CLAIM = "shared_device"
+
 #: The claims a builder sets itself; ``extra`` may not override them.
 RESERVED_CLAIMS: frozenset[str] = frozenset({"sub", "type", "iat", "exp"})
 #: What an access token must not carry (§6.2): the profile is read from ``/auth/me``.
@@ -277,7 +289,12 @@ def refresh_claims(
 
 
 def challenge_claims(
-    sub: int | str, kind: ChallengeKind, *, now: datetime, extra: Mapping[str, Any] | None = None
+    sub: int | str,
+    kind: ChallengeKind,
+    *,
+    now: datetime,
+    extra: Mapping[str, Any] | None = None,
+    shared_device: bool = False,
 ) -> dict[str, Any]:
     """The payload of a sign-in challenge token, at its kind's lifetime (keksdose
     ``create_2fa_challenge_token`` / ``create_password_change_challenge_token``).
@@ -294,8 +311,32 @@ def challenge_claims(
     ``iat`` keeps its fraction of a second, which a passkey sign-in compares with the
     credential's last use (keksdose ``_verify_assertion``, kastlan
     ``finish_authentication``).
+
+    ``shared_device`` (0.27) is the sign-in's "This is a shared computer": ``True`` writes
+    :data:`SHARED_DEVICE_CLAIM`, so the step that redeems the challenge starts a shared
+    session (:func:`shared_device_of`). ``/login`` passes the form's choice to the 2FA
+    challenge; ``/login/2fa`` and a passkey's finish pass it on to the password change's::
+
+        challenge_claims(user.id, ChallengeKind.PASSWORD_CHANGE, now=now,
+                         shared_device=shared_device_of(two_factor_claims))
+
+    ``False`` writes nothing, so a normal sign-in's challenge is what it was.
     """
+    if shared_device:
+        extra = {**(extra or {}), SHARED_DEVICE_CLAIM: True}
     return _claims(sub, token_type=kind.value, now=now, lifetime=CHALLENGE_LIFETIMES[kind], extra=extra)
+
+
+def shared_device_of(claims: Mapping[str, Any]) -> bool:
+    """Did the sign-in this challenge continues say "This is a shared computer"? (0.27.)
+
+    ``claims`` is the decoded challenge, already checked for its type and expiry. A missing
+    claim, ``null`` or ``false`` is a normal session — a challenge minted before 0.27
+    reads as one. Anything else is a value this server never writes, in a token it signed:
+    its own bug, read as shared, the shorter life.
+    """
+    value = claims.get(SHARED_DEVICE_CLAIM)
+    return value is not None and value is not False
 
 
 def token_is_revoked(claims_iat: object, sessions_invalid_before: datetime | None) -> bool:

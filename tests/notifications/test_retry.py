@@ -21,6 +21,8 @@ from eifi1_server_kit.notifications import (
 DAY = date(2026, 10, 13)
 NEXT = date(2026, 10, 14)
 UUID = "0b9f3c1e-5d2a-4f7b-9c8d-1e2f3a4b5c6d"
+#: kastlan's base URL; a key carries its host (required since 0.27).
+BASE = "https://kastlan.example"
 
 
 def _days(count: int) -> date:
@@ -101,21 +103,22 @@ def test_mail_event_takes_a_day_not_a_datetime() -> None:
 
 def test_the_idempotency_key_is_per_recipient_event_and_day() -> None:
     marker = MailMarker(17, "invoices_overdue", mail_event(42, DAY))
-    assert marker.idempotency_key(NEXT) == "invoices_overdue:42:2026-10-13:17:2026-10-14"
-    assert marker.idempotency_key(NEXT) == marker.idempotency_key(NEXT), "two runs on one day: one key"
-    assert marker.idempotency_key(_days(2)) != marker.idempotency_key(NEXT), "the next day's try is a new key"
-    assert MailMarker(18, "invoices_overdue", "42:2026-10-13").idempotency_key(NEXT) != marker.idempotency_key(NEXT)
-    assert MailMarker(17, "invoices_overdue", "43:2026-10-13").idempotency_key(NEXT) != marker.idempotency_key(NEXT)
-    assert MailMarker(UUID, "share_granted", "p.7").idempotency_key(NEXT) == f"share_granted:p.7:{UUID}:2026-10-14"
+
+    def key(of: MailMarker, day: date = NEXT) -> str:
+        return of.idempotency_key(day, app_base_url=BASE)
+
+    assert key(marker) == "invoices_overdue:kastlan.example:42:2026-10-13:17:2026-10-14"
+    assert key(marker) == key(marker), "two runs on one day: one key"
+    assert key(marker, _days(2)) != key(marker), "the next day's try is a new key"
+    assert key(MailMarker(18, "invoices_overdue", "42:2026-10-13")) != key(marker)
+    assert key(MailMarker(17, "invoices_overdue", "43:2026-10-13")) != key(marker)
+    assert key(MailMarker(UUID, "share_granted", "p.7")) == f"share_granted:kastlan.example:p.7:{UUID}:2026-10-14"
 
 
 def test_the_longest_key_is_one_resend_takes() -> None:
-    longest = MailMarker("u" * 64, "t" * 40, "e" * 64).idempotency_key(NEXT)
-    assert len(longest) == 181
+    longest = MailMarker("u" * 64, "t" * 40, "e" * 64).idempotency_key(NEXT, app_base_url=f"https://{'h' * 64}")
+    assert len(longest) == 246
     assert MailMessage(subject="s", text="t", idempotency_key=longest).idempotency_key == longest
-    hosted = MailMarker("u" * 64, "t" * 40, "e" * 64).idempotency_key(NEXT, app_base_url=f"https://{'h' * 64}")
-    assert len(hosted) == 246
-    assert MailMessage(subject="s", text="t", idempotency_key=hosted).idempotency_key == hosted
 
 
 def test_the_key_carries_the_apps_host() -> None:
@@ -152,11 +155,15 @@ def test_only_the_host_counts_so_the_key_stays_the_apps_across_reruns(base: str)
     )
 
 
-def test_without_a_base_url_the_key_is_the_one_before_0_23() -> None:
-    """An app that has not passed its base URL yet sends the key it sent with 0.22."""
+def test_the_base_url_is_required_so_no_call_site_brings_the_collision_back() -> None:
+    """0.27 (Marcel, 2026-11-13): optional, a new call site that forgot it sent 0.22's key,
+    which another app on the same Resend team sends too — a 409, the mail dropped after
+    three tries. Left out, or ``None`` from an unset setting, is a ``TypeError``."""
     marker = MailMarker(17, "invoices_overdue", "42:2026-10-13")
-    assert marker.idempotency_key(NEXT) == marker.idempotency_key(NEXT, app_base_url=None)
-    assert marker.idempotency_key(NEXT) == "invoices_overdue:42:2026-10-13:17:2026-10-14"
+    with pytest.raises(TypeError, match="app_base_url"):
+        marker.idempotency_key(NEXT)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="the app's base URL is required"):
+        marker.idempotency_key(NEXT, app_base_url=None)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -211,4 +218,6 @@ def test_the_marker_refuses_what_would_break_its_key(user_id: int | str, type_id
 
 def test_the_key_takes_a_day_not_a_datetime() -> None:
     with pytest.raises(TypeError, match="the day of the try is a date, not a datetime"):
-        MailMarker(17, "invoices_overdue", "42:2026-10-13").idempotency_key(datetime(2026, 10, 14, tzinfo=UTC))
+        MailMarker(17, "invoices_overdue", "42:2026-10-13").idempotency_key(
+            datetime(2026, 10, 14, tzinfo=UTC), app_base_url=BASE
+        )

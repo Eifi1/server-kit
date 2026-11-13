@@ -39,9 +39,8 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.26 ↔ ui-kit 0.61**: that ui-kit
-release is tested against server-kit 0.25's API export, and 0.26 only adds `objects`, which no
-ui-kit part reads (the ui-kit showcase's Server kit pages
+package with its own version and changelog. **server-kit 0.27 ↔ ui-kit 0.62**: that ui-kit
+release is tested against this release's API export (the ui-kit showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
 `server-kit-api.json`).
@@ -170,8 +169,8 @@ written once (server-services §2, §4.1). The ports and the service come with
 - **The create stamps the identity** (`stamp_identity`) and decides the first status;
   `attachment_urls` is `None` for none, never `[]`.
 - **Public feedback (0.11, feedback §9).** `create_reply` is mounted with `deps.replies`
-  (all three apps); the other eight with `deps.public_viewer` (keksdose: everyone signed
-  in; Kurvenschmiede: never a CUSTOMER), which needs `comments`, `votes` and `people`
+  (all three apps); the other eight with `deps.public_viewer` (keksdose and Kurvenschmiede:
+  everyone signed in), which needs `comments`, `votes` and `people`
   (else `ValueError` at build time). An admin always sees the public parts; a demo never
   does (404 on the reads, the app's demo refusal on the writes); a CRASH is never public.
   Others read first names only, and every body that leaves for them passes `public_text`.
@@ -210,10 +209,10 @@ imported lazily; without the extra every call raises `ImportError` naming it.
 ### `eifi1_server_kit.objects`
 
 Where the apps' stored files live (0.26), lifted from keksdose's `InvoiceFileStore`
-(`adapters/external/invoice_file_store.py`). The port `ObjectStore` has four async methods —
+(`adapters/external/invoice_file_store.py`). The port `ObjectStore` has six async methods —
 `save(key, data, *, content_type=None)`, `read(key) -> bytes`, `remove(key)`,
-`list_objects(prefix="") -> list[StoredObject(key, modified)]` in key order — and three
-backends:
+`list_objects(prefix="") -> list[StoredObject(key, modified)]` in key order, and since 0.27
+`exists(key) -> bool` and `check()` — and three backends:
 
 | Backend | For | Needs |
 |---|---|---|
@@ -223,7 +222,7 @@ backends:
 
 The app mints the key (keksdose `feedback/<sha12>.<ext>`, Kurvenschmiede its keyed digest);
 the store makes none, keeps the bytes as given (no sealing: the provider's encryption at
-rest) and never creates a bucket. A key is what every backend can hold — at most 1024 bytes
+rest) and never creates a bucket on its own. A key is what every backend can hold — at most 1024 bytes
 of UTF-8 (`MAX_KEY_BYTES`), `/`-separated segments of at most 255 (`MAX_SEGMENT_BYTES`), none
 empty or starting with a dot, no backslash or control character — so nothing climbs out of
 the local root and a key that works in development works in the bucket; anything else is a
@@ -233,6 +232,20 @@ urllib3's errors are none); `read` of a missing object is `ObjectNotFoundError`,
 `FileNotFoundError` too, the app's 404; `remove` of a missing object is no failure. The cloud
 clients are synchronous and imported lazily: each call runs in a worker thread, and a missing
 extra is an `ImportError` naming it. Build one store per process and share it.
+
+**Asking without reading** (0.27, keksdose's `object_exists` and `healthcheck`):
+`exists(key)` reads the object's metadata, never its bytes (a stat, `blob.exists()`,
+`stat_object`) — for a key the client sent before a row is hung on it — and answers `False`
+for absent only: a store that cannot say raises `ObjectStoreError`, never "absent".
+`check()` is one cheap request for a readiness probe or an admin page, raising
+`ObjectStoreError` unless the store is reachable and its bucket is there: the local root (or,
+before the first save made it, the directory above it) writable; Cloud Storage lists at most
+one object, which `roles/storage.objectUser` allows where the bucket's own metadata is not;
+S3 is keksdose's `bucket_exists`, with a missing bucket a failure. It makes nothing.
+**`ensure_bucket()`**, on `LocalObjectStore` and `S3ObjectStore` only, makes the root or the
+bucket when the app asks — a development MinIO's at the app's start, where keksdose made it
+on the first upload; no save ever does, so production never creates one. A Cloud Storage
+bucket is its deploy's, and `GcsObjectStore` has none.
 
 `await purge_objects(store, keys, *, reason, concurrency=PURGE_CONCURRENCY)` removes many,
 16 in flight, each key once, and never raises: it returns the keys it left, in the order
@@ -402,10 +415,11 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | The gate | `registration_decision(is_first_user=, on_env_list=, has_valid_invitation=)` → `RegistrationDecision.FIRST_ADMIN` / `INVITED` / `CLOSED` (`.allowed`, `.first_admin`); `parse_env_list`, `env_list_match` (`None` = no list set) |
 | Names | `full_name(first, last, locale)` ("First Last"; hu "Last First"; zh "LastFirst" for a CJK name, a Latin one as written; a missing part leaves the other), `first_name_of(first, last)` (0.11: the first name others see, `None` while the last name is blank — no first-word guessing), `name_incomplete(first, last, is_demo=)`, `erasure_identifiers(email, first, last, old_display_name)` |
 | One-time tokens | `mint(prefix="")` → `MintedToken(raw, digest)`, `hash_token` (SHA-256 hex), `is_expired(issued_at, ttl, now)`; `RESET_TTL` 1 h, `VERIFY_TTL` 48 h, `INVITE_TTL` 14 d, `EMAIL_CHANGE_TTL` 48 h; `OneTimeTokenKind` (`password_reset`, `verification`, `invitation`, `email_change` — the mail kinds too) with `ONE_TIME_TOKEN_TTLS`, `EMAIL_CHANGE_TOKEN_KIND` |
-| Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=, extra=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale; a challenge's `extra` since 0.21: a passkey ceremony's `challenge`, the 2FA step's `totp_step`); `ChallengeKind` `2fa_challenge` (5 min), `password_change` (10 min), and since 0.21 the passkey ceremonies `webauthn_register` and `webauthn_auth` (5 min each, keksdose's and kastlan's strings; `CHALLENGE_LIFETIMES`); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
+| Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=, extra=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale; a challenge's `extra` since 0.21: a passkey ceremony's `challenge`, the 2FA step's `totp_step`); `ChallengeKind` `2fa_challenge` (5 min), `password_change` (10 min), and since 0.21 the passkey ceremonies `webauthn_register` and `webauthn_auth` (5 min each, keksdose's and kastlan's strings; `CHALLENGE_LIFETIMES`); (0.27) `challenge_claims(…, shared_device=True)` carries the sign-in's "This is a shared computer" to the step that starts the session (`SHARED_DEVICE_CLAIM` `"shared_device"`, written only when ticked), `shared_device_of(claims)` reads it back (missing, `null` or `false` is a normal session; anything else, shared); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
-| Schemas | `RegisterRequest`, `LoginRequest`, `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `role` may be `null` since 0.21 — always answered, `null` for an account with no role, a kastlan user in no company; a subclass that narrows it to the app's enum keeps it a string; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
-| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `two_factor_challenge_claims(sub, *, last_step, now)` (the 2FA challenge, five minutes, the last accepted step under `TOTP_STEP_CLAIM` `"totp_step"`) and `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was minted: one challenge, one sign-in); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1 |
+| Sessions (0.27) | `SessionPolicy(access_lifetime=24 h, refresh_lifetime=30 d, shared_idle=15 min, shared_absolute=4 h, shared_access_lifetime=5 min)` (frozen; one per app, the two normal lifetimes its settings; a shared access token as long as the idle limit is refused); `session_expired(policy, *, shared, started_at, last_active, now)` (shared: `shared_idle` since the last refresh or `shared_absolute` since the start; normal: `refresh_lifetime` since the last refresh, never for its age; ended AT the limit; a `now` behind either instant ends nothing), `session_expires_at(policy, *, shared, started_at, last_active)` (the `expires_at` column), `refresh_lifetime(policy, *, shared, started_at, now)` (shared: `shared_idle`, never past the absolute end, zero there), `access_lifetime(…)` (shared: at most `shared_access_lifetime`, never past the end); `SHARED_IDLE`, `SHARED_ABSOLUTE`, `SHARED_ACCESS_LIFETIME` |
+| Schemas | `RegisterRequest`, `LoginRequest` (`shared_device`, `false` when left out, since 0.27; from the mixin `SharedDeviceChoice`, which an app adds to its passkey finish), `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `role` may be `null` since 0.21 — always answered, `null` for an account with no role, a kastlan user in no company; a subclass that narrows it to the app's enum keeps it a string; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `two_factor_challenge_claims(sub, *, last_step, now, shared_device=False)` (the 2FA challenge, five minutes, the last accepted step under `TOTP_STEP_CLAIM` `"totp_step"`; the shared-computer choice since 0.27) and `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was minted: one challenge, one sign-in); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1 |
 | Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
@@ -440,6 +454,62 @@ The 2FA challenge is a stateless JWT, so the code alone cannot make it single-us
 with `two_factor_challenge_claims(user.id, last_step=user.totp_last_step, now=now)`, and at
 `POST /auth/login/2fa` refuse it as `token_invalid` when
 `two_factor_challenge_is_spent(claims, user.totp_last_step)` — read with the row locked.
+
+**A shared computer's session is short on the server, and every sign-out ends it** (0.27;
+Marcel, 2026-11-12). A browser restores a closed tab WITH its `sessionStorage`, so a
+shared computer's tokens outlive the tab the client keeps them in, and every refresh used to
+re-mint 30 days (kastlan's finding). The sign-in carries the choice (`LoginRequest`'s
+`shared_device`; the app's passkey finish mixes in `SharedDeviceChoice`), a challenge
+carries it to the step that starts the session, and the app's session row keeps it
+(`shared_device`, `expires_at`). Then three call sites, each with the row's
+`shared_device`, `created_at` and `last_active`:
+
+```python
+policy = kit.SessionPolicy(access_lifetime=timedelta(minutes=settings.access_token_expire_minutes))
+
+# /login: the form's choice into the 2FA challenge, or into the session
+kit.two_factor_challenge_claims(user.id, last_step=user.totp_last_step, now=now, shared_device=body.shared_device)
+# /login/2fa, a passkey's finish: on to the password change's challenge, or into the session
+shared = kit.shared_device_of(claims)
+kit.challenge_claims(user.id, kit.ChallengeKind.PASSWORD_CHANGE, now=now, shared_device=shared)
+
+# 1. minting a pair, at sign-in and at every refresh
+kit.access_claims(
+    user.id,
+    now=now,
+    lifetime=kit.access_lifetime(policy, shared=row.shared_device, started_at=row.created_at, now=now),
+    extra={"sid": row.id},
+)
+kit.refresh_claims(
+    user.id,
+    now=now,
+    lifetime=kit.refresh_lifetime(policy, shared=row.shared_device, started_at=row.created_at, now=now),
+    extra={"sid": row.id},
+)
+# 2. /auth/refresh: refuse, else stamp
+if kit.session_expired(
+    policy, shared=row.shared_device, started_at=row.created_at, last_active=row.last_active, now=now
+):
+    raise kit.AuthError(kit.AuthErrorCode.SESSION_ENDED, "Session expired")
+row.last_active = now
+row.expires_at = kit.session_expires_at(policy, shared=row.shared_device, started_at=row.created_at, last_active=now)
+# 3. every request (get_current_user): the route's 401 when the row has ended — `expires_at > now` in SQL
+```
+
+A shared session ends 15 minutes after its last refresh and 4 hours after it started; a
+normal one, 30 days after its last refresh, as its refresh token would. The idle limit
+counts from the refresh, so no request writes; that is why a shared access token lives 5
+minutes, shorter than the refresh token: the client refreshes on the first 401 after its
+access token ends, and an access token as long as the idle limit (kastlan's 15 minutes)
+would end with its refresh token and sign a busy person out. A session left alone ends 10
+to 15 minutes after its last request.
+
+**Every sign-out ends the session on the server, shared or not**: the client calls the
+app's revoke for its own session (the session the access token's `sid` names) before it
+drops its tokens, and the server marks the row ended. A sign-out that cannot reach the
+server still signs out on the device; the limits above end the row. The table, its
+migration and the routes stay in the app. keksdose and Kurvenschmiede, which kept no
+session rows, add them (`user_sessions`, kastlan's shape).
 
 **Per IP a hard limit, per address only a delay** (§5.2). A lock per address would let
 anyone lock a known user out by failing on purpose, so `LoginFailureThrottle` counts
@@ -547,8 +617,9 @@ session.add(AdminActionModel(**record))  # the app's own model, in the same tran
 `at_least=` raises it and never lowers it. keksdose raises the reset mail and the forced
 password change to `type_email` for an account whose key a password opens.
 
-**The detail never holds content.** Kurvenschmiede encrypts notes, titles and bodies at
-rest, and a plaintext copy in `detail` would carry them past the encryption, into a
+**The detail never holds content.** Kurvenschmiede encrypts its content at rest (a
+project's name, description and inputs, its gear, a translation's text and note), and a
+plaintext copy in `detail` would carry them past the encryption, into a
 table every admin reads and past the erasure scrub. So `audit_detail` accepts only short
 tokens: a role, a locale, an ISO date. It refuses sentences, addresses, secrets and
 anything that is not JSON. A refusal is a bug in the app, and its tests catch it.
@@ -813,9 +884,9 @@ async def dev_switch_state(user=Depends(get_current_user)) -> DevSwitchAnswer:
 - **The role is written in the local database**, as every app reads it from the row:
   keksdose `users.role`; kastlan the acting company's `user_role_assignments` (replace
   the caller's roles there), then `issue_session`; Kurvenschmiede `users.role` on the
-  caller's row directly, skipping `set_role`'s self and last-admin refusals, but refusing
-  CUSTOMER for an account that owns work (`DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED,
-  "Sign in as the seed's customer")`, 409).
+  caller's row directly, skipping `set_role`'s self and last-admin refusals. What the app's
+  own rules refuse is `DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED, …)`, 409:
+  keksdose's demo account, Kurvenschmiede's plan for a role that has none of its own.
 - **The plan goes through the operator's grant, permanent** (`comped_until=None`):
   keksdose `set_plan`, kastlan `BillingService.set_plan`, Kurvenschmiede `change_plan` on
   the caller's own row. Billing §16's permanent-grant warning then shows, which is right —
@@ -1364,11 +1435,11 @@ off the event loop, its mailer). keksdose is the source
 | The settings resource | `NotificationSettingsResponse`, `QuietHoursFields`, `DigestFields`, `TypeSwitches(app, email, push=None)`; `NotificationSettingsUpdate` (class knob `registry`), `QuietHoursUpdate` (both refuse a `timezone` from 0.18, a 422 as any unknown field — ignored in 0.16 and 0.17), `DigestUpdate`, `TypeSwitchesPatch`; `StoredSwitches(app, email, push)`, `resolve_switches(types, stored)`, `apply_switches_patch(types, stored, patch, *, couple_push_to_app=False)`, `migrate_enabled_to_channels(enabled)`, `SETTINGS_NOT_NULLABLE`, `SETTINGS_SKIP` |
 | Delivery | `plan_delivery(type, switches, *, active, is_actor, quiet_now, email_verified, keeps_inbox, service=False)` → `Delivery(inbox, push, email)`, `Delivery.NONE`; per device (0.16) `device_receives(muted_types, type_id)`, `read_muted_types(types, stored)`, `apply_muted_types(types, muted)` |
 | Quiet hours, the zone, the digest | `in_quiet_hours(start, end, zone, now)`, `quiet_hours_end(start, end, zone, now)`, `effective_zone(device_timezone, fallback=DEFAULT_ZONE)`, `local_today(zone, now)`, `resolve_zone(name, fallback=DEFAULT_ZONE)`, `is_known_zone`, `digest_period(cadence, day)`, `digest_due(cadence, zone, now, *, sent, late_days=3)`, `digest_tag(period)`, `DigestCadence`, `DIGEST_CADENCES`, `DIGEST_LATE_DAYS`, `DEFAULT_ZONE`, `QUIET_HOURS_PATTERN` |
-| A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day, *, app_base_url=None)`), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
+| A failed send | `mail_due(event_day, today, *, sent, late_days=3)`, `mail_event(*parts)`, `MailMarker(user_id, type_id, event)` (`.idempotency_key(day, *, app_base_url)`, the base URL required since 0.27), `MAIL_LATE_DAYS`, `MAIL_MARKER_RETENTION` (30 days), `MAIL_EVENT_PATTERN` |
 | Push | `PushSubscriptionIn`, `PushSubscriptionKeys`, `PushUnregisterIn`, `PushKeyResponse`, `PushTestResponse`, `PushDeviceResponse` (`muted_types`), `PushDeviceUpdate(muted_types)`; `PushPayload(title, body, tag, data).encode(limit=3072)`, `PushData(url, type, inbox=True)`; `push_outcome(status)` → `PushOutcome`, `should_reap(failure_count, *, limit=PUSH_MAX_FAILURES)`, `push_gone_expired(gone_at, now, *, grace=PUSH_GONE_GRACE)`, `vapid_subject(support_address)`; `parse_push_body(model, body)`, `parse_push_replace(body)` (0.17.0: a bad body is a plain 422 that never echoes `old_auth` or a key; a body that isn't valid JSON is refused by FastAPI first, in the redacted `json_invalid` shape — one route, two 422 shapes, neither echoes); `documented_body(model)` (0.18: the `openapi_extra` that documents an untyped `Annotated[Any, Body()]` body from its model, nested models inlined); `PUSH_TTL`, `PUSH_TIMEOUT`, `PUSH_MAX_FAILURES`, `PUSH_PAYLOAD_LIMIT`, `PUSH_TEST_TYPE`, `PUSH_GONE_GRACE` (7 days) |
 | Unsubscribe | `unsubscribe_token(secret, user_id, type_id)`, `read_unsubscribe_token(secret, token)` → `UnsubscribeClaim(user_id, type_id)`, `unsubscribe_key(secret)` |
 | The inbox | `InboxItem` (`company`, 0.16), `InboxResponse`, `InboxMarkRead`, `InboxMarkReadResponse`, `INBOX_RETENTION` (90 days); layer 2 (0.16): `InboxStore` (`add`, `page`, `mark_read`, `clear`, `prune`), `NewInboxItem`, `INBOX_PAGE_DEFAULT`, `INBOX_PAGE_MAX` |
-| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted` — 0.17.0: gets the flush's `now=` when it takes one —, `send_push`, `send_mail`), `QueueService(queue, port, *, limit=…, app_base_url=None)` (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
+| The queue (0.16, layer 2, opt-in) | `NotificationQueue` (`enqueue`, `open_bundle`, `claim`, `done`, `drop`, `defer`, `purge`), `NewQueueItem`, `QueueItem`, `QueueChannel`, `FlushPort` (`still_wanted` — 0.17.0: gets the flush's `now=` when it takes one —, `send_push`, `send_mail`), `QueueService(queue, port, *, app_base_url, limit=…)` (the base URL required since 0.27) (`hold_push`, `queue_mail`, `flush`, `purge`), `FlushResult(sent, dropped, left, purged)`, `notifications_tick(service, now)`, `QUEUE_CLAIM_TIMEOUT` (10 min), `QUEUE_MAX_ATTEMPTS` (3), `QUEUE_RETENTION` (30 days), `QUEUE_FLUSH_LIMIT`, `QUEUE_MORE` |
 | Routes (`notifications.router`, the `fastapi` extra) | `InboxDeps(store=, current_user_id=, guards=())`, `inbox_router(deps, *, prefix="/notifications/inbox")`; `notifications_jobs_router(service, require_jobs_token, *, now=utc_now, prefix="/ops/notifications")` → `POST /flush` |
 | Testing (`notifications.testing`) | `InMemoryInboxStore`, `InMemoryNotificationQueue` (`commit`, `rollback`, `commits`), `RecordingFlushPort` |
 | Refusals | `NotificationError`; `NotificationTypeError` (422, `notification_type_not_received`, `types`), `NotificationChannelError` (422, `notification_channel_not_offered`, `types`, `channel`; 0.16), `PushEndpointTakenError` (409, `push_endpoint_taken`), `PushBodyInvalidError` (422, `push_body_invalid`, `fields`; 0.17.0), `UnsubscribeTokenError` (400, `unsubscribe_invalid`) |
@@ -1423,8 +1494,10 @@ events still due by `mail_due(event_day, today, sent=…)` and their recipients 
 `MailMessage.idempotency_key`: `<type>:<host>:<event>:<user_id>:<YYYY-MM-DD>`, so two runs
 on one day send one mail (Resend keeps a key 24 hours). The host (0.23) keeps the apps on
 one Resend team apart, as `legal_change:<host>:…` does; only the base URL's host counts, so
-a port, a path or a trailing slash never changes a key. Without `app_base_url` the key is
-0.22's, `<type>:<event>:<user_id>:<YYYY-MM-DD>`. Sent: the marker row, `ON CONFLICT DO
+a port, a path or a trailing slash never changes a key. `app_base_url` is required since
+0.27: optional, a call site that left it out sent 0.22's `<type>:<event>:<user_id>:<YYYY-MM-DD>`,
+which another app on the team sends too (a `409`, the mail dropped after three tries); left
+out or `None` it is a `TypeError`. Sent: the marker row, `ON CONFLICT DO
 NOTHING`, committed per recipient; not sent: logged with the type and the event, nothing
 written. The event key is the app's, built by `mail_event` (kastlan:
 `mail_event(company_id, day)` → `"42:2026-10-13"`): ids and days, no personal data, no
@@ -1457,9 +1530,10 @@ A `timezone` (`PATCH /notifications/settings`, keksdose's `/push/settings` shim,
 `PATCH /auth/me`) is a 422 from 0.18, as any unknown field is (ignored in 0.16 and 0.17):
 breaking only for a stale ≤0.45 bundle, which still sends one.
 The tick is idempotent, so a job runner may retry it. A bundled mail carries
-`queue:<host>:<first row id>:<count>` when the service is built with
-`QueueService(queue, port, app_base_url=settings.app_base_url)` (0.23); without it, 0.22's
-`queue:<first row id>:<count>`, which another app's queue on the same Resend team sends too.
+`queue:<host>:<first row id>:<count>`, the service built with
+`QueueService(queue, port, app_base_url=settings.app_base_url)` (0.23; required since 0.27,
+as 0.22's `queue:<first row id>:<count>` is what another app's queue on the same Resend team
+sends too).
 **The inbox** has a port and three routes; **the queue** is opt-in — an app that runs it
 holds a quiet type's push instead of dropping it, and calls the tick every 15 minutes:
 
@@ -1576,7 +1650,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.26.0/eifi1_server_kit-0.26.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.27.0/eifi1_server_kit-0.27.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15) or a cloud object store (`[gcs]`, `[s3]`, 0.26), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -1586,7 +1660,7 @@ With the image guard, the Resend client, the Paddle client, a router, the sync s
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.26.0/eifi1_server_kit-0.26.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.27.0/eifi1_server_kit-0.27.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —

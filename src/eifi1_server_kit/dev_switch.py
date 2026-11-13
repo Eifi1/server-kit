@@ -100,9 +100,9 @@ host alone, because a tunnel to a deployment's database listens on the loopback 
   row on each request: keksdose ``users.role``; kastlan the acting company's
   ``user_role_assignments`` (replace the caller's roles there), then ``issue_session``;
   Kurvenschmiede ``users.role`` on the caller's own row, directly, skipping
-  ``admin_service.set_role``'s self and last-admin refusals, but still refusing CUSTOMER
-  for an account that owns work — ``DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED,
-  "Sign in as the seed's customer")``, a 409.
+  ``admin_service.set_role``'s self and last-admin refusals. What the app's own rules
+  refuse is ``DevSwitchError(DevSwitchErrorCode.DEV_SWITCH_REFUSED, …)``, a 409:
+  keksdose's demo account, Kurvenschmiede's plan for a role that has none of its own.
 * **The plan goes through the operator's grant, permanent** (§6.3): keksdose
   ``admin_user_actions_service.set_plan(session, user, plan, comped_until=None)``, kastlan
   ``BillingService.set_plan(company_id, plan, comped_until=None)``, Kurvenschmiede
@@ -365,8 +365,8 @@ class DevSwitchErrorCode(enum.StrEnum):
     DEV_SWITCH_UNKNOWN_ROLE = "dev_switch_unknown_role"
     #: A plan the app doesn't have: 422.
     DEV_SWITCH_UNKNOWN_PLAN = "dev_switch_unknown_plan"
-    #: The app's own invariant refuses the switch (KS: CUSTOMER for an account that owns
-    #: work): 409, with the app's detail.
+    #: The app's own invariant refuses the switch (keksdose: a demo account; Kurvenschmiede:
+    #: a plan for a role that has none of its own): 409, with the app's detail.
     DEV_SWITCH_REFUSED = "dev_switch_refused"
     #: A ``today`` for an app that keeps no dev clock (0.20): 422.
     DEV_SWITCH_NO_CLOCK = "dev_switch_no_clock"
@@ -446,7 +446,7 @@ class DevSwitchRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    #: The role to act as, in the app's own words (``ADMIN``, ``MEMBER``, ``CUSTOMER``).
+    #: The role to act as, in the app's own words (``ADMIN``, ``MEMBER``, ``REVIEWER``).
     role: str | None = Field(default=None, min_length=1, max_length=64)
     #: The plan to act on, a plan code (``free``, ``pro``).
     plan: str | None = Field(default=None, min_length=1, max_length=64)
@@ -498,8 +498,9 @@ def validate_dev_switch(
 
     ``roles`` and ``plans`` are the app's (a role enum's values, the plan catalogue's
     codes); an app without plans passes none, and every plan is then refused. Whether the
-    caller may hold that role — KS's CUSTOMER for an account that owns work — stays the
-    app's, with :attr:`DevSwitchErrorCode.DEV_SWITCH_REFUSED`.
+    caller may hold that role or plan — keksdose's demo account, a plan for
+    Kurvenschmiede's role without one — stays the app's, with
+    :attr:`DevSwitchErrorCode.DEV_SWITCH_REFUSED`.
 
     ``clock`` (0.20): ``True`` when the app keeps the dev clock (:func:`effective_today`).
     Without it a body that names ``today`` at all — a date or ``null`` — is refused, 422

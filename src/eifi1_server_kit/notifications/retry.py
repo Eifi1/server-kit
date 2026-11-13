@@ -21,7 +21,8 @@ per row; a window bounds the retries.
 * **One ``Idempotency-Key`` per app, recipient, event and day**
   (:meth:`MailMarker.idempotency_key`, on :attr:`~eifi1_server_kit.mail.MailMessage.idempotency_key`):
   two runs on one day send one mail, as Resend answers the second from the first. The app's
-  host (0.23, its ``app_base_url``) keeps the apps on one Resend team apart.
+  host (0.23, its ``app_base_url``, required since 0.27) keeps the apps on one Resend team
+  apart.
 """
 
 from __future__ import annotations
@@ -71,8 +72,14 @@ def _key_host(app_base_url: str) -> str:
     on one Resend team apart (0.23, ``legal``'s ``legal_change:<host>:…``):
     ``https://Kastlan.example:8443/api/`` → ``kastlan.example``. The host only, lower case,
     so a scheme, a port, a path or a trailing slash in the setting never changes a key. A
+    :class:`TypeError` for anything but a string — ``None`` from a setting nobody set — and a
     :class:`ValueError` unless the URL is http(s) with an ASCII host of at most 64
     characters."""
+    if not isinstance(app_base_url, str):
+        raise TypeError(
+            "the app's base URL is required: app_base_url, the one its links are built from (0.27), "
+            f"not {type(app_base_url).__name__}"
+        )
     if not app_base_url.startswith(("https://", "http://")) or _UNSAFE_IN_URL.search(app_base_url):
         raise ValueError(f"the app's base URL is http(s): {app_base_url[:60]!r}")
     try:
@@ -137,7 +144,7 @@ class MailMarker:
         if isinstance(self.user_id, str) and not _USER_ID.fullmatch(self.user_id):
             raise ValueError(f"a user id is a number or a key with no colon or space: {self.user_id[:80]!r}")
 
-    def idempotency_key(self, day: date, *, app_base_url: str | None = None) -> str:
+    def idempotency_key(self, day: date, *, app_base_url: str) -> str:
         """``<type>:<host>:<event>:<user_id>:<YYYY-MM-DD>`` for the try on ``day`` (decision
         7), ``<host>`` that of ``app_base_url``, the app's own base URL::
 
@@ -155,15 +162,16 @@ class MailMarker:
         ``409``). Pass the base URL the app builds its links from, the one
         :func:`~eifi1_server_kit.legal.send_legal_change_mails` takes. Only its host counts,
         in lower case, so a port, a path or a trailing slash never makes a rerun's key a new
-        one. Without it the key is 0.22's, ``<type>:<event>:<user_id>:<YYYY-MM-DD>``.
+        one. **Required since 0.27** (Marcel, 2026-11-13): optional, a call site that left
+        it out sent 0.22's key, ``<type>:<event>:<user_id>:<YYYY-MM-DD>``, and brought the
+        collision back without a word.
 
         At most 246 characters, within Resend's 256. A :class:`TypeError` for a
-        ``datetime``; a :class:`ValueError` for an ``app_base_url`` that is not http(s) with
-        an ASCII host of at most 64 characters.
+        ``datetime``, and for an ``app_base_url`` left out or ``None``; a
+        :class:`ValueError` for one that is not http(s) with an ASCII host of at most 64
+        characters.
         """
         today = _day(day, "the day of the try").isoformat()
-        if app_base_url is None:
-            return f"{self.type_id}:{self.event}:{self.user_id}:{today}"
         return f"{self.type_id}:{_key_host(app_base_url)}:{self.event}:{self.user_id}:{today}"
 
 
