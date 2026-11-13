@@ -47,7 +47,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
 from pydantic import BaseModel
@@ -55,6 +55,7 @@ from pydantic import BaseModel
 from eifi1_server_kit.auth.accounts import (
     addresses_for_reset,
     env_list_match,
+    erasure_identifiers,
     full_name,
     invitation_accepts,
     normalise_email,
@@ -152,13 +153,24 @@ from eifi1_server_kit.user_admin.deletion import (
     DEFAULT_DELETION_DAYS,
     DeletionMode,
     RetentionNote,
+    deletion_due,
     deletion_mail_retention_note,
     deletion_schedule,
 )
 from eifi1_server_kit.user_admin.errors import AccountError, AccountErrorCode
 from eifi1_server_kit.user_admin.export import export_envelope
+from eifi1_server_kit.user_admin.ports import AcceptedInvitations
 from eifi1_server_kit.user_admin.rules import refuse_last_admin, require_confirmation
-from eifi1_server_kit.user_admin.schemas import InvitationCreate, InvitationStatus, PersonRef, invitation_status
+from eifi1_server_kit.user_admin.schemas import (
+    InvitationCreate,
+    InvitationStatus,
+    MailKind,
+    PersonRef,
+    invitation_status,
+)
+
+if TYPE_CHECKING:
+    from eifi1_server_kit.feedback.service import FeedbackService
 
 __all__ = [
     "AUTH_THROTTLED",
@@ -222,6 +234,9 @@ class SessionsEndedReason(enum.StrEnum):
     DEACTIVATED = "deactivated"
     #: ``POST /auth/me/deletion``.
     DELETION_REQUESTED = "deletion_requested"
+    #: An admin required a new password (``user_admin_router``, 0.30): every session ends, and
+    #: the next sign-in asks for the new password first.
+    PASSWORD_CHANGE_REQUIRED = "password_change_required"
 
 
 type _Extras = Mapping[str, Any]
@@ -280,6 +295,14 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     on_deletion_withdrawn: Callable[[UserT], Awaitable[None]] | None = None
     #: Seam 5: the export's ``data`` (user-admin §6.5): the app's own rows.
     export_data: Callable[[UserT], Awaitable[_Extras]] | None = None
+    #: Seam 5 (0.30): the account is being erased (:meth:`AccountService.erase`): delete or hand
+    #: over the app's own rows (keksdose's budgets, Kurvenschmiede's shared work). The mapping
+    #: it answers — counts and ids, never content — rides on the admin's answer and in the
+    #: ``erase`` row's detail.
+    erase: Callable[[UserT], Awaitable[_Extras | None]] | None = None
+    #: Seam 5 (0.30): the stored files an erasure left nobody naming (the feedback's), deleted
+    #: after the commit (keksdose's object purge). Without it they are left to the app.
+    purge_files: Callable[[Sequence[str]], Awaitable[None]] | None = None
     #: Seam 6: ``/auth/me`` and the user in every token answer, as the app's ``me_model``;
     #: without it, ``me_model.model_validate(user)`` with ``email_verified`` from the row.
     to_me: Callable[[UserT], Awaitable[BaseModel]] | None = None
@@ -574,6 +597,17 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         await self._tokens.drop(OneTimeTokenKind.EMAIL_CHANGE, user.id)
         if self._hooks.sessions_ended is not None:
             await self._hooks.sessions_ended(user, reason)
+
+    async def end_sessions(self, user: UserT, reason: SessionsEndedReason) -> int:
+        """Every session of the account ends, for ``reason`` (0.30, the admin's deactivation
+        and forced password change): every row, the ``iat`` cut-off where the row has one, the
+        pending address change, and the ``sessions_ended`` hook (keksdose's API tokens and push
+        devices). Nothing else is cleared. Answers how many rows ended."""
+        ended = await self._sessions.end_all(user.id)
+        if cutoff := self._cutoff(user, self._now()):
+            await self._users.apply(user, cutoff)
+        await self._sessions_ended(user, reason)
+        return ended
 
     async def _sign_in(
         self, user: UserT, *, shared: bool, ip: str | None, device: str | None
@@ -1224,6 +1258,127 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 action, actor_id=admin.id, target_user_id=None, target_email=invitation.email, detail=detail, now=now
             )
         )
+
+    # --- the admin's mails (0.30) ------------------------------------------------------
+
+    async def send_account_mail(self, user: UserT, kind: MailKind) -> tuple[bool, str]:
+        """``POST /admin/users/{id}/mail`` (user-admin §4.1): the verification mail or a
+        password reset, sent again by an admin, through the public flows' links and their
+        lifetimes. Charged to the recipient's window first, as the public flows are
+        (``verification_resend``, ``reset_address``; Kurvenschmiede): an admin's button is no
+        faster way to fill an inbox. The link is minted, committed (``commit_now``), then
+        mailed in the account's language. Whether it went, and the link — the router shows it
+        only while mail goes to the console. The admin's refusals (a deactivated account, a
+        verified address) are the router's, before this."""
+        now = self._now()
+        if kind is MailKind.VERIFICATION:
+            charge(self._limiters.verification_resend, user.email, AUTH_THROTTLED["mail"])
+            link, text = await self._verification_link(user, now), AccountMailText.VERIFICATION
+        else:
+            charge(self._limiters.reset_address, user.email, AUTH_THROTTLED["mail"])
+            raw, digest = mint()
+            await self._tokens.put(
+                OneTimeTokenKind.PASSWORD_RESET,
+                user_id=user.id,
+                token_hash=digest,
+                email=user.email,
+                expires_at=now + RESET_TTL,
+            )
+            link = self._policy.links.url(self._policy.links.reset_password, token=raw)
+            text = AccountMailText.PASSWORD_RESET
+        await self._after.commit_now()
+        return await self._send(user.email, text, user.locale, link=link, name=self._name(user)), link
+
+    # --- the erasure (0.30) ------------------------------------------------------------
+
+    async def erase(
+        self, user: UserT, *, actor_id: int | None, feedback: FeedbackService[Any] | None = None
+    ) -> dict[str, Any]:
+        """Stage two of a deletion (user-admin §6.4), in the caller's transaction: the
+        operator's ``POST /admin/users/{id}/erase`` (``actor_id`` the admin) and the
+        ``after_days`` job (:meth:`erase_if_due`, no actor). The caller has checked that the
+        account asked for it. In order:
+
+        1. the ``erase`` hook: the app's own rows (what an erasure deletes or hands over is
+           the app's);
+        2. with ``feedback`` (the app's ``FeedbackService``), the person leaves their reports,
+           comments, votes and replies (``erase_author`` with ``erasure_identifiers``); the
+           files no other row names go to ``purge_files`` after the commit;
+        3. the invitations the account accepted are deleted, where the store can
+           (:class:`~eifi1_server_kit.user_admin.ports.AcceptedInvitations`);
+        4. the admin log keeps its rows and loses the addresses: the account's and those
+           invitations' (``scrub_email``); the account's id goes with the row's foreign key;
+        5. every session row ends and every link is dropped, for a table that does not
+           cascade;
+        6. an ``erase`` row: the actor, no target, ``{feedback_anonymised, **the hook's}``;
+        7. the account's row is deleted.
+
+        Answers the row's detail."""
+        email = user.email
+        extras = await self._extras(self._hooks.erase, user)
+        anonymised = 0
+        if feedback is not None:
+            erased = await feedback.erase_author(user.id, erasure_identifiers(email, user.first_name, user.last_name))
+            anonymised = erased.reports
+            self._purge_later(erased.keys)
+        addresses = {email}
+        if isinstance(self._invitations, AcceptedInvitations):
+            addresses.update(await self._invitations.forget_accepted(user.id))
+        for address in sorted(addresses):
+            await self._log.scrub_email(address)
+        await self._sessions.end_all(user.id)
+        for kind in (OneTimeTokenKind.PASSWORD_RESET, OneTimeTokenKind.VERIFICATION, OneTimeTokenKind.EMAIL_CHANGE):
+            await self._tokens.drop(kind, user.id)
+        detail = {"feedback_anonymised": anonymised, **extras}
+        await self._log.add(
+            admin_action_record(
+                AdminAction.ERASE,
+                actor_id=actor_id,
+                target_user_id=None,
+                target_email=None,
+                detail=detail,
+                now=self._now(),
+            )
+        )
+        await self._users.delete(user)
+        logger.info("erased account %s (%s feedback reports anonymised)", user.id, anonymised)
+        return detail
+
+    def _purge_later(self, keys: Sequence[str]) -> None:
+        if not keys:
+            return
+        purge = self._hooks.purge_files
+        if purge is None:
+            logger.info("an erasure left %s stored files and the app takes no purge_files", len(keys))
+            return
+        kept = tuple(keys)
+
+        async def run() -> None:
+            await purge(kept)
+
+        self._after.later(run)
+
+    async def erase_if_due(self, user_id: int, *, feedback: FeedbackService[Any] | None = None) -> bool:
+        """The ``after_days`` job's one account (user-admin §6.4), in its own transaction: the
+        row re-read, and erased (:meth:`erase`, no actor) only when it is deactivated, asked
+        for its deletion and is due (``deletion_due``, the mail's promised date included).
+        ``False`` for anything else — gone, reactivated, not yet due — and always in
+        ``operator`` mode, where an operator erases. Idempotent: the app's job may run it
+        twice."""
+        if self._policy.deletion_mode is not DeletionMode.AFTER_DAYS:
+            return False
+        user = await self._users.get(user_id)
+        if user is None or user.is_active or user.deletion_requested_at is None:
+            return False
+        if not deletion_due(
+            user.deletion_requested_at,
+            self._policy.deletion_days,
+            self._now(),
+            scheduled_at=user.deletion_scheduled_at,
+        ):
+            return False
+        await self.erase(user, actor_id=None, feedback=feedback)
+        return True
 
     # --- deletion and export -----------------------------------------------------------
 
