@@ -134,23 +134,36 @@ class AdminPolicy:
     #: The roster's sort keys; an app adds its own with a roster that sorts by them.
     sort_keys: tuple[str, ...] = SORT_KEYS
 
-    def grantable_roles(self) -> frozenset[str]:
-        """``grantable``, or every role but the reviewer role."""
+    def grantable_roles(self, accounts: AccountPolicy) -> frozenset[str]:
+        """The roles the role change gives — one source with the invitations' (0.30):
+        ``grantable``, else ``AccountPolicy.invitable_roles``, else every role but the reviewer
+        role."""
         if self.grantable is not None:
             return frozenset(self.grantable)
+        if accounts.invitable_roles is not None:
+            return frozenset(accounts.invitable_roles)
         return frozenset(role for role in self.roles if role != self.reviewer_role)
 
     def check(self, accounts: AccountPolicy) -> None:
-        """Refuse a policy that names a role the app does not have (:class:`ValueError`)."""
+        """Refuse a policy that names a role the app does not have, and a ``grantable`` that
+        disagrees with ``AccountPolicy.invitable_roles`` (:class:`ValueError`): an admin gives
+        the roles an invitation may name, and no other."""
         named = {
             "the admin role": accounts.admin_role,
             "the default role": accounts.default_role,
             "the reviewer role": self.reviewer_role,
             **{f"a grantable role ({role})": role for role in self.grantable or ()},
+            **{f"an invitable role ({role})": role for role in accounts.invitable_roles or ()},
         }
         for what, role in named.items():
             if role is not None and role not in self.roles:
                 raise ValueError(f"AdminPolicy.roles lacks {what}, {role!r}: {', '.join(self.roles)}")
+        invitable = accounts.invitable_roles
+        if self.grantable is not None and invitable is not None and set(self.grantable) != set(invitable):
+            raise ValueError(
+                f"AdminPolicy.grantable {self.grantable} and AccountPolicy.invitable_roles {invitable} disagree: "
+                "an admin gives the roles an invitation may name; set one of them"
+            )
 
 
 type _Extras = Mapping[str, Any]

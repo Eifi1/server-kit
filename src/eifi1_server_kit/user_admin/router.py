@@ -122,7 +122,7 @@ class UserAdminDeps:
 
 def _global_scope(deps: UserAdminDeps, roster: Callable[..., Any]) -> Callable[..., Any]:
     auth = deps.auth
-    grantable = deps.policy.grantable_roles()
+    grantable = deps.policy.grantable_roles(auth.policy)
 
     async def scope(
         users: Annotated[Any, Depends(auth.users)], store: Annotated[Any, Depends(roster)]

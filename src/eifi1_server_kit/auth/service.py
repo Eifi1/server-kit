@@ -352,6 +352,10 @@ class AccountPolicy:
     admin_role: str = "ADMIN"
     #: The role of an account an invitation names none for.
     default_role: str = "MEMBER"
+    #: The roles an invitation may name (0.30); another is ``422 role_not_grantable``, and
+    #: ``default_role`` is one of them. ``None``: unchecked, as in 0.29. The admin router's
+    #: role change gives the same roles (``AdminPolicy.grantable_roles``).
+    invitable_roles: tuple[str, ...] | None = None
     #: The environment list that bootstraps the first admin (``parse_env_list``); ``None``:
     #: the first registration is open (``registration_decision``).
     bootstrap: frozenset[str] | None = None
@@ -366,6 +370,8 @@ class AccountPolicy:
             raise ValueError(f"app is the app's name in lower case — letters, digits, '.', '_' or '-': {self.app!r}")
         if self.deletion_days < 0:
             raise ValueError("deletion_days is zero or more")
+        if self.invitable_roles is not None and self.default_role not in self.invitable_roles:
+            raise ValueError(f"default_role {self.default_role!r} is one of invitable_roles: {self.invitable_roles}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1190,6 +1196,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         invitee's language, logged as ``invite``; the mail after the commit. ``show_link``:
         the console transport's shown-once link (§12.5 item 11). A ``scope`` goes through the
         ``invitation_scope`` hook, else it is refused."""
+        invitable = self._policy.invitable_roles
+        if invitable is not None and body.role not in invitable:
+            raise AccountError(AccountErrorCode.ROLE_NOT_GRANTABLE)
         scope: Mapping[str, Any] | None = None
         if body.scope is not None:
             if self._hooks.invitation_scope is None:

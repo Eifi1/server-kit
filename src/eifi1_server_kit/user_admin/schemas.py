@@ -26,10 +26,20 @@ leaves them out is refused.
 from __future__ import annotations
 
 import enum
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, ClassVar, Self
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from eifi1_server_kit.auth.schemas import (
@@ -39,6 +49,7 @@ from eifi1_server_kit.auth.schemas import (
     ExistingPassword,
     LocaleTag,
     UserResponse,
+    _offered_locale,
 )
 from eifi1_server_kit.auth.tokens import _aware
 from eifi1_server_kit.user_admin.actions import AdminAction, ConfirmationLevel
@@ -400,11 +411,20 @@ class InvitationCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: The app's languages (0.30, ``AuthDeps.offered_locales`` sets it on the router's body):
+    #: the invitee's language is one the app speaks; ``None`` checks the tag's shape only.
+    offered_locales: ClassVar[Sequence[str] | None] = None
+
     email: Email
     role: _Role
     scope: int | str | None = None
     note: Annotated[_Note | None, BeforeValidator(_blank_is_none)] = None
     locale: LocaleTag = DEFAULT_LOCALE
+
+    @field_validator("locale", mode="before")
+    @classmethod
+    def _offered_locale(cls, value: object) -> object:
+        return _offered_locale(value, cls.offered_locales)
 
 
 class InvitationRow(BaseModel):

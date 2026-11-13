@@ -619,3 +619,38 @@ def test_a_policy_that_names_a_role_the_app_has_not_is_refused(
 
     with pytest.raises(ValueError, match=message):
         user_admin_router(UserAdminDeps(auth=world.deps, roster=lambda: world.roster, policy=policy))
+
+
+# ── the roles an admin gives are the roles an invitation names (0.30) ──────
+
+
+async def test_an_app_s_invitable_roles_are_the_roles_the_role_change_gives() -> None:
+    world = AdminWorld(policy=replace(_auth_policy(), invitable_roles=("MEMBER",)))
+    async with world.client:
+        _, token = await world.admin_token()
+        user = world.account()
+        refused = await world.call(
+            "POST", f"/admin/users/{user.id}/role", token=token, json={"role": "ADMIN", "acknowledged": True}
+        )
+        assert (refused.status_code, code(refused)) == (422, "role_not_grantable")
+
+
+def test_grantable_and_invitable_roles_that_disagree_are_refused() -> None:
+    from eifi1_server_kit.user_admin.router import UserAdminDeps, user_admin_router
+    from tests.auth._world import World
+
+    auth = World(policy=replace(_auth_policy(), invitable_roles=("MEMBER",))).deps
+    with pytest.raises(ValueError, match="invitable_roles"):
+        user_admin_router(
+            UserAdminDeps(auth=auth, roster=lambda: None, policy=AdminPolicy(grantable=("ADMIN", "MEMBER")))
+        )
+    with pytest.raises(ValueError, match="OWNER"):
+        bad = World(policy=replace(_auth_policy(), invitable_roles=("MEMBER", "OWNER"))).deps
+        user_admin_router(UserAdminDeps(auth=bad, roster=lambda: None))
+    user_admin_router(UserAdminDeps(auth=auth, roster=lambda: None, policy=AdminPolicy(grantable=("MEMBER",))))
+
+
+def _auth_policy() -> Any:
+    from tests.auth._world import POLICY
+
+    return POLICY
