@@ -133,6 +133,10 @@ class AdminPolicy:
     states: tuple[str, ...] = tuple(token for token in STATE_TOKENS if token != "invited")
     #: The roster's sort keys; an app adds its own with a roster that sorts by them.
     sort_keys: tuple[str, ...] = SORT_KEYS
+    #: The app's own actions on a person, whose levels the roster answers beside the kit's
+    #: (Kurvenschmiede's ``transfer`` and ``plan``, keksdose's ``plan``): its page asks for
+    #: them from the same ``levels`` (§3.1).
+    app_actions: tuple[AdminAction, ...] = ()
 
     def grantable_roles(self, accounts: AccountPolicy) -> frozenset[str]:
         """The roles the role change gives — one source with the invitations' (0.30):
@@ -304,7 +308,7 @@ class UserAdminService[UserT: AccountRow]:
 
     def levels(self) -> dict[str, ConfirmationLevel]:
         """The level of each action the router takes (§3.1, §4.2), the contract's floor."""
-        actions = (*ADMIN_ACTIONS, *self._erase_actions())
+        actions = (*ADMIN_ACTIONS, *self._erase_actions(), *self._policy.app_actions)
         return {str(action): confirmation_level(action) for action in actions}
 
     def _erase_actions(self) -> tuple[AdminAction, ...]:

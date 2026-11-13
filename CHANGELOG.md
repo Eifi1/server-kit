@@ -26,7 +26,8 @@ console mailer's default (**Changed**, security).
   `GET /admin/actions`, `GET /admin/attention`, `GET /admin/mail` (`{mail_backend}`, before any
   mail) and `POST /admin/mail/test`. Over `UserAdminService`, `AdminPolicy`, `UserAdminHooks`
   (`to_row`, `attention`, `confirmation`, `role_changing`, `activating`, `group_names`) and
-  `ADMIN_ACTIONS` (`user_admin.service`), on layer 1's rules. The kit settles where the apps
+  `ADMIN_ACTIONS` (`user_admin.service`; `AdminPolicy.app_actions` adds an app's own actions' levels to the
+  roster's, Kurvenschmiede's `transfer` and `plan`), on layer 1's rules. The kit settles where the apps
   differed: no change writes no row; the refusals in the order account, self, account-wide,
   last admin, confirmation; a demo target is `demo_refused`; deactivating ends every session
   and clears nothing else; reactivating withdraws a pending deletion (`deletion_cancel`, then

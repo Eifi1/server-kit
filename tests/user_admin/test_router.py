@@ -663,3 +663,14 @@ def _auth_policy() -> Any:
     from tests.auth._world import POLICY
 
     return POLICY
+
+
+async def test_the_roster_answers_the_levels_of_the_app_s_own_actions_too() -> None:
+    """Kurvenschmiede's page asks for its transfer and plan change from the roster's levels."""
+    from eifi1_server_kit.user_admin import AdminAction
+
+    world = AdminWorld(admin={"policy": AdminPolicy(app_actions=(AdminAction.TRANSFER, AdminAction.PLAN))})
+    async with world.client:
+        _, token = await world.admin_token()
+        levels = (await world.call("GET", "/admin/users", token=token)).json()["levels"]
+        assert (levels["transfer"], levels["plan"], levels["role"]) == ("type_email", "acknowledge", "acknowledge")
