@@ -17,6 +17,7 @@ from eifi1_server_kit.limiter import (
     charge,
     client_ip,
     retry_after_header,
+    vouched_hops,
 )
 
 
@@ -378,3 +379,85 @@ def test_a_short_header_is_logged_once_per_process(
     assert len(warnings) == 1
     assert "1 entries, fewer than trusted_hops=3" in warnings[0].getMessage()
     assert "203.0.113.7" not in warnings[0].getMessage()
+
+
+# ── vouched_hops: the edge token (0.28, keksdose audit 2026-10-12 B-1) ──────
+
+EDGE = "x-app-edge"
+TOKEN = "s3cret-edge-token"
+
+
+def _with_edge(xff: str, *edge_values: str) -> Headers:
+    raw = [(b"x-forwarded-for", xff.encode())]
+    raw += [(EDGE.encode(), value.encode("latin-1")) for value in edge_values]
+    return Headers(raw=raw)
+
+
+def test_a_request_that_crossed_the_edge_keeps_every_hop() -> None:
+    headers = _with_edge("203.0.113.7, 198.51.100.4, 10.0.0.2", TOKEN)
+    assert vouched_hops(headers, trusted_hops=3, edge_header=EDGE, edge_token=TOKEN) == 3
+
+
+@pytest.mark.parametrize("edge_values", [(), ("wrong",), (TOKEN[:-1],), (TOKEN + "x",), (TOKEN, TOKEN)])
+def test_without_the_proof_only_one_hop_is_vouched_for(edge_values: tuple[str, ...]) -> None:
+    """A missing or wrong token, and two values (Caddy SETS the header, so the edge never
+    sends two), count only the hop the caller's own front end appended."""
+    headers = _with_edge("203.0.113.7, 198.51.100.4", *edge_values)
+    assert vouched_hops(headers, trusted_hops=3, edge_header=EDGE, edge_token=TOKEN) == 1
+
+
+def test_a_direct_request_is_keyed_on_its_caller_not_on_its_own_fake_entries() -> None:
+    """Staunlabor's measurement (2026-11-13): the backend's run.app URL is public, a direct
+    request gets ONE appended entry, and with three hops trusted the caller chose the key, so
+    150 of 150 forged requests passed the window. Vouched, the caller is the key."""
+    limiter = SlidingWindowRateLimiter(max_hits=5, window_seconds=3600, clock=_Clock())
+    answers = []
+    for n in range(6):
+        headers = _with_edge(f"10.9.{n}.1, 10.9.{n}.2, 192.0.2.50")
+        hops = vouched_hops(headers, trusted_hops=3, edge_header=EDGE, edge_token=TOKEN)
+        answers.append(limiter.hit(client_ip(headers, "10.0.0.9", trusted_hops=hops)))
+    assert answers[:5] == [None] * 5 and answers[5] is not None
+
+
+@pytest.mark.parametrize("hops", [0, 1])
+def test_zero_or_one_hop_needs_no_proof(hops: int) -> None:
+    """Nothing to prove: no proxy, or one proxy whose appended entry the caller cannot write."""
+    assert vouched_hops(Headers(), trusted_hops=hops, edge_header=EDGE, edge_token=None) == hops
+    assert vouched_hops(Headers(), trusted_hops=hops, edge_header=EDGE, edge_token=TOKEN) == hops
+
+
+def test_a_plain_mapping_matches_the_header_name_without_regard_to_case() -> None:
+    headers = {"X-Forwarded-For": "203.0.113.7, 198.51.100.4", "X-App-Edge": TOKEN}
+    assert vouched_hops(headers, trusted_hops=2, edge_header=EDGE, edge_token=TOKEN) == 2
+    assert vouched_hops({"X-App-Edge": "€uro"}, trusted_hops=2, edge_header=EDGE, edge_token="€uro") == 1
+
+
+def test_a_token_beyond_ascii_matches_as_starlette_decodes_it() -> None:
+    """Starlette decodes a header as latin-1, so the bytes Caddy sent come back by encoding
+    the value as latin-1; compared as bytes, as ``compare_digest`` refuses a non-ASCII str."""
+    token = "grüezi-✓"
+    headers = Headers(raw=[(EDGE.encode(), token.encode())])
+    assert vouched_hops(headers, trusted_hops=2, edge_header=EDGE, edge_token=token) == 2
+
+
+def test_hops_above_one_without_a_token_answer_one_and_warn_once(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The safe error: every request then shares the edge's window, which limits too much,
+    never too little. Said once per process, never with the token or an address."""
+    import eifi1_server_kit.limiter as limiter_module
+
+    monkeypatch.setattr(limiter_module, "_no_edge_token_warned", False)
+    headers = _with_edge("203.0.113.7, 198.51.100.4, 10.0.0.2", "anything")
+    with caplog.at_level("WARNING", logger="eifi1_server_kit.limiter"):
+        assert vouched_hops(headers, trusted_hops=3, edge_header=EDGE, edge_token=None) == 1
+        assert vouched_hops(headers, trusted_hops=3, edge_header=EDGE, edge_token="") == 1
+    warnings = [r for r in caplog.records if r.name == "eifi1_server_kit.limiter"]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "trusted_hops=3" in message and EDGE in message and "203.0.113.7" not in message
+
+
+def test_vouched_hops_counts_proxies() -> None:
+    with pytest.raises(ValueError, match="0 or more"):
+        vouched_hops(Headers(), trusted_hops=-1, edge_header=EDGE, edge_token=TOKEN)

@@ -295,6 +295,43 @@ ip = client_ip(
 )
 ```
 
+**A public backend URL needs the edge token: `vouched_hops(headers, *, trusted_hops,
+edge_header, edge_token)`** (0.28, keksdose's audit B-1). The hop count describes one path
+(Google's front end, the edge Caddy, the backend's own front end), but a Cloud Run backend's
+`run.app` URL is public too. A request sent there directly gets ONE appended entry, so with
+three hops trusted the entry the window keys on is one the caller wrote itself: Staunlabor
+measured 150 of 150 forged requests through the sign-in window (2026-11-13), and the same
+held for every app without keksdose's fix. The edge proves itself with a secret header it
+SETS, and only a request that carries it is counted with every hop; any other is counted from
+the one entry its own front end appended, the caller:
+
+```python
+hops = vouched_hops(
+    request.headers,
+    trusted_hops=settings.trusted_proxy_hops,
+    edge_header="x-keksdose-edge",  # the app's own name
+    edge_token=settings.edge_token,  # a secret, from the secret store
+)
+ip = client_ip(request.headers, request.client.host if request.client else None, trusted_hops=hops)
+```
+
+```caddyfile
+reverse_proxy {$BACKEND_URL} {
+    header_up X-Keksdose-Edge {$EDGE_TOKEN}  # sets the header: replaces what the browser sent
+}
+```
+
+- Zero or one hop needs no token. Above one without a token configured, every request counts
+  one hop and the kit logs a warning once: all callers share the edge's window, which limits
+  too much, never too little.
+- The value must arrive exactly once (Caddy's `header_up` without `+` replaces), compared in
+  constant time.
+- **Measure it** after a deploy: send more requests than a window allows (the sign-in's 30 in
+  5 minutes) straight to the backend's `run.app` URL, each with a fresh made-up
+  `X-Forwarded-For: 203.0.113.N, 198.51.100.N`. Unprotected, none is refused; protected, the
+  requests past the budget answer 429. Then the same through the public address: the
+  person's own window, not the edge's.
+
 ### `eifi1_server_kit.cors`
 
 `ExtraOriginCorsMiddleware(app, origins=, routes={path: ExtraOriginRoute(methods, headers)})`

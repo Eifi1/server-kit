@@ -18,7 +18,9 @@ loop — not a cross-instance total. ``hit()`` is the whole contract, so a share
 
 **Whose address a window counts** is :func:`client_ip`'s answer: counted from the RIGHT of
 ``X-Forwarded-For``, as many hops as the app has proxies — never the left-most entry,
-which the client writes itself.
+which the client writes itself. Where the backend's own URL is public too (Cloud Run's
+``run.app``), :func:`vouched_hops` (0.28) trusts those hops only for a request that proves
+it crossed the edge proxy.
 
 **When to charge: before the work.** Call ``hit()`` where a request starts costing the
 server something — the feedback contract's rule since round 0.36 (§3.5, §3.6, as all
@@ -41,6 +43,7 @@ sentence as ``{"detail": …}`` — no ``code``, Marcel's decision of 2026-11-04
 
 from __future__ import annotations
 
+import hmac
 import logging
 import threading
 import time
@@ -62,6 +65,7 @@ __all__ = [
     "charge",
     "client_ip",
     "retry_after_header",
+    "vouched_hops",
 ]
 
 Clock = Callable[[], float]
@@ -289,6 +293,76 @@ def _warn_short_header(entries: int, trusted_hops: int) -> None:
         "If this is not a direct request, re-measure trusted_hops.",
         entries,
         trusted_hops,
+    )
+
+
+def vouched_hops(headers: Mapping[str, str], *, trusted_hops: int, edge_header: str, edge_token: str | None) -> int:
+    """How many ``X-Forwarded-For`` entries, from the right, this request's proxies vouch for:
+    ``trusted_hops`` when the request proves it crossed the edge proxy, otherwise at most
+    one. Hand the answer to :func:`client_ip` (0.28, keksdose audit 2026-10-12 B-1)::
+
+        hops = vouched_hops(request.headers, trusted_hops=settings.trusted_proxy_hops,
+                            edge_header="x-keksdose-edge", edge_token=settings.edge_token)
+        ip = client_ip(request.headers, request.client.host if request.client else None,
+                       trusted_hops=hops)
+
+    **Why.** ``trusted_hops`` describes ONE path: Google's front end, the edge Caddy, the
+    backend's own front end. The backend has a second one: its ``run.app`` URL is public, so
+    a caller can skip the edge. That request gets ONE appended entry, not three, and with
+    three trusted a header of ``a, b`` arrives as ``a, b, <caller>`` and keys the window on
+    ``a``, which the caller chose: a fresh window per request (Staunlabor measured 150 of 150
+    forged requests through, 2026-11-13). Only the edge holds the token, so a request without
+    it is counted from the one entry its own front end appended: the caller.
+
+    **The edge sets the header** with the token (Caddy ``header_up <edge_header>
+    {$EDGE_TOKEN}`` replaces whatever the browser sent; never ``+``, which appends). The
+    name is the app's (keksdose ``x-keksdose-edge``).
+
+    * ``0`` or ``1`` hops have nothing to prove (local development; one proxy, whose
+      appended entry the caller cannot write) and come back as they are;
+    * above one, the header must hold exactly one value equal to ``edge_token``
+      (:func:`hmac.compare_digest` on bytes: Starlette decodes a header as latin-1, so the
+      value is encoded back as latin-1; a value that is not latin-1 is no proof);
+    * above one with no token configured (``None`` or empty), nothing can prove anything:
+      one hop, and a warning once per process. Every request then shares the edge's window,
+      which is the safe error: it limits too much, never too little.
+    """
+    if trusted_hops < 0:
+        raise ValueError("trusted_hops counts proxies: 0 or more")
+    if trusted_hops <= 1:
+        return trusted_hops
+    if not edge_token:
+        _warn_no_edge_token(trusted_hops, edge_header)
+        return 1
+    if isinstance(headers, Headers):
+        values = headers.getlist(edge_header)
+    else:
+        values = [value for name, value in headers.items() if name.lower() == edge_header.lower()]
+    if len(values) != 1:
+        return 1
+    try:
+        proof = values[0].encode("latin-1")
+    except UnicodeEncodeError:
+        return 1
+    return trusted_hops if hmac.compare_digest(proof, edge_token.encode()) else 1
+
+
+_no_edge_token_warned = False
+
+
+def _warn_no_edge_token(trusted_hops: int, edge_header: str) -> None:
+    """Say ONCE per process that hops above one came without a token to check (keksdose's
+    ``_warn_no_edge_token``): every per-IP window then counts the edge as one caller. The
+    count and the header's name only, never the token or an address."""
+    global _no_edge_token_warned
+    if _no_edge_token_warned:
+        return
+    _no_edge_token_warned = True
+    logger.warning(
+        "trusted_hops=%d but no edge token is configured for %s: no request can prove it "
+        "crossed the edge proxy, so every per-IP window counts one hop.",
+        trusted_hops,
+        edge_header,
     )
 
 
