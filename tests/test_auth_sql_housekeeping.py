@@ -1,11 +1,13 @@
 """The ``sql`` extra's housekeeping (0.30): the public instant type and the Alembic hook that
-writes it as a plain column type, and the pruning of rows nobody needs any more. On SQLite
-in memory, as ``test_auth_sql``; a schema of its own, so the two files share nothing."""
+writes it as a plain column type, the pruning of rows nobody needs any more, and the contract
+suites' roles in the policy's spelling. On SQLite in memory, as ``test_auth_sql``; a schema of
+its own, so the two files share nothing."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,7 +17,7 @@ from alembic import op
 from alembic.autogenerate import compare_metadata, produce_migrations, render_python_code
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import String, create_engine, func, inspect, select
+from sqlalchemy import CheckConstraint, String, create_engine, func, inspect, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -23,6 +25,7 @@ from sqlalchemy.pool import StaticPool
 
 from eifi1_server_kit.auth import sql
 from eifi1_server_kit.auth.ports import NewAccount, NewInvitation, NewSession
+from eifi1_server_kit.auth.service import AccountLinks, AccountPolicy
 from eifi1_server_kit.auth.sql import (
     AccountColumns,
     AccountPrune,
@@ -41,6 +44,7 @@ from eifi1_server_kit.auth.sql import (
     alembic_render_item,
     prune_account_rows,
 )
+from eifi1_server_kit.auth.testing import check_invitation_store, check_user_store
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.clock import utc_now
 
@@ -80,6 +84,23 @@ class SpentChallenge(SpentChallengeColumns, Base):
 
 class AdminActionRecord(AdminActionColumns, Base):
     __tablename__ = "admin_actions"
+
+
+class StrictBase(DeclarativeBase):
+    """An app whose database refuses a role it does not have, as Staunlabor's does."""
+
+
+_ROLES = "role IN ('ADMIN', 'MEMBER', 'REVIEWER')"
+
+
+class StrictUser(AccountColumns, StrictBase):
+    __tablename__ = "users"
+    __table_args__ = (CheckConstraint(_ROLES, name="ck_users_role"),)
+
+
+class StrictInvitation(InvitationColumns, StrictBase):
+    __tablename__ = "invitations"
+    __table_args__ = (CheckConstraint(f"role IS NULL OR {_ROLES}", name="ck_invitations_role"),)
 
 
 @pytest.fixture
@@ -336,3 +357,38 @@ async def test_the_job_without_stores_prunes_nothing(session: AsyncSession) -> N
     assert await prune_account_rows(before=BEFORE) == AccountPrune()
     assert AccountPrune().total == 0
     assert await session.scalar(select(func.count()).select_from(UserSession)) == 5
+
+
+# ── The contract suites' roles ──────────────────────────────────────────────
+
+
+@pytest.fixture
+async def strict() -> AsyncIterator[AsyncSession]:
+    """A session on the schema whose role columns hold only the upper-case names."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
+    async with engine.begin() as connection:
+        await connection.run_sync(StrictBase.metadata.create_all)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+        yield session
+    await engine.dispose()
+
+
+def _policy() -> AccountPolicy:
+    return AccountPolicy(app="app", app_name="App", links=AccountLinks(base_url="https://app.example"), contact="a@b.c")
+
+
+def test_the_suites_roles_default_to_the_policy_s() -> None:
+    policy = _policy()
+    users = signature(check_user_store).parameters
+    assert (users["role"].default, users["other_role"].default) == (policy.default_role, policy.admin_role)
+    assert signature(check_invitation_store).parameters["role"].default == policy.default_role
+
+
+async def test_a_role_column_that_holds_only_the_policy_s_names_keeps_the_contract(strict: AsyncSession) -> None:
+    await check_user_store(SqlUserStore(strict, StrictUser))
+    new = NewAccount(
+        email="inviter@example.org", password_hash="h", first_name="Ada", last_name="", locale="en", role="ADMIN"
+    )
+    inviter = await SqlUserStore(strict, StrictUser).add(new)
+    store = SqlInvitationStore(strict, StrictInvitation)
+    await check_invitation_store(store, inviter_id=inviter.id, user_id=inviter.id)

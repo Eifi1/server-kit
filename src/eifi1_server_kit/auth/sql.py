@@ -129,7 +129,8 @@ EMAIL_WIDTH = 320
 
 #: :func:`~eifi1_server_kit.auth.hash_token`'s SHA-256 hex digest.
 _DIGEST_WIDTH = 64
-#: A role's stored value (``"admin"``, ``"member"``, ``"reviewer"``).
+#: A role's stored value, as :class:`~eifi1_server_kit.auth.service.AccountPolicy` names it
+#: (``"ADMIN"``, ``"MEMBER"``, ``"REVIEWER"``).
 _ROLE_WIDTH = 16
 #: A BCP 47 tag the apps ship (``"de-CH"``, ``"zh"``), with room for a script subtag.
 _LOCALE_WIDTH = 16
