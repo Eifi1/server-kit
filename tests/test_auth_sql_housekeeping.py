@@ -1,7 +1,7 @@
 """The ``sql`` extra's housekeeping (0.30): the public instant type and the Alembic hook that
 writes it as a plain column type, the pruning of rows nobody needs any more, and the contract
-suites' roles in the policy's spelling. On SQLite in memory, as ``test_auth_sql``; a schema of
-its own, so the two files share nothing."""
+suites' roles in the policy's spelling, and the README's unit of work. On SQLite in memory, as
+``test_auth_sql``; a schema of its own, so the two files share nothing."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from alembic import op
 from alembic.autogenerate import compare_metadata, produce_migrations, render_python_code
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from fastapi import Depends, FastAPI
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import CheckConstraint, String, create_engine, func, inspect, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -392,3 +394,50 @@ async def test_a_role_column_that_holds_only_the_policy_s_names_keeps_the_contra
     inviter = await SqlUserStore(strict, StrictUser).add(new)
     store = SqlInvitationStore(strict, StrictInvitation)
     await check_invitation_store(store, inviter_id=inviter.id, user_id=inviter.id)
+
+
+# ── The README's unit of work ───────────────────────────────────────────────
+
+
+def _app(engine: AsyncEngine, *, function_scoped: bool) -> FastAPI:
+    """An app whose request session commits when the route returned, as "Adopting the account
+    layer" writes it, function-scoped or with FastAPI's default scope."""
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def unit_of_work() -> AsyncIterator[AsyncSession]:
+        async with maker() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            else:
+                await session.commit()
+
+    dependency = Depends(unit_of_work, scope="function") if function_scoped else Depends(unit_of_work)
+    app = FastAPI()
+
+    @app.post("/accounts", status_code=201)
+    async def add(session: AsyncSession = dependency) -> dict[str, int]:
+        return {"id": (await _user(session)).id}
+
+    return app
+
+
+async def test_only_a_function_scoped_unit_of_work_answers_a_failed_commit(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Function-scoped, the failed commit is the answer's 500; with the default scope it comes
+    after the answer, which already said 201 for an account that is not there."""
+
+    async def refuse(_self: AsyncSession) -> None:
+        raise RuntimeError("the database went away at the commit")
+
+    monkeypatch.setattr(AsyncSession, "commit", refuse)
+    for function_scoped, status in ((True, 500), (False, 201)):
+        # As a server answers: what the app raises goes to its log, not into the caller.
+        transport = ASGITransport(app=_app(engine, function_scoped=function_scoped), raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            assert (await client.post("/accounts")).status_code == status
+    async with async_sessionmaker(engine)() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 0

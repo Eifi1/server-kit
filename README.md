@@ -26,14 +26,16 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
-  Seven optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
+  Eleven optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
   `mail` (`httpx>=0.28`) for `mail.ResendClient` only, `billing` (`httpx>=0.28`) for
   `billing.PaddleClient` only, `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
-  for `feedback.router`, `translation_review.router` and `tours.router` only, `sync`
-  (`sqlalchemy>=2.0`) for `sync.mixin` only, `gcs` (`google-cloud-storage>=3.0`) for
-  `objects.GcsObjectStore` only, and `s3` (`minio>=7.2.20`) for `objects.S3ObjectStore` only
-  (0.26). No JWT library: the kit builds and checks claims, each app
-  signs with its own.
+  for the routers only, `sync` (`sqlalchemy>=2.0`) for `sync.mixin` only, `gcs`
+  (`google-cloud-storage>=3.0`) for `objects.GcsObjectStore` only, `s3` (`minio>=7.2.20`) for
+  `objects.S3ObjectStore` only (0.26), `sql` (`sqlalchemy[asyncio]>=2.0`) for `auth.sql` and
+  `passkeys` (`webauthn>=2.0`) for `auth.passkeys`' ceremonies (0.29), and `jwt`
+  (`pyjwt>=2.10`) for `auth.jwt_signer` and `bcrypt` (`bcrypt>=4.0`) for
+  `auth.bcrypt_hasher` only (0.30). No JWT library in the core: the kit builds and checks
+  claims, and each app signs with its own or with the `jwt` extra's `JwtSigner`.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
 ## Compatibility with ui-kit
@@ -662,7 +664,9 @@ review's reviewer: a mapping from that user, never a second bearer check), and
 | Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…)`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
 | Routes (`auth.router`) | `AuthDeps` (below), `auth_router(deps, *, prefix="/auth", tags=("auth",))`, `invitations_admin_router(deps, *, prefix="/admin/invitations", tags=("admin",), guard=None)`, `current_user(deps)`, `admin_guard(deps)`, `account_service(deps)`, `app_state_limiters`, `peer_address`, `no_hooks` |
 | Mails (`auth.mails`) | `AccountMailText` (`password_reset`, `verification`, `email_change`, `email_change_notice`, `invitation`, `account_deletion`, `account_deletion_operator`, `passkey_added_notice`), `ACCOUNT_MAIL_TEXTS` (seven languages each, `de-CH` formal with "ss"), `ACCOUNT_MAIL_KINDS` (the `kind` each is sent under), `ACCOUNT_MAIL_VALUES` (the placeholders each fills), `account_mail_texts(overrides)`, `mail_date(when, locale)` |
-| Passkeys (`auth.passkeys`) | `RelyingParty(rp_id, rp_name, origins)`, `registration_options`, `authentication_options`, `verify_registration` → `VerifiedPasskey`, `verify_authentication`, `credential_id_of`, `user_handle_of`, `PasskeyCheckError`, `DEFAULT_PASSKEY_NAME`, `base64url_encode` / `_decode`; py_webauthn imported only here, lazily |
+| Passkeys (`auth.passkeys`) | `RelyingParty(rp_id, rp_name, origins)` (0.30: every origin must fit the RP id, or a `ValueError` naming it), `rp_id_fits(rp_id, origin)` (0.30: the origin's host or a suffix of it at a dot, the browser's rule), `registration_options`, `authentication_options`, `verify_registration` → `VerifiedPasskey`, `verify_authentication`, `credential_id_of`, `user_handle_of`, `PasskeyCheckError`, `DEFAULT_PASSKEY_NAME`, `base64url_encode` / `_decode`; py_webauthn imported only here, lazily |
+| Tables and stores (`auth.sql`, the `sql` extra) | the mixins `AccountColumns` (with `DemoAccountColumn`, `SessionCutoffColumn`), `SessionColumns`, `OneTimeTokenColumns`, `InvitationColumns`, `PasskeyColumns`, `SpentChallengeColumns`, `AdminActionColumns`; the stores `SqlUserStore`, `SqlSessionStore`, `SqlOneTimeTokenStore`, `SqlInvitationStore`, `SqlPasskeyStore`, `SqlAdminActionLog`, `SqlAfterCommit`; `UtcDateTime` (public in 0.30, `_UtcDateTime` still answers); `alembic_render_item` (0.30); `prune(*, before)` on the session, link, invitation and passkey stores and `prune_account_rows(*, before, sessions=, passkeys=, links=, invitations=)` → `AccountPrune` (0.30) |
+| Signer and hasher (0.30) | `JwtSigner(secret)` (`auth.jwt_signer`, the `jwt` extra: HS256 pinned, `exp` required, `None` for any fault; `JWT_ALGORITHM`), `BcryptHasher(rounds=DEFAULT_BCRYPT_ROUNDS)` (`auth.bcrypt_hasher`, the `bcrypt` extra: 4–31 rounds, past 72 bytes or a malformed hash is no match, never an exception) |
 | Wire shapes (`auth`, 0.29) | `SetPasswordRequest`, `PasswordChangeRequest`, `TokenRequest`, `PasswordResetRequest` / `Confirm` / `State`, `EmailVerificationStatus`, `EmailChangeState`, `EmailChangeConfirmed`, `InvitationCheck`, `InvitationAccepted`, `SessionInfo`, `DeletionTerms`, `DeletionResult`, `PasskeyOptions`, `PasskeyRegistrationBegin` / `Finish`, `PasskeyLoginFinish`, `PasskeyRename`, `PasskeyResponse`; `user_admin.InvitationIssued` |
 | Limits (0.29) | `AuthLimiters(…, redeem=REDEEM_PER_IP, refresh=REFRESH_PER_IP, password_check=PASSWORD_CHECK_PER_ACCOUNT, email_change=EMAIL_CHANGE_PER_ACCOUNT, export=EXPORT_PER_ACCOUNT)`; the old windows as they were |
 
@@ -1031,6 +1035,7 @@ like billing's, and the writes are the app's.
 | Settings | `DevSwitchSettings`: `dev_switch_enabled` (**False**; `<APP>_DEV_SWITCH_ENABLED`, set only in the local `.env`) |
 | The gate | `dev_switch_enabled(*, flag, local_run, production)` (true only for the flag AND the app's proof of a local run — a bool or a callable, asked only when it matters — AND not production; anything but real booleans shuts it), `assert_dev_switch_safe(*, flag, production)` → `DevSwitchUnsafeError` (a `RuntimeError`, at start), `require_dev_switch(gate)` (the route dependency: 404 unless `gate()` is `True`, the second lock behind the mount) |
 | The database proof (0.21) | `database_is_local(url, *, ports=LOCAL_DATABASE_PORTS, socket_dirs=LOCAL_SOCKET_DIRS)`: a Postgres URL whose every host is a loopback host (`localhost`, 127.0.0.0/8, `::1`) on one of `ports` (5432; no port is 5432), or a unix socket in one of `socket_dirs` (`/run/postgresql`, `/var/run/postgresql`, `/tmp`). Never the host alone: the apps' `cloud-sql-proxy` tunnels to their live databases listen on 127.0.0.1 too (kastlan 5433–5436, keksdose 5433, Kurvenschmiede 55432). False for no host (the driver's pick, keksdose's Cloud Run URL), several hosts or ports, `0.0.0.0`, SQLite, anything unparsable. An app whose local Postgres is elsewhere passes `ports=` — once no tunnel of its own uses that port |
+| The origin (0.30) | `origin_is_local(url)`: is the site served where the internet cannot reach it? Its host is `localhost`, `0.0.0.0`, a name under `.localhost`, `.local`, `.test`, `.home.arpa` or `.internal`, or a loopback, private or link-local address (a phone on the desk opens the dev server over the LAN). False for anything else and anything unreadable: the doubt is a deployment. An app's boot asks it before it refuses a deployment's mistakes or only warns on a laptop (Staunlabor's); not the dev switch's proof, which is stricter |
 | The wire | `DevSwitchRequest` (`role`, `plan`, `today`, at least one; extra fields refused; `today: null` clears the override, left out it is unchanged — `sets_today` tells them apart), `DevSwitchAnswer(role, plan, today)`, `validate_dev_switch(request, *, roles, plans=(), clock=False)` (the app's spelling back, compared without case; 422 otherwise; `today` kept as sent with `clock=True`, refused without it), `DEV_SWITCH_PATH` (`/dev/switch`), `DEV_SWITCH_LOG_TAG` (`dev_switch`) |
 | The dev clock (0.20) | `effective_today(override, *, gate, today)`: the override while `gate` (the route's own predicate, or a callable) is exactly `True`, else the app's real `today()` — required, in the app's time zone (the server's own date is UTC on Cloud Run) — so an override left in a local database never applies in a deployment. The route passes `clock=True` to `validate_dev_switch`. Every path that asks for today asks this; the client takes today from `DevSwitchAnswer.today` while one is set (ui-kit's `DevMenu` "Time" section) |
 | Refusals | `DevSwitchError`, `DevSwitchErrorCode`: `dev_switch_disabled` 404, `dev_switch_unknown_role` / `dev_switch_unknown_plan` 422, `dev_switch_refused` 409 (the app's own invariant), `dev_switch_no_clock` 422 (a `today` for an app without `clock=True`); `DEV_SWITCH_ERROR_STATUS`, `DEV_SWITCH_ERROR_DETAIL` |
@@ -1859,7 +1864,7 @@ never on a path outside their repository (a build must not need anything beside 
 uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.29.0/eifi1_server_kit-0.29.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15), a cloud object store (`[gcs]`, `[s3]`, 0.26) or the account layer's passkeys and ready tables (`[passkeys]`, `[sql]`, 0.29, with `[fastapi]`), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
+With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15), a cloud object store (`[gcs]`, `[s3]`, 0.26) the account layer's passkeys and ready tables (`[passkeys]`, `[sql]`, 0.29, with `[fastapi]`) or its ready signer and hasher (`[jwt]`, `[bcrypt]`, 0.30), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
 
 ```toml
 [project]
@@ -2066,6 +2071,211 @@ route and the app's own variations. Then, per app:
 
 The 429's sentence becomes keksdose's (`THROTTLED_DETAIL`) in kastlan and Kurvenschmiede;
 the inbox's 403 stays each app's own guard's.
+
+## Adopting the account layer
+
+The account routes become the kit's (auth §12, 0.29). The first app on them, Staunlabor,
+showed what an app still writes, in this order.
+
+**1. The extras.** `sql` (the tables and stores, SQLAlchemy's asyncio extension), `fastapi`
+(the routers), `passkeys` (py_webauthn), `mail` (Resend), and since 0.30 `jwt` and `bcrypt`
+(the ready signer and hasher; leave one out when the app keeps its own). The database driver
+and Alembic are the app's:
+
+```toml
+dependencies = [
+    "eifi1-server-kit[bcrypt,fastapi,jwt,mail,passkeys,sql]",
+    "asyncpg",  # the app's driver; the kit names none
+    "alembic",  # the migrations are the app's
+]
+```
+
+**2. The models** are the mixins on the app's own declarative base, whose `MetaData` names
+every constraint (the mixins leave them unnamed, so the models and the migrations agree):
+
+```python
+class Base(DeclarativeBase):
+    metadata = MetaData(
+        naming_convention={
+            "ix": "ix_%(column_0_label)s",
+            "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+            "ck": "ck_%(table_name)s_%(constraint_name)s",
+            "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+            "pk": "pk_%(table_name)s",
+        }
+    )
+
+
+class User(AccountColumns, Base):
+    __tablename__ = "users"
+    __table_args__ = (CheckConstraint("role IN ('ADMIN', 'MEMBER', 'REVIEWER')", name="role"),)
+
+
+class UserSession(SessionColumns, Base):
+    __tablename__ = "user_sessions"
+
+
+# OneTimeToken, Invitation, Passkey, SpentChallenge and AdminAction alike.
+```
+
+The roles are `AccountPolicy`'s names, upper case (`admin_role="ADMIN"`,
+`default_role="MEMBER"`), and so are the contract suites' defaults since 0.30. An account
+table with another name sets `__accounts_table__`. Every column is 0.29's schema, the admin
+log's group columns included (NULL in an app without groups), and so is the index on
+`one_time_tokens.user_id` beside the unique `(user_id, kind)`.
+
+**3. Alembic.** `env.py` hands the kit's hook to autogenerate:
+
+```python
+from eifi1_server_kit.auth.sql import alembic_render_item
+
+context.configure(connection=connection, target_metadata=Base.metadata, render_item=alembic_render_item)
+```
+
+Without it, `alembic revision --autogenerate` writes the kit's instant type by its module path
+and imports nothing for it (`eifi1_server_kit.auth.sql._UtcDateTime()` in 0.29), and the
+revision fails; with it, `sa.DateTime(timezone=True)`, the `timestamptz` the database holds,
+so the revision needs nothing of the kit. Hold the migrations to the models with a test that
+runs `alembic upgrade head` on an empty database and asks Alembic's `compare_metadata` for
+the differences (`[]`), as Staunlabor's `tests/api/test_migrations.py` does.
+
+**4. The unit of work** is one session per request, committed when the route returned and
+rolled back when it raised, and it MUST be function-scoped:
+
+```python
+async def _unit_of_work(request: Request) -> AsyncIterator[AsyncSession]:
+    async with request.app.state.database.sessions() as session:  # expire_on_commit=False
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        else:
+            await session.commit()
+
+
+request_session = Depends(_unit_of_work, scope="function")
+RequestSession = Annotated[AsyncSession, request_session]
+```
+
+A `yield` dependency's default scope (`"request"`) ends AFTER the response is sent, so a
+commit that fails there comes too late: the client was already told 201 for an account that
+is not there (keksdose met it as Starlette's "response already started"). Function-scoped,
+the commit ends with the route, and its failure is the answer's 500 (`scope=` needs a FastAPI
+that has it: the kit's dev lock, 0.157, and Staunlabor's, 0.162, do). The kit's stores flush
+and never commit, and `SqlAfterCommit` sends the mails from that commit and drops them on a
+rollback. Staunlabor holds the order with a test:
+
+```python
+async def test_a_commit_that_fails_is_the_answer_s_500_and_writes_nothing(accounts, session, monkeypatch):
+    async def refuse(_self: AsyncSession) -> None:
+        raise RuntimeError("the database went away at the commit")
+
+    # As a server answers: the 500 is sent, and the exception goes to its log.
+    transport = ASGITransport(app=accounts._transport.app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with monkeypatch.context() as patch:
+            patch.setattr(AsyncSession, "commit", refuse)
+            response = await register(client, FIRST_ADMIN)
+    assert response.status_code == 500
+    assert await session.scalar(select(func.count()).select_from(User)) == 0
+```
+
+**5. The stores, the signer and the hasher, mounted.** Each store is a dependency on the
+request's session; the signer and the hasher are the kit's (0.30):
+
+```python
+async def users(session: RequestSession) -> SqlUserStore[User]:
+    return SqlUserStore(session, User)
+
+
+# sessions, links (SqlOneTimeTokenStore), invitations, passkeys
+# (SqlPasskeyStore(session, Passkey, SpentChallenge)), admin_log and after_commit
+# (SqlAfterCommit(session)) alike.
+
+deps = AuthDeps(
+    users=users,
+    sessions=sessions,
+    tokens=links,
+    invitations=invitations,
+    log=admin_log,
+    after_commit=after_commit,
+    passkeys=passkeys,
+    signer=JwtSigner(settings.jwt_secret),  # HS256, a str or a SecretStr
+    hasher=BcryptHasher(settings.bcrypt_rounds),  # 12 by default; a suite passes 4
+    mailer=mailer,
+    mail_backend=settings.mail_backend,
+    policy=AccountPolicy(
+        app="<app>",
+        app_name="<App>",
+        links=AccountLinks(base_url=settings.app_base_url),
+        contact=settings.contact_email,
+        bootstrap=parse_env_list(settings.registration_allowlist) or None,
+    ),
+    relying_party=RelyingParty(rp_id=settings.webauthn_rp_id, rp_name="<App>", origins=(site_origin,)),
+    client_address=caller_address,
+)
+budget = [Depends(limit_account_request)]  # the app's own per-address budget, below
+app.include_router(auth_router(deps), prefix="/api/v1", dependencies=budget)
+app.include_router(invitations_admin_router(deps), prefix="/api/v1", dependencies=budget)
+app.state.auth_limiters = AuthLimiters()
+install_contract_error_handlers(app)
+```
+
+Run `auth.testing`'s contract suites (`check_user_store`, `check_session_store`, …) once
+against the stores on the test database.
+
+**The budget in front.** The kit limits what it must (sign-in, sign-up, every anonymous
+redemption, the refresh, every password check) and nothing else: `GET /auth/me`, the
+sessions list, `POST /auth/passkey/login/begin` and the admin's list have no window of the
+kit's ("—" in the table above). Every route is public, so an app puts its own per-address
+budget in front of all of them with `include_router(..., dependencies=[...])`, which runs
+before the kit's windows; its 429 answers through `install_contract_error_handlers`.
+
+**6. The boot checks.** Refuse to start a deployment anybody could take over; on a laptop,
+warn:
+
+```python
+def check_deployment(settings: Settings) -> None:
+    deployed = bool(settings.cloud_run_service) or not origin_is_local(settings.app_base_url)
+    problems = secret_problems(settings.jwt_secret, name="<APP>_JWT_SECRET")
+    if not rp_id_fits(settings.webauthn_rp_id, settings.app_base_url):
+        problems.append("<APP>_WEBAUTHN_RP_ID is neither the site's host nor a suffix of it")
+    if deployed and not parse_env_list(settings.registration_allowlist):
+        problems.append("<APP>_REGISTRATION_ALLOWLIST is empty: whoever signs up first is the admin")
+    if problems and deployed:
+        raise RuntimeError("Refusing to start a deployment: " + "; ".join(problems))
+    for problem in problems:
+        logger.warning("%s. Development only.", problem)
+```
+
+`secret_problems` is `eifi1_server_kit.settings`', `origin_is_local` the dev switch module's
+(0.30), `rp_id_fits` `auth.passkeys`' (0.30). `RelyingParty` refuses an RP id that does not
+fit its origins itself (0.30), so a laptop whose page does not fit (the dev server opened
+over the LAN) passes neither `passkeys` nor `relying_party`: the passkey routes stay
+unmounted, and the password works.
+
+**7. Pruning.** Nothing in the kit deletes an ended session, an expired link, an invitation
+never taken up or a spent challenge. Left alone, an ended session keeps its IP address and
+User-Agent for ever, which the privacy policy has to answer for. A scheduled job deletes them
+at the retention the policy names (0.30), behind the scheduler's token
+([`jobs`](#eifi1_server_kitjobs)) and on the request's unit of work, which commits it:
+
+```python
+@ops.post("/ops/prune-accounts", dependencies=[Depends(require_jobs_token(lambda: get_settings().jobs_token))])
+async def prune_accounts(session: RequestSession) -> dict[str, int]:
+    pruned = await prune_account_rows(
+        before=utc_now() - timedelta(days=30),
+        sessions=SqlSessionStore(session, UserSession),
+        passkeys=SqlPasskeyStore(session, Passkey, SpentChallenge),
+        links=SqlOneTimeTokenStore(session, OneTimeToken),
+        invitations=SqlInvitationStore(session, Invitation),
+    )
+    return {"pruned": pruned.total}
+```
+
+A table kept longer than the others gets its own call to its store's `prune(before=…)`. A
+`before` that has not passed is refused: a row that expires later is still in use.
 
 ## Developing
 
