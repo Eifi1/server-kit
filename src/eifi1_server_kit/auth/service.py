@@ -1213,7 +1213,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         await self._invitations.accept(invitation, user_id=user.id, at=self._now())
         if self._hooks.on_invitation_redeemed is not None:
             await self._hooks.on_invitation_redeemed(user, invitation)
-        return invitation, await self._extras(self._hooks.describe_invitation, invitation)
+        extras = await self._extras(self._hooks.describe_invitation, invitation)
+        group = await self._group_of(invitation)
+        return invitation, extras if group is None else {**extras, "group": group.model_dump()}
 
     async def invitation_rows(self) -> list[dict[str, Any]]:
         """``GET /admin/invitations`` (user-admin §5): every invitation not accepted, newest

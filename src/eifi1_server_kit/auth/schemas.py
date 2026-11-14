@@ -586,14 +586,24 @@ class InvitationCheck(BaseModel):
     role: str | None = None
 
 
+class InvitationGroup(BaseModel):
+    """The group an accepted invitation joined (0.32), as ``AuthHooks.invitation_group``
+    names it: a team, a company, a budget."""
+
+    id: int | None = None
+    name: str | None = None
+
+
 class InvitationAccepted(BaseModel):
     """``POST /auth/invitations/accept {token}``: the invitation an existing account took up
     (§4.4). What it attached is the app's (``on_invitation_redeemed``), and the words for it
     ride in a subclass through ``describe_invitation`` (Kurvenschmiede's team name, keksdose's
-    budget)."""
+    budget). ``group`` (0.32): what ``invitation_group`` names, so a page says what the account
+    joined; ``None`` without the hook or a group."""
 
     email: str
     role: str | None = None
+    group: InvitationGroup | None = None
 
 
 class SessionInfo(BaseModel):

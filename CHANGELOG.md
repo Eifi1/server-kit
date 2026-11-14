@@ -34,6 +34,9 @@ entry in the Conventional Commit; this file is assembled from them at release.
 * **objects (keksdose):** `purge_objects(..., object_key=None)`: the keys are the app's names for
   its files (keksdose's `s3://bucket/<key>` locators, a local path) and `object_key` maps each to
   the store's key; what the purge answers and logs stays in the app's names.
+* **auth (Kurvenschmiede's ui-kit dev.2 run):** `InvitationAccepted.group` (`InvitationGroup`:
+  `id`, `name`), what `invitation_group` names, in `POST /auth/invitations/accept`'s answer, so
+  ui-kit 0.64's page says what the account joined; `None` without the hook or a group.
 
 ### Changed
 

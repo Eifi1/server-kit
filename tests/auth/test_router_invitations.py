@@ -78,7 +78,8 @@ async def test_an_existing_account_takes_up_an_invitation_for_its_address(world:
     world.hooks = AuthHooks(on_invitation_redeemed=on_invitation_redeemed)
     raw, invitation = invite(world, "bob@example.com", role="MEMBER")
     response = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": raw})
-    assert response.status_code == 200 and response.json() == {"email": "bob@example.com", "role": "MEMBER"}
+    assert response.status_code == 200
+    assert response.json() == {"email": "bob@example.com", "role": "MEMBER", "group": None}
     assert invitation.accepted_by_user_id == user.id and redeemed == [invitation.id]
     again = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": raw})
     assert code(again) == "invitation_invalid"
@@ -402,3 +403,21 @@ async def test_an_invitation_to_a_group_names_it_in_the_kit_s_own_words() -> Non
         assert "Rig 4" in de.message.subject and "eingeladen" in de.message.text
         assert "Rig" not in plain.message.subject
     assert ACCOUNT_MAIL_KINDS[AccountMailText.GROUP_INVITATION] == "invitation"
+
+
+async def test_an_accepted_invitation_names_its_group() -> None:
+    """0.32 (Kurvenschmiede's dev.2 finding 3): the accept answers the group
+    ``invitation_group`` names, so the page says what the account joined."""
+    from eifi1_server_kit.user_admin.schemas import GroupRef
+
+    async def invitation_group(invitation: MemoryInvitation) -> GroupRef | None:
+        return GroupRef(id=4, name="Rig 4")
+
+    world = World()
+    async with world.client:
+        user = world.account(email="bob@example.com")
+        token = await world.token_of(user)
+        world.hooks = AuthHooks(invitation_group=invitation_group)
+        raw, _ = invite(world, "bob@example.com", role="MEMBER")
+        response = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": raw})
+        assert response.json()["group"] == {"id": 4, "name": "Rig 4"}
