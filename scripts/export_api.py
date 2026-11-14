@@ -117,6 +117,8 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     # Layer 2's routes, behind the `fastapi` extra; its ports and service come with
     # `eifi1_server_kit.feedback`.
     ("eifi1_server_kit.feedback.router", "docs/server-services-harmonization.md", "§2.9"),
+    # Layer 2's ready tables and stores (0.31), behind the `sql` extra, as the accounts' are.
+    ("eifi1_server_kit.feedback.sql", "docs/server-services-harmonization.md", "§2"),
     ("eifi1_server_kit.tours", "docs/tours-harmonization.md", "§10.2, §10.3"),
     ("eifi1_server_kit.tours.router", "docs/tours-harmonization.md", "§10.3"),
     ("eifi1_server_kit.uploads", "docs/feedback-harmonization.md", "§3.5"),
@@ -129,6 +131,8 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     ("eifi1_server_kit.translation_review", "docs/i18n-harmonization.md", "§2"),
     # The translation review's routes (0.10), behind the `fastapi` extra, as feedback's.
     ("eifi1_server_kit.translation_review.router", "docs/server-services-harmonization.md", "§6.2"),
+    # The verdicts' ready table and store (0.31), behind the `sql` extra.
+    ("eifi1_server_kit.translation_review.sql", "docs/server-services-harmonization.md", "§6.2"),
     # The showcase reviews translations across origins: the review contract's routes.
     ("eifi1_server_kit.cors", "docs/i18n-harmonization.md", "§2"),
     # Local-first sync, the server half (0.15): keksdose's /sync protocol, shared with kastlan;

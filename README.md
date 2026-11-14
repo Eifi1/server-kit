@@ -2498,6 +2498,37 @@ A table kept longer than the others gets its own call to its store's `prune(befo
 `before` that has not passed is refused: a row that expires later is still in use. "Passed"
 is by `now=`, the kit's clock unless given, so an app's test with a frozen clock hands it on.
 
+## Adopting the feedback and translation review tables
+
+The `sql` extra also ships the tables behind layer 2's feedback and translation review
+(`eifi1_server_kit.feedback.sql`, `eifi1_server_kit.translation_review.sql`), so an app that
+mounts `feedback_router` and `translation_review_router` writes no store of its own. The
+recipe is the account layer's:
+
+1. **Models from the mixins**, on the app's declarative base with its naming convention:
+   `class Feedback(FeedbackColumns, Base): __tablename__ = "feedback"`, likewise the reply,
+   comment, vote and attachment tables and `TranslationReviewColumns`. Every foreign key to an
+   account follows `__accounts_table__` (default `"users"`), every key to a report follows
+   `__feedback_table__` (default `"feedback"`); set them once on a mixin of your own when your
+   tables are called otherwise. A subclass that needs table arguments of its own adds them to
+   the mixin's: `__table_args__ = (*FeedbackAttachmentColumns.table_args(), ...)`.
+2. **Alembic**: add the tables to your next migration; `alembic_render_item` from
+   `eifi1_server_kit.auth.sql` renders their `UtcDateTime` columns as plain
+   `sa.DateTime(timezone=True)`.
+3. **The stores**, on the request's session, handed to `FeedbackDeps` and
+   `TranslationReviewDeps`: `SqlFeedbackRepository`, `SqlFeedbackReplyStore`,
+   `SqlFeedbackCommentStore`, `SqlFeedbackVoteStore`, `SqlPeopleLookup`, `SqlAttachmentStorage`
+   (the database half; the bytes stay in the app's `ObjectStore`), and
+   `SqlTranslationReviewStore(session, TranslationReview, accounts=User)`. Pass `uploads=` where
+   the docstrings say so: a writer may then name only a file they uploaded.
+4. **The checks**: run `feedback.testing`'s and `translation_review.testing`'s contract suites
+   against your stores, as `tests/sql_tables.py` does here; on PostgreSQL too if you can, as
+   `tests/test_sql_on_postgresql.py` shows (opt-in through `EIFI1_TEST_POSTGRES_URL`).
+
+What stays the app's: sealing a column (override it with your own type), a tenant's row
+filter, and the mails a reply or a comment sends (the stores fire the ports' notices; the app's
+`FeedbackAlerts` words and sends them).
+
 ## Developing
 
 ```sh
