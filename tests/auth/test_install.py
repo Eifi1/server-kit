@@ -10,7 +10,14 @@ import httpx
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
 
-from eifi1_server_kit.auth.router import app_account_service, app_admin, app_current_user, install_account_layer
+from eifi1_server_kit.auth.router import (
+    app_account_service,
+    app_admin,
+    app_current_user,
+    app_feedback_actor,
+    install_account_layer,
+)
+from eifi1_server_kit.feedback import FeedbackActor
 from tests.auth._world import BASE, World
 
 # Made at import, as an app's own module does: no AuthDeps exists yet.
@@ -30,6 +37,33 @@ async def service(accounts: Annotated[Any, Depends(app_account_service)]) -> dic
 @router.get("/admin-only")
 async def admin_only(user: Annotated[Any, Depends(app_admin)]) -> dict[str, int]:
     return {"id": user.id}
+
+
+@router.get("/actor")
+async def actor(who: Annotated[FeedbackActor, Depends(app_feedback_actor)]) -> dict[str, Any]:
+    return {"id": who.id, "name": who.display_name, "admin": who.is_admin, "demo": who.is_demo, "role": who.role}
+
+
+async def test_the_feedback_router_s_actor_is_the_kit_s_too() -> None:
+    """Staunlabor's pilot: ``FeedbackDeps(actor=app_feedback_actor)``, a module-level
+    dependency, where a closure over ``current_user(accounts)`` under ``from __future__ import
+    annotations`` left the feedback routes out of ``app.openapi()``."""
+    world = World()
+    world.app.include_router(router, prefix=BASE)
+    install_account_layer(world.app, world.deps)
+    async with world.client:
+        admin = world.account(email="root@example.com", role="ADMIN", first_name="Grace", last_name="Hopper")
+        member = world.account()
+        assert (await world.call("GET", "/actor", token=await world.token_of(admin))).json() == {
+            "id": admin.id,
+            "name": "Grace Hopper",
+            "admin": True,
+            "demo": False,
+            "role": "ADMIN",
+        }
+        answer = (await world.call("GET", "/actor", token=await world.token_of(member))).json()
+        assert (answer["admin"], answer["role"]) == (False, "MEMBER")
+    assert "/api/v1/actor" in world.app.openapi()["paths"]
 
 
 async def test_an_app_s_own_router_made_before_its_deps_reaches_the_account_layer() -> None:

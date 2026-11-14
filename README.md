@@ -2400,9 +2400,19 @@ deps = AuthDeps(
 budget = [Depends(limit_account_request)]  # the app's own per-address budget, below
 app.include_router(auth_router(deps), prefix="/api/v1", dependencies=budget)
 app.include_router(invitations_admin_router(deps), prefix="/api/v1", dependencies=budget)
+install_account_layer(app, deps)  # 0.32: the app's own import-time routers' account
 app.state.auth_limiters = AuthLimiters()
 install_contract_error_handlers(app)
 ```
+
+An app's own routers are made when their module is imported, before `deps` exist, so they
+cannot call `current_user(deps)`. They depend on the kit's placeholders instead —
+`Annotated[User, Depends(app_current_user)]`, `app_admin`, `app_account_service` — which
+`install_account_layer(app, deps)` binds (0.32). The feedback router's actor is one of them:
+`FeedbackDeps(actor=app_feedback_actor, …)`. Write it that way, not as a closure over
+`current_user(deps)` in a factory: under `from __future__ import annotations` FastAPI resolves
+a route's annotations in the module's globals, the closure's dependency is not there, and the
+routes drop out of `app.openapi()` without a word (Staunlabor's pilot).
 
 Run `auth.testing`'s contract suites (`check_user_store`, `check_session_store`, …) once
 against the stores on the test database.

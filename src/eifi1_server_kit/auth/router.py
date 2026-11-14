@@ -50,6 +50,7 @@ from typing import Annotated, Any, cast
 
 from pydantic import BaseModel
 
+from eifi1_server_kit.auth.accounts import full_name
 from eifi1_server_kit.auth.errors import AuthError, AuthErrorCode
 from eifi1_server_kit.auth.limits import AuthLimiters
 from eifi1_server_kit.auth.mails import AccountMailText, account_mail_texts
@@ -95,6 +96,7 @@ from eifi1_server_kit.auth.service import (
     SignedIn,
 )
 from eifi1_server_kit.clock import Clock, utc_now
+from eifi1_server_kit.feedback.ports import FeedbackActor
 from eifi1_server_kit.limiter import UNKNOWN_CLIENT, charge
 from eifi1_server_kit.mail import Mailer, MailText
 from eifi1_server_kit.user_admin.export import export_filename
@@ -125,6 +127,7 @@ __all__ = [
     "app_account_service",
     "app_admin",
     "app_current_user",
+    "app_feedback_actor",
     "app_state_limiters",
     "auth_router",
     "current_user",
@@ -411,6 +414,25 @@ async def app_account_service() -> AccountService[Any, Any, Any]:
     """This request's :class:`~eifi1_server_kit.auth.service.AccountService`, for an
     import-time router (:func:`app_current_user`)."""
     raise RuntimeError(_NOT_INSTALLED)
+
+
+async def app_feedback_actor(request: Request, user: Annotated[Any, Depends(app_current_user)]) -> FeedbackActor:
+    """The signed-in account as the feedback router's actor (0.32, Staunlabor's pilot):
+    ``FeedbackDeps(actor=app_feedback_actor)``. A module-level dependency, so FastAPI resolves
+    it under ``from __future__ import annotations`` too, where a closure over
+    ``current_user(deps)`` left the feedback routes out of ``app.openapi()``. Admin is
+    ``policy.admin_role``; the name is :func:`~eifi1_server_kit.auth.full_name` in the
+    account's language. Needs :func:`install_account_layer`."""
+    deps: AuthDeps = request.app.state.account_deps
+    name = full_name(user.first_name, user.last_name, user.locale)
+    return FeedbackActor(
+        id=user.id,
+        email=user.email,
+        display_name=name or None,
+        is_admin=user.role == deps.policy.admin_role,
+        is_demo=bool(getattr(user, "is_demo", False)),
+        role=user.role,
+    )
 
 
 def install_account_layer(app: Any, deps: AuthDeps) -> None:

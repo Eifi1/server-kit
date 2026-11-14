@@ -18,6 +18,11 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `current_user(deps)`; they depend on the placeholders, and the install binds them through the
   app's `dependency_overrides` (and keeps `deps` on `app.state.account_deps`). Unbound, a
   placeholder raises a `RuntimeError` naming the missing call.
+* **auth.router (Staunlabor's feedback pilot):** `app_feedback_actor`, the signed-in account as
+  the feedback router's `FeedbackActor` (admin by `policy.admin_role`, the name by `full_name`):
+  `FeedbackDeps(actor=app_feedback_actor)`. A module-level dependency, where a closure over
+  `current_user(deps)` under `from __future__ import annotations` silently dropped the feedback
+  routes from `app.openapi()`; the README says so.
 
 ### Changed
 
