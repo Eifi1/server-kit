@@ -1266,9 +1266,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         await self._after.commit_now()
         link = self._policy.links.url(self._policy.links.register, invite=raw)
         name = "" if group is None or group.name is None else group.name
-        return link, await self._send(
-            invitation.email, AccountMailText.INVITATION, invitation.locale, link=link, group=name
-        )
+        # A group with a name gets the group invitation, which names it (0.32).
+        kind = AccountMailText.GROUP_INVITATION if name else AccountMailText.INVITATION
+        return link, await self._send(invitation.email, kind, invitation.locale, link=link, group=name)
 
     async def _issued(self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool) -> dict[str, Any]:
         inviter = PersonRef.model_validate(admin, from_attributes=True)

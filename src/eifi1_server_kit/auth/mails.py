@@ -60,6 +60,9 @@ class AccountMailText(enum.StrEnum):
     EMAIL_CHANGE_NOTICE = "email_change_notice"
     #: An invitation, in the invitee's language (§4.4).
     INVITATION = "invitation"
+    #: An invitation into a group the app names (``AuthHooks.invitation_group``: a team), in
+    #: the invitee's language, the group named (0.32, Kurvenschmiede's).
+    GROUP_INVITATION = "group_invitation"
     #: The deletion request's confirmation in ``after_days`` mode: the day of the erasure.
     ACCOUNT_DELETION = "account_deletion"
     #: The same in ``operator`` mode: an administrator erases, on no promised day.
@@ -76,6 +79,7 @@ ACCOUNT_MAIL_KINDS: Mapping[AccountMailText, str] = {
     AccountMailText.EMAIL_CHANGE: OneTimeTokenKind.EMAIL_CHANGE,
     AccountMailText.EMAIL_CHANGE_NOTICE: AccountNoticeKind.EMAIL_CHANGE_NOTICE,
     AccountMailText.INVITATION: OneTimeTokenKind.INVITATION,
+    AccountMailText.GROUP_INVITATION: OneTimeTokenKind.INVITATION,
     AccountMailText.ACCOUNT_DELETION: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.PASSKEY_ADDED_NOTICE: AccountNoticeKind.PASSKEY_ADDED_NOTICE,
@@ -88,6 +92,7 @@ ACCOUNT_MAIL_VALUES: Mapping[AccountMailText, frozenset[str]] = {
     AccountMailText.EMAIL_CHANGE: frozenset({"app", "name"}),
     AccountMailText.EMAIL_CHANGE_NOTICE: frozenset({"app", "name", "new_email", "contact"}),
     AccountMailText.INVITATION: frozenset({"app", "group"}),
+    AccountMailText.GROUP_INVITATION: frozenset({"app", "group"}),
     AccountMailText.ACCOUNT_DELETION: frozenset({"app", "name", "date", "contact", "backup_days", "log_days"}),
     AccountMailText.ACCOUNT_DELETION_OPERATOR: frozenset({"app", "name", "contact", "backup_days", "log_days"}),
     AccountMailText.PASSKEY_ADDED_NOTICE: frozenset({"app", "name", "passkey", "contact"}),
@@ -718,6 +723,86 @@ _PASSKEY_ADDED: Mapping[str, MailText] = {
     ),
 }
 
+#: 0.32: the invitation into a group the app names (a team), the group in its words.
+_GROUP_INVITATION: Mapping[str, MailText] = {
+    "de-CH": MailText(
+        subject="Einladung zu «{group}» bei {app}",
+        intro="Hallo,",
+        body=(
+            "Sie sind zu «{group}» bei {app} eingeladen. Der Link unten öffnet die Registrierung mit Ihrer "
+            "Adresse — oder, wenn Sie schon ein Konto haben, nimmt die Einladung nach der Anmeldung an. Er "
+            "funktioniert einmal und ist 14 Tage gültig."
+        ),
+        cta="Einladung annehmen",
+        outro="Falls Ihnen das nichts sagt, ignorieren Sie diese Mail.",
+    ),
+    "en": MailText(
+        subject="You have been invited to “{group}” on {app}",
+        intro="Hello,",
+        body=(
+            "you have been invited to “{group}” on {app}. The link below opens the registration with your "
+            "address — or, if you already have an account, accepts the invitation once you sign in. It works "
+            "once, for 14 days."
+        ),
+        cta="Accept the invitation",
+        outro="If this means nothing to you, ignore this mail.",
+    ),
+    "es": MailText(
+        subject="Invitación a «{group}» en {app}",
+        intro="Hola:",
+        body=(
+            "Le han invitado a «{group}» en {app}. El enlace de abajo abre el registro con su dirección o, si "
+            "ya tiene una cuenta, acepta la invitación en cuanto inicie sesión. Funciona una sola vez y "
+            "durante 14 días."
+        ),
+        cta="Aceptar la invitación",
+        outro="Si esto no le dice nada, ignore este correo.",
+    ),
+    "fr": MailText(
+        subject="Invitation à « {group} » sur {app}",
+        intro="Bonjour,",
+        body=(
+            "Vous êtes invité à « {group} » sur {app}. Le lien ci-dessous ouvre l’inscription avec votre "
+            "adresse — ou, si vous avez déjà un compte, accepte l’invitation dès que vous êtes connecté. Il "
+            "ne fonctionne qu’une fois et pendant 14 jours."
+        ),
+        cta="Accepter l’invitation",
+        outro="Si ce message ne vous dit rien, ignorez-le.",
+    ),
+    "it": MailText(
+        subject="Invito a «{group}» su {app}",
+        intro="Buongiorno,",
+        body=(
+            "è stato invitato a «{group}» su {app}. Il link qui sotto apre la registrazione con il Suo "
+            "indirizzo oppure, se ha già un account, accetta l’invito dopo l’accesso. Funziona una sola "
+            "volta e per 14 giorni."
+        ),
+        cta="Accettare l’invito",
+        outro="Se questo messaggio non Le dice nulla, lo ignori.",
+    ),
+    "hu": MailText(
+        subject="Meghívó: „{group}” – {app}",
+        intro="Jó napot kívánunk!",
+        body=(
+            "Meghívták a(z) „{group}” csoportba a(z) {app} alkalmazásban. Az alábbi hivatkozás megnyitja a "
+            "regisztrációt az Ön címével – vagy, ha már van fiókja, bejelentkezés után elfogadja a meghívót. "
+            "Egyszer használható, 14 napig."
+        ),
+        cta="Meghívó elfogadása",
+        outro="Ha ez semmit sem mond Önnek, hagyja figyelmen kívül ezt az e-mailt.",
+    ),
+    "zh": MailText(
+        subject="邀请您加入 {app} 的「{group}」",
+        intro="您好：",
+        body=(
+            "您已受邀加入 {app} 的「{group}」。点击下方链接即可使用您的地址注册；如果您已有账户，登录后即会接受邀请。"
+            "该链接仅可使用一次，14 天内有效。"
+        ),
+        cta="接受邀请",
+        outro="如果您不清楚这封邮件的来由，请忽略。",
+    ),
+}
+
 #: The kit's words for every account mail, seven languages each.
 ACCOUNT_MAIL_TEXTS: Mapping[AccountMailText, Mapping[str, MailText]] = {
     AccountMailText.PASSWORD_RESET: _RESET,
@@ -725,6 +810,7 @@ ACCOUNT_MAIL_TEXTS: Mapping[AccountMailText, Mapping[str, MailText]] = {
     AccountMailText.EMAIL_CHANGE: _EMAIL_CHANGE,
     AccountMailText.EMAIL_CHANGE_NOTICE: _EMAIL_CHANGE_NOTICE,
     AccountMailText.INVITATION: _INVITATION,
+    AccountMailText.GROUP_INVITATION: _GROUP_INVITATION,
     AccountMailText.ACCOUNT_DELETION: _DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: _DELETION_OPERATOR,
     AccountMailText.PASSKEY_ADDED_NOTICE: _PASSKEY_ADDED,

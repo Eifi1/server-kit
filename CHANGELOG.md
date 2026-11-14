@@ -27,9 +27,15 @@ entry in the Conventional Commit; this file is assembled from them at release.
   once (one per account, in order; a `ValueError` otherwise), so the app reads its own columns in
   one query instead of one per row. It wins over `to_row`; a single action's row is a batch of
   one.
+* **auth (Kurvenschmiede's gap 2):** `AccountMailText.GROUP_INVITATION` (`group_invitation`, sent
+  under the `invitation` kind): an invitation whose `invitation_group` answers a name is mailed
+  in the kit's own words naming the group, in seven languages; one without a group gets the
+  general invitation as before.
 
 ### Changed
 
+* **auth:** 0.31's `{group}` in an app's own `invitation` table: a group invitation is its own
+  mail now, so an app that words it itself names `group_invitation` in `AuthDeps.mail_texts`.
 * **auth (Kurvenschmiede):** an admin's invitation whose body names no `locale` is written in
   the inviting admin's language, not the schema's `de-CH`; a body that names one wins, and an
   admin with no language of their own still gets the default.

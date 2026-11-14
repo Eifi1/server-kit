@@ -324,7 +324,7 @@ async def test_an_invitation_names_its_group_in_the_mail_and_the_log() -> None:
         team = (invitation.scope or {}).get("team")
         return None if team is None else GroupRef(id=team, name=f"Rig {team}")
 
-    world = World(mail_texts={"invitation": own})
+    world = World(mail_texts={"group_invitation": own})  # 0.32: the group invitation is its own mail
     async with world.client:
         _, token = await admin_token(world)
         world.hooks = AuthHooks(invitation_scope=invitation_scope, invitation_group=invitation_group)
@@ -346,7 +346,7 @@ async def test_an_invitation_names_its_group_in_the_mail_and_the_log() -> None:
             "POST", "/admin/invitations", token=token, json={"email": "cy@example.com", "role": "MEMBER"}
         )
         assert plain.status_code == 201 and world.log.rows[-1].target_group_id is None
-        assert world.mailer.of("invitation")[-1].message.subject == "Join  on Staunlabor"
+        assert "Rig" not in world.mailer.of("invitation")[-1].message.subject, "no group: the general invitation"
 
 
 async def test_an_invitation_without_a_language_is_written_in_the_admin_s() -> None:
@@ -367,3 +367,38 @@ async def test_an_invitation_without_a_language_is_written_in_the_admin_s() -> N
         admin.locale = ""  # an admin with no language of their own: the schema's default
         await world.call("POST", "/admin/invitations", token=token, json={"email": "dee@example.com", "role": "MEMBER"})
         assert list(world.invitations.rows.values())[-1].locale == "de-CH"
+
+
+async def test_an_invitation_to_a_group_names_it_in_the_kit_s_own_words() -> None:
+    """Kurvenschmiede's gap 2 (0.32): with ``invitation_group`` answering a name, the kit
+    sends its group invitation, in the invitee's language; without one, the general text."""
+    from eifi1_server_kit.auth.mails import ACCOUNT_MAIL_KINDS, AccountMailText
+    from eifi1_server_kit.user_admin.schemas import GroupRef
+
+    async def invitation_scope(admin: MemoryUser, scope: int | str) -> dict[str, Any]:
+        return {"team": scope}
+
+    async def invitation_group(invitation: MemoryInvitation) -> GroupRef | None:
+        team = (invitation.scope or {}).get("team")
+        return None if team is None else GroupRef(id=team, name=f"Rig {team}")
+
+    world = World()
+    async with world.client:
+        _, token = await admin_token(world)
+        world.hooks = AuthHooks(invitation_scope=invitation_scope, invitation_group=invitation_group)
+        body = {"email": "bob@example.com", "role": "MEMBER", "scope": 4}
+        await world.call("POST", "/admin/invitations", token=token, json={**body, "locale": "en"})
+        await world.call(
+            "POST", "/admin/invitations", token=token, json={**body, "email": "cy@example.com", "locale": "de-CH"}
+        )
+        await world.call(
+            "POST",
+            "/admin/invitations",
+            token=token,
+            json={"email": "dee@example.com", "role": "MEMBER", "locale": "en"},
+        )
+        en, de, plain = world.mailer.of("invitation")
+        assert "Rig 4" in en.message.subject and "Rig 4" in en.message.text
+        assert "Rig 4" in de.message.subject and "eingeladen" in de.message.text
+        assert "Rig" not in plain.message.subject
+    assert ACCOUNT_MAIL_KINDS[AccountMailText.GROUP_INVITATION] == "invitation"
