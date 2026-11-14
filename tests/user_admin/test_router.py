@@ -757,3 +757,37 @@ async def test_the_admin_routes_share_the_account_routes_window(world: AdminWorl
     world.app.state.auth_limiters = AuthLimiters(requests=Budget(1, 60))
     assert (await world.call("GET", "/admin/users", token=token)).status_code == 200
     assert (await world.call("GET", "/admin/actions", token=token)).status_code == 429
+
+
+async def test_the_roster_asks_the_app_for_its_rows_in_one_batch(world: AdminWorld) -> None:
+    """Kurvenschmiede's G13 (0.32): ``to_rows`` answers a page's rows at once, so the app's
+    own columns (its subscriptions) are one query, not one per row; a single action's row is
+    a batch of one."""
+    batches: list[int] = []
+
+    async def to_rows(users: Any) -> list[AdminUserRow]:
+        batches.append(len(users))
+        return [
+            AdminUserRow.model_validate(user, from_attributes=True).model_copy(
+                update={"email_verified": user.email_verified_at is not None}
+            )
+            for user in users
+        ]
+
+    world.admin_hooks = UserAdminHooks(to_rows=to_rows)
+    _, token = await world.admin_token()
+    people = [world.account(email=f"p{n}@example.org") for n in range(3)]
+    listed = (await world.call("GET", "/admin/users?limit=50", token=token)).json()
+    assert batches == [len(listed["users"])] and len(listed["users"]) >= 3
+    await world.call("POST", f"/admin/users/{people[0].id}/password-change", token=token, json={"acknowledged": True})
+    assert batches[-1] == 1
+
+
+async def test_a_batch_that_answers_another_number_of_rows_is_refused(world: AdminWorld) -> None:
+    async def to_rows(users: Any) -> list[AdminUserRow]:
+        return []
+
+    world.admin_hooks = UserAdminHooks(to_rows=to_rows)
+    _, token = await world.admin_token()
+    with pytest.raises(ValueError, match="to_rows"):
+        await world.call("GET", "/admin/users", token=token)

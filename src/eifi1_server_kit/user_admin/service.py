@@ -188,6 +188,10 @@ class UserAdminHooks[UserT: AccountRow = Any]:
     #: Seam 6: one roster row as the app's ``row_model`` (keksdose's plan and key custody,
     #: Kurvenschmiede's owned counts, kastlan's roles); without it the row from the account.
     to_row: Callable[[UserT], Awaitable[BaseModel]] | None = None
+    #: The same for a page at once (0.32, Kurvenschmiede's G13): one row per account, in
+    #: their order, so the app reads its own columns (Kurvenschmiede's subscriptions) in one
+    #: query. It wins over ``to_row``; a single action's row is a batch of one.
+    to_rows: Callable[[Sequence[UserT]], Awaitable[Sequence[BaseModel]]] | None = None
     #: ``GET /admin/attention`` (admin §2.4): the app's counts — ``feedback_waiting`` and its
     #: ``extra`` tiles — over the kit's, which it may replace (kastlan's ``None``).
     attention: Callable[[UserT], Awaitable[_Extras]] | None = None
@@ -304,12 +308,25 @@ class UserAdminService[UserT: AccountRow]:
         return user
 
     async def row(self, user: UserT) -> BaseModel:
-        """The account as one roster row: the ``to_row`` hook, else ``row_model`` from the
-        account with ``email_verified`` from ``email_verified_at``."""
+        """The account as one roster row: the ``to_rows`` hook with a batch of one, the
+        ``to_row`` hook, else ``row_model`` from the account with ``email_verified`` from
+        ``email_verified_at``."""
+        if self._hooks.to_rows is not None:
+            return (await self.rows([user]))[0]
         if self._hooks.to_row is not None:
             return await self._hooks.to_row(user)
         row = self._row_model.model_validate(user, from_attributes=True)
         return row.model_copy(update={"email_verified": user.email_verified_at is not None})
+
+    async def rows(self, users: Sequence[UserT]) -> list[BaseModel]:
+        """A page's rows: the ``to_rows`` hook at once (:class:`ValueError` unless it answers
+        one row per account), else :meth:`row` each."""
+        if self._hooks.to_rows is None:
+            return [await self.row(user) for user in users]
+        answered = list(await self._hooks.to_rows(users))
+        if len(answered) != len(users):
+            raise ValueError(f"the to_rows hook answered {len(answered)} rows for {len(users)} accounts")
+        return answered
 
     def levels(self) -> dict[str, ConfirmationLevel]:
         """The level of each action the router takes (§3.1, §4.2), the contract's floor."""
@@ -353,7 +370,7 @@ class UserAdminService[UserT: AccountRow]:
         )
         rows, total = await self.scope.roster(query)
         return {
-            "users": [await self.row(user) for user in rows],
+            "users": await self.rows(rows),
             "total": total,
             "mail_backend": self._backend,
             "summary": {SUMMARY_ACTIVE_ADMINS: await self.scope.active_admins()},

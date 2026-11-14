@@ -23,6 +23,10 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `FeedbackDeps(actor=app_feedback_actor)`. A module-level dependency, where a closure over
   `current_user(deps)` under `from __future__ import annotations` silently dropped the feedback
   routes from `app.openapi()`; the README says so.
+* **user_admin (Kurvenschmiede's G13):** `UserAdminHooks.to_rows(users)`, a page's roster rows at
+  once (one per account, in order; a `ValueError` otherwise), so the app reads its own columns in
+  one query instead of one per row. It wins over `to_row`; a single action's row is a batch of
+  one.
 
 ### Changed
 
