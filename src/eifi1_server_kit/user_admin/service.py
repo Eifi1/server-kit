@@ -139,19 +139,20 @@ class AdminPolicy:
     app_actions: tuple[AdminAction, ...] = ()
 
     def grantable_roles(self, accounts: AccountPolicy) -> frozenset[str]:
-        """The roles the role change gives — one source with the invitations' (0.30):
-        ``grantable``, else ``AccountPolicy.invitable_roles``, else every role but the reviewer
-        role."""
+        """The roles the role change gives: ``grantable``, else every role but the reviewer
+        role (which ``PUT /{id}/reviewer`` gives). Since 0.31 not limited by
+        ``AccountPolicy.invitable_roles``: an app invites members and promotes an admin later
+        (Staunlabor, Kurvenschmiede's G8). ``accounts`` stays for an app that subclasses this."""
+        del accounts
         if self.grantable is not None:
             return frozenset(self.grantable)
-        if accounts.invitable_roles is not None:
-            return frozenset(accounts.invitable_roles)
         return frozenset(role for role in self.roles if role != self.reviewer_role)
 
     def check(self, accounts: AccountPolicy) -> None:
-        """Refuse a policy that names a role the app does not have, and a ``grantable`` that
-        disagrees with ``AccountPolicy.invitable_roles`` (:class:`ValueError`): an admin gives
-        the roles an invitation may name, and no other."""
+        """Refuse a policy that names a role the app does not have, and an invitable role an
+        admin could not give (:class:`ValueError`): an invitation names a grantable role, or the
+        reviewer role, never more than the role change gives (0.31: a subset, no longer the
+        same list)."""
         named = {
             "the admin role": accounts.admin_role,
             "the default role": accounts.default_role,
@@ -162,11 +163,13 @@ class AdminPolicy:
         for what, role in named.items():
             if role is not None and role not in self.roles:
                 raise ValueError(f"AdminPolicy.roles lacks {what}, {role!r}: {', '.join(self.roles)}")
-        invitable = accounts.invitable_roles
-        if self.grantable is not None and invitable is not None and set(self.grantable) != set(invitable):
+        allowed = self.grantable_roles(accounts) | {self.reviewer_role} - {None}
+        beyond = [role for role in accounts.invitable_roles or () if role not in allowed]
+        if beyond:
             raise ValueError(
-                f"AdminPolicy.grantable {self.grantable} and AccountPolicy.invitable_roles {invitable} disagree: "
-                "an admin gives the roles an invitation may name; set one of them"
+                f"AccountPolicy.invitable_roles names {', '.join(beyond)}, which the role change does not give "
+                f"(grantable: {', '.join(sorted(self.grantable_roles(accounts)))}): an invitation never gives "
+                "more than an admin can"
             )
 
 
