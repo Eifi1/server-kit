@@ -52,6 +52,14 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `invite_resend` and `invite_revoke` rows (`target_group_id`), its `name` into the invitation
   mail's new `{group}` placeholder (empty without a group). The kit's own invitation text names
   none; an app's own table (`AuthDeps.mail_texts`) may ("you are invited to the team {group}").
+* **objects (the purge race; Kurvenschmiede's flaky 404):** `purge_objects(...,
+  spare_written_within=None, now=None)` and `PURGE_SPARE_RECENT` (5 minutes). With
+  content-addressed keys (keksdose's and Kurvenschmiede's `<sha12>.<ext>`) two rows share an
+  object, and the erasure's and a deleted comment's shared-key check runs inside the
+  transaction while the delete runs after the commit: a byte-identical upload committed in
+  between lost its file. Such an upload writes the object again, so a purge that spares files
+  written within the span keeps it, logs it, and leaves it to the app's orphan sweep. Opt-in
+  (one listing per key); an app's `purge_files` and its comment store's purge pass it.
 
 ### Changed
 
