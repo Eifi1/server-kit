@@ -224,3 +224,26 @@ async def test_the_app_may_refuse_a_deletion_before_anything_changes() -> None:
         assert asked == [user.id] and user.is_active and user.deletion_requested_at is None
         assert world.log.rows == [] and not world.mailer.of("account_deletion")
         assert (await world.call("GET", "/auth/me", token=token)).status_code == 200
+
+
+async def test_the_deletion_mail_may_link_the_privacy_page() -> None:
+    """keksdose's KG-5 (0.32): its deletion mail links the privacy page (``{privacy}``)."""
+    from eifi1_server_kit.mail import MailText
+
+    own = {
+        "en": MailText(
+            subject="{app}",
+            intro="Hello {name},",
+            body="Deleted on {date}. What we keep: {privacy}",
+            cta="Open",
+            outro="{contact} {backup_days} {log_days}",
+        )
+    }
+    world = World(mail_texts={"account_deletion": own})
+    async with world.client:
+        user = world.account(locale="en")
+        token = await world.token_of(user)
+        body = {"password": PASSWORD, "confirm_email": user.email}
+        assert (await world.call("POST", "/auth/me/deletion", token=token, json=body)).status_code == 202
+        (mail,) = world.mailer.of("account_deletion")
+        assert "What we keep: https://staunlabor.example/privacy" in mail.message.text

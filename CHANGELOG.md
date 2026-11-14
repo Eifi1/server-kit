@@ -53,6 +53,11 @@ entry in the Conventional Commit; this file is assembled from them at release.
   account's accept spends anything: a kit refusal refuses it (keksdose refuses a registration
   invitation for an existing account, a budget invitation passes). Which invitations the admin's
   list shows stays the app's store's: `listing()` answers the kinds the admin manages.
+* **auth (keksdose's KG-5):** the invitation mails fill `{inviter}` (who invited, in the invitee's
+  language's name order); an address that already has an account gets the `invitation_account` or
+  `group_invitation_account` kind ("join" where a new address reads "register"), whose kit words
+  are the general ones and which an app's own table words apart; the deletion mails fill
+  `{privacy}`, `AccountLinks.privacy`'s link (default `/privacy`).
 
 ### Changed
 

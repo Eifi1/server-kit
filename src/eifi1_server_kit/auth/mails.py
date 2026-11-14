@@ -25,7 +25,8 @@ address change's link went, ``{passkey}`` the new passkey's name, ``{date}`` the
 (:func:`mail_date`), ``{backup_days}`` and ``{log_days}`` the retention note
 (:func:`~eifi1_server_kit.user_admin.deletion_mail_retention_note`), ``{group}`` the invitation's
 group (0.31: a team's name from ``AuthHooks.invitation_group``, empty without one; the kit's own
-invitation text names none, an app's own table may).
+invitation text names none, an app's own table may), ``{inviter}`` who invited (0.32), and
+``{privacy}`` the privacy page's link in the deletion mails (0.32, ``AccountLinks.privacy``).
 """
 
 from __future__ import annotations
@@ -63,6 +64,11 @@ class AccountMailText(enum.StrEnum):
     #: An invitation into a group the app names (``AuthHooks.invitation_group``: a team), in
     #: the invitee's language, the group named (0.32, Kurvenschmiede's).
     GROUP_INVITATION = "group_invitation"
+    #: The two invitations to an address that already has an account (0.32, keksdose's KG-5):
+    #: "join" where a new address reads "register". The kit's words are the general ones; an
+    #: app's own table words each.
+    INVITATION_ACCOUNT = "invitation_account"
+    GROUP_INVITATION_ACCOUNT = "group_invitation_account"
     #: The deletion request's confirmation in ``after_days`` mode: the day of the erasure.
     ACCOUNT_DELETION = "account_deletion"
     #: The same in ``operator`` mode: an administrator erases, on no promised day.
@@ -80,6 +86,8 @@ ACCOUNT_MAIL_KINDS: Mapping[AccountMailText, str] = {
     AccountMailText.EMAIL_CHANGE_NOTICE: AccountNoticeKind.EMAIL_CHANGE_NOTICE,
     AccountMailText.INVITATION: OneTimeTokenKind.INVITATION,
     AccountMailText.GROUP_INVITATION: OneTimeTokenKind.INVITATION,
+    AccountMailText.INVITATION_ACCOUNT: OneTimeTokenKind.INVITATION,
+    AccountMailText.GROUP_INVITATION_ACCOUNT: OneTimeTokenKind.INVITATION,
     AccountMailText.ACCOUNT_DELETION: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.PASSKEY_ADDED_NOTICE: AccountNoticeKind.PASSKEY_ADDED_NOTICE,
@@ -91,10 +99,16 @@ ACCOUNT_MAIL_VALUES: Mapping[AccountMailText, frozenset[str]] = {
     AccountMailText.VERIFICATION: frozenset({"app", "name"}),
     AccountMailText.EMAIL_CHANGE: frozenset({"app", "name"}),
     AccountMailText.EMAIL_CHANGE_NOTICE: frozenset({"app", "name", "new_email", "contact"}),
-    AccountMailText.INVITATION: frozenset({"app", "group"}),
-    AccountMailText.GROUP_INVITATION: frozenset({"app", "group"}),
-    AccountMailText.ACCOUNT_DELETION: frozenset({"app", "name", "date", "contact", "backup_days", "log_days"}),
-    AccountMailText.ACCOUNT_DELETION_OPERATOR: frozenset({"app", "name", "contact", "backup_days", "log_days"}),
+    AccountMailText.INVITATION: frozenset({"app", "group", "inviter"}),
+    AccountMailText.GROUP_INVITATION: frozenset({"app", "group", "inviter"}),
+    AccountMailText.INVITATION_ACCOUNT: frozenset({"app", "group", "inviter"}),
+    AccountMailText.GROUP_INVITATION_ACCOUNT: frozenset({"app", "group", "inviter"}),
+    AccountMailText.ACCOUNT_DELETION: frozenset(
+        {"app", "name", "date", "contact", "backup_days", "log_days", "privacy"}
+    ),
+    AccountMailText.ACCOUNT_DELETION_OPERATOR: frozenset(
+        {"app", "name", "contact", "backup_days", "log_days", "privacy"}
+    ),
     AccountMailText.PASSKEY_ADDED_NOTICE: frozenset({"app", "name", "passkey", "contact"}),
 }
 
@@ -811,6 +825,8 @@ ACCOUNT_MAIL_TEXTS: Mapping[AccountMailText, Mapping[str, MailText]] = {
     AccountMailText.EMAIL_CHANGE_NOTICE: _EMAIL_CHANGE_NOTICE,
     AccountMailText.INVITATION: _INVITATION,
     AccountMailText.GROUP_INVITATION: _GROUP_INVITATION,
+    AccountMailText.INVITATION_ACCOUNT: _INVITATION,
+    AccountMailText.GROUP_INVITATION_ACCOUNT: _GROUP_INVITATION,
     AccountMailText.ACCOUNT_DELETION: _DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: _DELETION_OPERATOR,
     AccountMailText.PASSKEY_ADDED_NOTICE: _PASSKEY_ADDED,

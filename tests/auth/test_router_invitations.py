@@ -444,3 +444,30 @@ async def test_the_app_may_refuse_an_existing_account_s_accept() -> None:
         budget, second = invite(world, "bob@example.com", role="GUEST", scope={"budget_id": 7})
         accepted = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": budget})
         assert accepted.status_code == 200 and second.accepted_by_user_id == user.id
+
+
+async def test_an_invitation_names_its_inviter_and_knows_an_existing_account() -> None:
+    """keksdose's KG-5 (0.32): its invitation mail names the inviter, and an address that has an
+    account reads "join" where a new one reads "register"; the kit's own words are the same for
+    both, an app's table words each."""
+    from eifi1_server_kit.mail import MailText
+
+    def text(body: str) -> dict[str, MailText]:
+        return {"en": MailText(subject="{app}", intro="Hello,", body=body, cta="Open", outro="")}
+
+    world = World(
+        mail_texts={
+            "invitation": text("{inviter} invites you to register."),
+            "invitation_account": text("{inviter} invites you to join."),
+        }
+    )
+    async with world.client:
+        _, token = await admin_token(world)
+        world.account(email="known@example.com")
+        for email in ("new@example.com", "known@example.com"):
+            await world.call(
+                "POST", "/admin/invitations", token=token, json={"email": email, "role": "MEMBER", "locale": "en"}
+            )
+        new, known = world.mailer.of("invitation")
+        assert "Grace Hopper invites you to register." in new.message.text
+        assert "Grace Hopper invites you to join." in known.message.text

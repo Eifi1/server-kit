@@ -372,6 +372,8 @@ class AccountLinks:
     settings: str = "/settings"
     #: The deletion mail's link.
     home: str = "/"
+    #: The privacy page, which a deletion mail's own words may link (``{privacy}``, 0.32).
+    privacy: str = "/privacy"
 
     def __post_init__(self) -> None:
         if not self.base_url.startswith(("https://", "http://")):
@@ -1290,14 +1292,21 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         hook = self._hooks.invitation_group
         return None if hook is None else await hook(invitation)
 
-    async def _mail_invitation(self, invitation: InvT, raw: str, group: GroupRef | None) -> tuple[str, bool]:
-        """Commit, then mail the invitation in the invitee's language, naming its group."""
+    async def _mail_invitation(
+        self, invitation: InvT, raw: str, group: GroupRef | None, inviter: UserT
+    ) -> tuple[str, bool]:
+        """Commit, then mail the invitation in the invitee's language, naming its group and who
+        invited; an address that has an account gets the "join" kind of it (0.32)."""
         await self._after.commit_now()
         link = self._policy.links.url(self._policy.links.register, invite=raw)
         name = "" if group is None or group.name is None else group.name
-        # A group with a name gets the group invitation, which names it (0.32).
-        kind = AccountMailText.GROUP_INVITATION if name else AccountMailText.INVITATION
-        return link, await self._send(invitation.email, kind, invitation.locale, link=link, group=name)
+        known = await self._users.by_email(invitation.email) is not None
+        if name:
+            kind = AccountMailText.GROUP_INVITATION_ACCOUNT if known else AccountMailText.GROUP_INVITATION
+        else:
+            kind = AccountMailText.INVITATION_ACCOUNT if known else AccountMailText.INVITATION
+        who = full_name(inviter.first_name, inviter.last_name, invitation.locale)
+        return link, await self._send(invitation.email, kind, invitation.locale, link=link, group=name, inviter=who)
 
     async def _issued(self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool) -> dict[str, Any]:
         inviter = PersonRef.model_validate(admin, from_attributes=True)
@@ -1346,7 +1355,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         )
         group = await self._group_of(invitation)
         await self._record(AdminAction.INVITE, admin, invitation, now, group)
-        link, sent = await self._mail_invitation(invitation, raw, group)
+        link, sent = await self._mail_invitation(invitation, raw, group, admin)
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def _closed_or_found(self, invitation_id: int) -> InvT:
@@ -1373,7 +1382,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         invitation = await self._invitations.remint(invitation, token_hash=digest, expires_at=now + INVITE_TTL)
         group = await self._group_of(invitation)
         await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group)
-        link, sent = await self._mail_invitation(invitation, raw, group)
+        link, sent = await self._mail_invitation(invitation, raw, group, admin)
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def revoke_invitation(self, admin: UserT, invitation_id: int) -> None:
@@ -1590,7 +1599,12 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             )
         )
         await self._after.commit_now()
-        values: dict[str, Any] = {"name": self._name(user), "contact": self._policy.contact, **self._policy.retention}
+        values: dict[str, Any] = {
+            "name": self._name(user),
+            "contact": self._policy.contact,
+            "privacy": self._policy.links.url(self._policy.links.privacy),
+            **self._policy.retention,
+        }
         if scheduled is None:
             kind = AccountMailText.ACCOUNT_DELETION_OPERATOR
         else:
