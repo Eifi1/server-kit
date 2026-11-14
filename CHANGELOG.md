@@ -31,6 +31,9 @@ entry in the Conventional Commit; this file is assembled from them at release.
   under the `invitation` kind): an invitation whose `invitation_group` answers a name is mailed
   in the kit's own words naming the group, in seven languages; one without a group gets the
   general invitation as before.
+* **objects (keksdose):** `purge_objects(..., object_key=None)`: the keys are the app's names for
+  its files (keksdose's `s3://bucket/<key>` locators, a local path) and `object_key` maps each to
+  the store's key; what the purge answers and logs stays in the app's names.
 
 ### Changed
 

@@ -969,6 +969,35 @@ async def test_a_purge_spares_a_file_written_in_the_last_minutes_by_default(tmp_
     assert not await store.exists("feedback/shared.png")
 
 
+async def test_a_purge_takes_the_app_s_names_and_their_object_key(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """keksdose's locators (0.32): its rows keep ``s3://bucket/<key>`` or a local path, so the
+    purge takes those and ``object_key`` maps each to the store's key; what it answers and logs
+    is in the app's names."""
+    store = LocalObjectStore(tmp_path)
+    await store.save("feedback/old.png", b"x")
+    names = ["s3://bucket/feedback/old.png", "s3://bucket/feedback/gone.png"]
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.objects"):
+        left = await purge_objects(
+            store,
+            names,
+            reason="erasure",
+            object_key=lambda name: name.removeprefix("s3://bucket/"),
+            now=datetime.now(UTC) + timedelta(hours=1),
+        )
+    assert left == [] and not await store.exists("feedback/old.png")
+    await store.save("feedback/fresh.png", b"y")
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.objects"):
+        await purge_objects(
+            store,
+            ["s3://bucket/feedback/fresh.png"],
+            reason="erasure",
+            object_key=lambda n: n.removeprefix("s3://bucket/"),
+        )
+    assert await store.exists("feedback/fresh.png") and "s3://bucket/feedback/fresh.png" in caplog.text
+
+
 async def test_a_purge_that_cannot_ask_a_file_s_age_leaves_it_and_names_it(caplog: pytest.LogCaptureFixture) -> None:
     store = _CountingStore()
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.objects"):

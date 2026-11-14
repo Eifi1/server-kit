@@ -277,7 +277,7 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
     assert members["eifi1_server_kit.objects", "purge_objects"]["signature"] == (
         "async purge_objects(store: ObjectStore, keys: Iterable[str], *, reason: str, "
         "concurrency: int = PURGE_CONCURRENCY, spare_written_within: timedelta | None = PURGE_SPARE_RECENT, "
-        "now: datetime | None = None) -> list[str]"
+        "now: datetime | None = None, object_key: Callable[[str], str] | None = None) -> list[str]"
     )
     assert members["eifi1_server_kit.objects", "MAX_KEY_BYTES"]["value"] == 1024
     assert members["eifi1_server_kit.objects", "ObjectNotFoundError"]["signature"] == (
