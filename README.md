@@ -41,10 +41,11 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.30 ↔ ui-kit 0.63**: that ui-kit
+package with its own version and changelog. **server-kit 0.31 ↔ ui-kit 0.63**: that ui-kit
 release is tested against server-kit 0.29's API export, and its `@eifi1/ui-kit/accounts` reads
 0.29's account routes; 0.30 adds the admin half (`user_admin_router`), which ui-kit 0.64's
-admin pages will read (the ui-kit showcase's Server kit pages
+admin pages will read, and 0.31 its fixes, the daily jobs and the feedback tables (the ui-kit
+showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
 `server-kit-api.json`).
@@ -2042,7 +2043,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.30.0/eifi1_server_kit-0.30.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.31.0/eifi1_server_kit-0.31.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15), a cloud object store (`[gcs]`, `[s3]`, 0.26) the account layer's passkeys and ready tables (`[passkeys]`, `[sql]`, 0.29, with `[fastapi]`) or its ready signer and hasher (`[jwt]`, `[bcrypt]`, 0.30), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -2052,7 +2053,7 @@ With the image guard, the Resend client, the Paddle client, a router, the sync s
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.30.0/eifi1_server_kit-0.30.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.31.0/eifi1_server_kit-0.31.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —

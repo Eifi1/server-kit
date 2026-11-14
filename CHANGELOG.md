@@ -10,6 +10,16 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.31.0] (2026-11-14)
+
+server-kit 0.31.0: what the first two apps on the account layer found (Kurvenschmiede's move
+inventory, Staunlabor's 0.30 adoption), the purge race, the daily jobs as the scheduler's
+routes, and the feedback's and the verdicts' ready tables. A **minor** with **one breaking
+change** (the erase hook is told who erased, a 0.30 hook no app had written yet). The reset
+request no longer tells by its time whether an account exists (Kurvenschmiede's audit F29):
+**no app deploys the kit's account routes on an older version.** No 0.29/0.30 Protocol gains a
+method and no `[sql]` table a column; the feedback and review tables are new.
+
 ### ⚠ BREAKING CHANGES
 
 * **auth:** `AuthHooks.erase` is called as `erase(user, *, actor_id)` (G1): the admin who erased,
