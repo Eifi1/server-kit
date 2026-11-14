@@ -58,8 +58,9 @@ entry in the Conventional Commit; this file is assembled from them at release.
   object, and the erasure's and a deleted comment's shared-key check runs inside the
   transaction while the delete runs after the commit: a byte-identical upload committed in
   between lost its file. Such an upload writes the object again, so a purge that spares files
-  written within the span keeps it, logs it, and leaves it to the app's orphan sweep. Opt-in
-  (one listing per key); an app's `purge_files` and its comment store's purge pass it.
+  written within the span keeps it, logs it, and leaves it to the app's orphan sweep. **On by
+  default** (Marcel, 2026-11-14: an app that forgot a switch would keep losing files); see
+  **Changed**.
 * **auth.jobs** (`fastapi` extra): `account_jobs_router(AccountJobsDeps(token, prune,
   erase_due=None, retention=ACCOUNT_ROWS_RETENTION))`, the account layer's daily jobs as the
   scheduler's routes behind the jobs token: `POST /ops/accounts/daily` (the due `after_days`
@@ -104,6 +105,12 @@ entry in the Conventional Commit; this file is assembled from them at release.
   lower-case ones).
 * **mail:** `ConsoleMailer` logs at `WARNING` by default (was `INFO`, which uvicorn's logging
   leaves out); `level=` sets another.
+
+* **objects:** `purge_objects` spares a file written in the last 5 minutes by default
+  (`spare_written_within=PURGE_SPARE_RECENT`), asking each key's age first: one listing more
+  per key, and a file a racing upload names stays for the orphan sweep. `spare_written_within=None`
+  removes at once, as before — for keys no two rows share (kastlan's `<uuid>_<sha12>`) or a
+  store that cannot list.
 
 ### Documentation
 

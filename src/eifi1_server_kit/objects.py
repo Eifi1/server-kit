@@ -656,7 +656,7 @@ async def purge_objects(
     *,
     reason: str,
     concurrency: int = PURGE_CONCURRENCY,
-    spare_written_within: timedelta | None = None,
+    spare_written_within: timedelta | None = PURGE_SPARE_RECENT,
     now: datetime | None = None,
 ) -> list[str]:
     """Remove many objects; return the keys left behind, in the order given (keksdose
@@ -675,14 +675,16 @@ async def purge_objects(
     the app's to leave out; when to purge (keksdose's ``delete_after_commit``) stays the
     app's too.
 
-    **``spare_written_within``** (0.31; :data:`PURGE_SPARE_RECENT`) is for **content-addressed
-    keys** (keksdose's and Kurvenschmiede's ``<sha12>.<ext>``), which two rows share: the
-    purge's keys were decided inside a transaction, and a byte-identical upload committed
-    after that decision names the same object. Such an upload writes the object again, so a
-    file written within that span before ``now`` (default: the clock's) is spared, logged,
-    and left to the app's orphan sweep; a file already gone is nothing to do. It asks each
-    key's age first (a listing by the key), so it costs one more round trip per key; a key
-    whose age it cannot ask is one it left.
+    **``spare_written_within``** (0.31, **on by default**: :data:`PURGE_SPARE_RECENT`, 5
+    minutes) protects **content-addressed keys** (keksdose's and Kurvenschmiede's
+    ``<sha12>.<ext>``), which two rows share: the purge's keys were decided inside a
+    transaction, and a byte-identical upload committed after that decision names the same
+    object. Such an upload writes the object again, so a file written within that span
+    before ``now`` (default: the clock's) is spared, logged, and left to the app's orphan
+    sweep; a file already gone is nothing to do. It asks each key's age first (a listing by
+    the key), one more round trip per key; a key whose age it cannot ask is one it left.
+    ``None`` removes at once, as before 0.31 — for keys no two rows share (kastlan's
+    ``<uuid>_<sha12>``) or a store that cannot list.
     """
     if concurrency < 1:
         raise ValueError("purge_objects needs a concurrency of at least 1")

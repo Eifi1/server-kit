@@ -330,10 +330,10 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: for the ``after_days`` job (Kurvenschmiede logs the hand-over in its own rows by it).
     erase: _EraseHook[UserT] | None = None
     #: Seam 5 (0.30): the stored files an erasure left nobody naming (the feedback's), deleted
-    #: after the commit (keksdose's object purge). Without it they are left to the app. With
-    #: content-addressed keys, delete them with ``purge_objects(...,
-    #: spare_written_within=PURGE_SPARE_RECENT)`` (0.31): a byte-identical upload committed
-    #: after the erasure's decision names the same object.
+    #: after the commit (keksdose's object purge). Without it they are left to the app.
+    #: Delete them through ``objects.purge_objects``: since 0.31 it spares a file written in
+    #: the last minutes by default, as a byte-identical upload committed after the erasure's
+    #: decision names the same content-addressed object.
     purge_files: Callable[[Sequence[str]], Awaitable[None]] | None = None
     #: Seam 6: ``/auth/me`` and the user in every token answer, as the app's ``me_model``;
     #: without it, ``me_model.model_validate(user)`` with ``email_verified`` from the row.
