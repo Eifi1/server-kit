@@ -1,7 +1,7 @@
 """One app with teams: the admin world of ``tests/user_admin/_admin_world.py`` (the account
 routes, the admin's), the kit's in-memory admin log and team store over its accounts and
-invitations, the teams' ready account hooks wired into its ``AuthHooks``, and — once mounted —
-the two teams routers at ``/api/v1``.
+invitations, the teams' ready account hooks wired into its ``AuthHooks``, and the two teams
+routers at ``/api/v1`` as an app mounts them.
 
 No ``from __future__ import annotations``: FastAPI reads the dependencies below.
 """
@@ -10,9 +10,11 @@ from typing import Any
 
 from eifi1_server_kit.auth.service import AuthHooks
 from eifi1_server_kit.auth.testing import InMemoryAdminActionLog
+from eifi1_server_kit.teams.router import TeamsDeps, teams_admin_router, teams_router
 from eifi1_server_kit.teams.service import TeamAccountHooks, TeamHooks, TeamsService
 from eifi1_server_kit.teams.testing import InMemoryTeamStore
 from eifi1_server_kit.user_admin.service import UserAdminHooks
+from tests.auth._world import BASE
 from tests.auth_fakes import MemoryUser
 from tests.user_admin._admin_world import AdminWorld
 
@@ -37,6 +39,12 @@ class TeamsWorld(AdminWorld):
             describe_invitation=self.account_hooks.describe_invitation,
         )
         self.admin_hooks = UserAdminHooks(group_names=self.account_hooks.group_names)
+        self.teams_deps = TeamsDeps(auth=self.deps, teams=lambda: self.teams, hooks=self._team_hooks)
+        self.app.include_router(teams_router(self.teams_deps), prefix=BASE)
+        self.app.include_router(teams_admin_router(self.teams_deps), prefix=BASE)
+
+    async def _team_hooks(self) -> TeamHooks[Any]:
+        return self.team_hooks
 
     def teams_service(self, **options: Any) -> TeamsService[Any]:
         """The request's teams service over this world's stores, without a router."""

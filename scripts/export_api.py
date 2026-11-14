@@ -105,6 +105,9 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     # Teams, opt-in (0.32): Kurvenschmiede's groups of accounts, their managers and the invitations
     # into them — the groups of §11, lifted with their wire shapes.
     ("eifi1_server_kit.teams", "docs/user-admin-harmonization.md", "§11"),
+    # Their routes, behind the `fastapi` extra: a member's and a manager's `/teams`, the admin's
+    # `/admin/teams`.
+    ("eifi1_server_kit.teams.router", "docs/user-admin-harmonization.md", "§11"),
     ("eifi1_server_kit.settings", "docs/settings-harmonization.md", "§6"),
     ("eifi1_server_kit.demo", "docs/landing-demo-harmonization.md", "§6"),
     ("eifi1_server_kit.dev_switch", "docs/top-bar-harmonization.md", "§2.7, §6.1, §6.2, §6.3"),
