@@ -275,6 +275,14 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: The admin named a ``scope`` (``InvitationCreate.scope``): what the store keeps for it,
     #: or a refusal (a team the admin may not invite into). Without it a scope is refused.
     invitation_scope: Callable[[UserT, int | str], Awaitable[Mapping[str, Any]]] | None = None
+    #: An admin is about to invite (0.31, G7): ``(admin, body, existing, scope)`` — the
+    #: request's ``InvitationCreate``, the account that already has the address or ``None``,
+    #: and what ``invitation_scope`` answered or ``None``. Raise a kit refusal to refuse it
+    #: (Kurvenschmiede refuses an address with an account, ``email_taken``); nothing is
+    #: stored, logged or sent then.
+    invitation_creating: Callable[[UserT, Any, AccountRow | None, Mapping[str, Any] | None], Awaitable[None]] | None = (
+        None
+    )
     #: Seam 2: the access token's extra claims (kastlan's ``company_id`` and ``roles``); may
     #: refuse with ``session_ended`` at a refresh (a lost membership). ``sid`` is the kit's.
     claims: Callable[[UserT, SessionRow], Awaitable[_Extras]] | None = None
@@ -369,8 +377,13 @@ class AccountPolicy:
     default_role: str = "MEMBER"
     #: The roles an invitation may name (0.30); another is ``422 role_not_grantable``, and
     #: ``default_role`` is one of them. ``None``: unchecked, as in 0.29. The admin router's
-    #: role change gives the same roles (``AdminPolicy.grantable_roles``).
+    #: role change may give more (``AdminPolicy.grantable_roles``, 0.31): invite members,
+    #: promote an admin later.
     invitable_roles: tuple[str, ...] | None = None
+    #: An invitation to an address that has an open one with the same role and scope sends
+    #: that one again — a new link, 14 more days, logged ``invite_resend`` — instead of adding
+    #: a second row (0.31, G7; Kurvenschmiede's). Off: every invitation is a row, as in 0.29.
+    reuse_open_invitations: bool = False
     #: The environment list that bootstraps the first admin (``parse_env_list``); ``None``:
     #: the first registration is open (``registration_decision``).
     bootstrap: frozenset[str] | None = None
@@ -1261,7 +1274,14 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             if self._hooks.invitation_scope is None:
                 raise AuthError(AuthErrorCode.INVITATION_SCOPE_INVALID)
             scope = await self._hooks.invitation_scope(admin, body.scope)
+        if self._hooks.invitation_creating is not None:
+            existing = await self._users.by_email(body.email)
+            await self._hooks.invitation_creating(admin, body, existing, scope)
         charge(self._limiters.verification_resend, body.email, AUTH_THROTTLED["mail"])
+        if self._policy.reuse_open_invitations:
+            for open_one in await self._invitations.open_for(body.email):
+                if open_one.role == body.role and (open_one.scope or None) == (scope or None):
+                    return await self._send_again(admin, open_one, show_link=show_link)
         now = self._now()
         raw, digest = mint()
         invitation = await self._invitations.add(
@@ -1293,6 +1313,12 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         if not _unspent(invitation):
             raise AuthError(AuthErrorCode.INVITATION_CLOSED)
         charge(self._limiters.verification_resend, invitation.email, AUTH_THROTTLED["mail"])
+        return await self._send_again(admin, invitation, show_link=show_link)
+
+    async def _send_again(self, admin: UserT, invitation: InvT, *, show_link: bool) -> dict[str, Any]:
+        """A new token and 14 more days for an unspent invitation, the old link dead, logged
+        as ``invite_resend``: the re-send, and a reused invitation (0.31). Charged by the
+        caller."""
         now = self._now()
         raw, digest = mint()
         invitation = await self._invitations.remint(invitation, token_hash=digest, expires_at=now + INVITE_TTL)

@@ -239,3 +239,64 @@ async def test_invitation_mails_are_limited_per_recipient(world: World) -> None:
         "POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER"}
     )
     assert response.status_code == 429
+
+
+# --- 0.31: the app's say when an invitation is made, and an open one sent again (G7) ---------------
+
+
+async def test_the_app_may_refuse_an_invitation_when_it_is_made() -> None:
+    """Kurvenschmiede's G7: no invitation to an address that already has an account."""
+    world = World()
+    async with world.client:
+        _, token = await admin_token(world)
+        world.account(email="taken@example.com")
+        seen: list[tuple[str, bool, Any]] = []
+
+        async def invitation_creating(admin: MemoryUser, body: Any, existing: Any, scope: Any) -> None:
+            seen.append((body.email, existing is not None, scope))
+            if existing is not None:
+                raise AuthError(AuthErrorCode.EMAIL_TAKEN)
+
+        world.hooks = AuthHooks(invitation_creating=invitation_creating)
+        body = {"email": "Taken@Example.com", "role": "MEMBER"}
+        refused = await world.call("POST", "/admin/invitations", token=token, json=body)
+        assert (refused.status_code, code(refused)) == (409, "email_taken")
+        assert not world.invitations.rows and world.log.actions() == [] and not world.mailer.of("invitation")
+        made = await world.call("POST", "/admin/invitations", token=token, json={**body, "email": "new@example.com"})
+        assert made.status_code == 201, made.text
+        assert seen == [("taken@example.com", True, None), ("new@example.com", False, None)]
+
+
+async def test_with_reuse_an_open_invitation_to_the_same_address_and_scope_is_sent_again() -> None:
+    from dataclasses import replace
+
+    from tests.auth._world import POLICY
+
+    async def invitation_scope(admin: MemoryUser, scope: int | str) -> dict[str, Any]:
+        return {"team": scope}
+
+    world = World(policy=replace(POLICY, reuse_open_invitations=True))
+    async with world.client:
+        _, token = await admin_token(world)
+        world.hooks = AuthHooks(invitation_scope=invitation_scope)
+        body = {"email": "bob@example.com", "role": "MEMBER", "scope": 4}
+        first = (await world.call("POST", "/admin/invitations", token=token, json=body)).json()
+        dead = world.mailer.token("invitation")
+        again = await world.call("POST", "/admin/invitations", token=token, json={**body, "email": "Bob@example.com"})
+        assert again.status_code == 201 and again.json()["id"] == first["id"]
+        assert len(world.invitations.rows) == 1 and world.log.actions() == ["invite", "invite_resend"]
+        assert code(await world.call("POST", "/auth/invitations/check", json={"token": dead})) == "invitation_invalid"
+        other_team = (await world.call("POST", "/admin/invitations", token=token, json={**body, "scope": 5})).json()
+        other_role = (
+            await world.call("POST", "/admin/invitations", token=token, json={**body, "role": "ADMIN"})
+        ).json()
+        assert len({first["id"], other_team["id"], other_role["id"]}) == 3
+
+    plain = World()
+    async with plain.client:
+        _, token = await admin_token(plain)
+        for _ in range(2):
+            await plain.call(
+                "POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER"}
+            )
+        assert len(plain.invitations.rows) == 2, "off by default: 0.29's behaviour"

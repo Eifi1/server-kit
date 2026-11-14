@@ -40,6 +40,13 @@ entry in the Conventional Commit; this file is assembled from them at release.
   which name an address and no account, can be found. **auth.sql:**
   `SqlAdminActionLog.page_by_email`; **auth.testing:** `InMemoryAdminActionLog.page_by_email`.
   An app's own log without it answers that query with `501`; 0.29's `page` is unchanged.
+* **auth (G7, Kurvenschmiede):** `AuthHooks.invitation_creating(admin, body, existing, scope)`,
+  before an admin's invitation is stored: the account that already has the address (or `None`)
+  and the scope `invitation_scope` answered; a kit refusal refuses it, with nothing stored,
+  logged or sent (Kurvenschmiede refuses an address with an account, `email_taken`). And
+  `AccountPolicy.reuse_open_invitations` (default off): an invitation to an address with an
+  open one of the same role and scope sends that one again (a new link, 14 more days,
+  `invite_resend`) instead of adding a second row.
 
 ### Changed
 
