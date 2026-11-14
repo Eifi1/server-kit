@@ -53,8 +53,12 @@ from eifi1_server_kit.auth.testing import (
 )
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.user_admin import AdminAction, admin_action_record, parse_roster_query
-from eifi1_server_kit.user_admin.ports import AcceptedInvitations
-from eifi1_server_kit.user_admin.testing import check_accepted_invitations, check_roster_store
+from eifi1_server_kit.user_admin.ports import AcceptedInvitations, AccountLogScrub
+from eifi1_server_kit.user_admin.testing import (
+    check_accepted_invitations,
+    check_account_log_scrub,
+    check_roster_store,
+)
 
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
 
@@ -752,3 +756,20 @@ async def test_the_invitation_store_forgets_what_an_erased_account_accepted(sess
     assert isinstance(store, AcceptedInvitations)
     one, two, three = await _ids(session, "f1@example.org", "f2@example.org", "f3@example.org")
     await check_accepted_invitations(store, inviter_id=one, user_id=two, other_user_id=three)
+
+
+# ── 0.31: the log an erasure scrubs by the account ──────────────────────────
+
+
+async def test_the_admin_log_pages_by_address(session: AsyncSession) -> None:
+    from tests.user_admin._log_search import assert_pages_by_email
+
+    one, two = await _ids(session, "p1@example.org", "p2@example.org")
+    await assert_pages_by_email(SqlAdminActionLog(session, AdminActionRecord), actor_id=one, user_id=two)
+
+
+async def test_the_admin_log_scrubs_an_account_s_rows(session: AsyncSession) -> None:
+    log = SqlAdminActionLog(session, AdminActionRecord)
+    assert isinstance(log, AccountLogScrub)
+    one, two, three = await _ids(session, "s1@example.org", "s2@example.org", "s3@example.org")
+    await check_account_log_scrub(log, actor_id=one, user_id=two, other_user_id=three)

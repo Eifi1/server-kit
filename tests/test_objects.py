@@ -896,7 +896,10 @@ async def test_the_purge_removes_each_key_once(tmp_path: Path, caplog: pytest.Lo
         await store.save(key, b"x")
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.objects"):
         failed = await purge_objects(
-            store, ["feedback/a.png", "", "feedback/b.png", "feedback/a.png", "feedback/gone.png"], reason="erasure"
+            store,
+            ["feedback/a.png", "", "feedback/b.png", "feedback/a.png", "feedback/gone.png"],
+            reason="erasure",
+            spare_written_within=None,
         )
     assert failed == []
     assert await store.list_objects() == []
@@ -907,7 +910,7 @@ async def test_the_purge_never_raises_and_names_every_key_it_left(caplog: pytest
     store = _CountingStore(failing={"feedback/b.png", "feedback/d.png"})
     keys = ["feedback/d.png", "feedback/a.png", "../climbs.png", "feedback/b.png", "feedback/c.png"]
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.objects"):
-        failed = await purge_objects(store, keys, reason="feedback_unfiled_upload")
+        failed = await purge_objects(store, keys, reason="feedback_unfiled_upload", spare_written_within=None)
     # In the order given; a key no store could hold is one it left, not a raise.
     assert failed == ["feedback/d.png", "../climbs.png", "feedback/b.png"]
     assert sorted(store.removed) == ["feedback/a.png", "feedback/c.png"]
@@ -925,12 +928,68 @@ async def test_the_purge_never_raises_and_names_every_key_it_left(caplog: pytest
     assert caplog.records[3].levelno == logging.ERROR
 
 
+async def test_a_purge_that_spares_the_recent_keeps_a_file_written_since_its_decision(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """0.31, the purge race (Kurvenschmiede's flaky 404): content-addressed keys are shared,
+    so report B's byte-identical upload, written after report A's erasure decided its keys
+    and before the purge ran, would lose its file. The upload writes the object again, so it
+    is recent, and a purge with ``spare_written_within`` keeps it; the orphan sweep takes a
+    file nothing names after all."""
+    store = LocalObjectStore(tmp_path)
+    await store.save("feedback/shared.png", b"x")
+    await store.save("feedback/old.png", b"y")
+    (shared,) = [found for found in await store.list_objects("feedback/") if found.key == "feedback/shared.png"]
+    keys = ["feedback/shared.png", "feedback/old.png", "feedback/gone.png"]
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.objects"):
+        left = await purge_objects(
+            store,
+            keys,
+            reason="erasure",
+            spare_written_within=timedelta(minutes=5),
+            now=shared.modified + timedelta(minutes=1),
+        )
+    assert left == [] and await store.exists("feedback/shared.png") and await store.exists("feedback/old.png")
+    assert "purge (erasure): spared 2 object(s) written in the last 0:05:00" in caplog.text
+    later = shared.modified + timedelta(minutes=6)
+    assert (
+        await purge_objects(store, keys, reason="erasure", spare_written_within=timedelta(minutes=5), now=later) == []
+    )
+    assert await store.list_objects() == []
+
+
+async def test_a_purge_spares_a_file_written_in_the_last_minutes_by_default(tmp_path: Path) -> None:
+    """On by default (Marcel, 2026-11-14): an app that forgets the switch must not lose a
+    file; a file spared by mistake is the orphan sweep's."""
+    store = LocalObjectStore(tmp_path)
+    await store.save("feedback/shared.png", b"x")
+    assert await purge_objects(store, ["feedback/shared.png"], reason="erasure") == []
+    assert await store.exists("feedback/shared.png")
+    assert await purge_objects(store, ["feedback/shared.png"], reason="wipe", spare_written_within=None) == []
+    assert not await store.exists("feedback/shared.png")
+
+
+async def test_a_purge_that_cannot_ask_a_file_s_age_leaves_it_and_names_it(caplog: pytest.LogCaptureFixture) -> None:
+    store = _CountingStore()
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.objects"):
+        left = await purge_objects(
+            store, ["feedback/a.png"], reason="erasure", spare_written_within=timedelta(minutes=5)
+        )
+    assert left == ["feedback/a.png"] and store.removed == []
+    assert "could not remove 'feedback/a.png'" in caplog.text
+
+
 async def test_the_purge_keeps_at_most_its_concurrency_in_flight() -> None:
     store = _CountingStore()
-    assert await purge_objects(store, [f"feedback/{n}.png" for n in range(10)], reason="wipe", concurrency=3) == []
+    assert (
+        await purge_objects(
+            store, [f"feedback/{n}.png" for n in range(10)], reason="wipe", concurrency=3, spare_written_within=None
+        )
+        == []
+    )
     assert store.most == 3 and len(store.removed) == 10
     store = _CountingStore()
-    await purge_objects(store, [f"feedback/{n}.png" for n in range(40)], reason="wipe")
+    await purge_objects(store, [f"feedback/{n}.png" for n in range(40)], reason="wipe", spare_written_within=None)
     assert store.most == PURGE_CONCURRENCY == 16
 
 

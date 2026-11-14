@@ -9,13 +9,14 @@ from typing import Any
 import pytest
 
 from eifi1_server_kit.auth.ports import NewAccount
-from eifi1_server_kit.auth.testing import InMemoryInvitationStore, InMemoryUserStore
+from eifi1_server_kit.auth.testing import InMemoryAdminActionLog, InMemoryInvitationStore, InMemoryUserStore
 from eifi1_server_kit.user_admin import parse_roster_query
-from eifi1_server_kit.user_admin.ports import AcceptedInvitations, RosterStore
+from eifi1_server_kit.user_admin.ports import AcceptedInvitations, AccountLogScrub, RosterStore
 from eifi1_server_kit.user_admin.testing import (
     InMemoryRosterStore,
     _matches_state,
     check_accepted_invitations,
+    check_account_log_scrub,
     check_roster_store,
 )
 
@@ -64,6 +65,54 @@ async def test_a_store_without_forget_accepted_is_named() -> None:
 
     with pytest.raises(TypeError, match="forget_accepted"):
         await check_accepted_invitations(Plain(), inviter_id=1, user_id=2, other_user_id=3)  # type: ignore[arg-type]
+
+
+async def test_the_in_memory_log_scrubs_an_account_s_rows() -> None:
+    log = InMemoryAdminActionLog()
+    assert isinstance(log, AccountLogScrub)
+    await check_account_log_scrub(log, actor_id=1, user_id=2, other_user_id=3)
+
+
+async def test_the_in_memory_log_pages_by_address() -> None:
+    from tests.user_admin._log_search import assert_pages_by_email
+
+    await assert_pages_by_email(InMemoryAdminActionLog(), actor_id=1, user_id=2)
+
+
+async def test_a_log_without_scrub_account_is_named() -> None:
+    class Plain:
+        pass
+
+    with pytest.raises(TypeError, match="scrub_account"):
+        await check_account_log_scrub(Plain(), actor_id=1, user_id=2, other_user_id=3)  # type: ignore[arg-type]
+
+
+class _BrokenLog(InMemoryAdminActionLog):
+    def __init__(self, broken: str) -> None:
+        super().__init__()
+        self.broken = broken
+
+    async def scrub_account(self, user_id: int) -> None:
+        for row in self.rows.values():
+            if self.broken == "lazy" and row.target_email is not None and "earlier" in row.target_email:
+                continue
+            if row.target_user_id == user_id or self.broken == "greedy":
+                row.target_email = None
+            if self.broken == "drops" and row.target_user_id == user_id:
+                row.detail = {}
+
+
+@pytest.mark.parametrize(
+    ("broken", "message"),
+    [
+        ("lazy", "every row about the account"),
+        ("greedy", "another account's rows keep"),
+        ("drops", "the rows stay as they were"),
+    ],
+)
+async def test_the_log_scrub_check_fails_on_a_log_that_breaks_a_promise(broken: str, message: str) -> None:
+    with pytest.raises(AssertionError, match=message):
+        await check_account_log_scrub(_BrokenLog(broken), actor_id=1, user_id=2, other_user_id=3)
 
 
 # ── Broken stores the checks catch ──────────────────────────────────────────
@@ -137,3 +186,20 @@ async def test_the_invitation_check_fails_on_a_store_that_forgets_too_much() -> 
 
 def _new(email: str, role: str) -> NewAccount:
     return NewAccount(email=email, password_hash="h", first_name="A", last_name="B", locale="en", role=role)
+
+
+async def test_the_scrub_suite_reads_a_log_longer_than_one_page() -> None:
+    """``_every_row`` pages through ``page`` 200 rows at a time: a log with more is read whole."""
+    from datetime import UTC, datetime
+
+    from eifi1_server_kit.user_admin import AdminAction
+    from eifi1_server_kit.user_admin.audit import admin_action_record
+    from eifi1_server_kit.user_admin.testing import _every_row
+
+    log = InMemoryAdminActionLog()
+    now = datetime(2026, 11, 14, tzinfo=UTC)
+    for _ in range(201):
+        await log.add(
+            admin_action_record(AdminAction.DEACTIVATE, actor_id=1, target_user_id=2, target_email=None, now=now)
+        )
+    assert len(await _every_row(log, 2)) == 201

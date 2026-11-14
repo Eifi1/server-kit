@@ -41,10 +41,11 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.30 ↔ ui-kit 0.63**: that ui-kit
+package with its own version and changelog. **server-kit 0.31 ↔ ui-kit 0.63**: that ui-kit
 release is tested against server-kit 0.29's API export, and its `@eifi1/ui-kit/accounts` reads
 0.29's account routes; 0.30 adds the admin half (`user_admin_router`), which ui-kit 0.64's
-admin pages will read (the ui-kit showcase's Server kit pages
+admin pages will read, and 0.31 its fixes, the daily jobs and the feedback tables (the ui-kit
+showcase's Server kit pages
 and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
 checks the vocabularies the ui-kit writes a second time in TypeScript against
 `server-kit-api.json`).
@@ -663,7 +664,7 @@ review's reviewer: a mapping from that user, never a second bearer check), and
 | Area | Names |
 |---|---|
 | Ports (`auth.ports`) | `AccountRow` (read-only; `is_demo` and the `iat` cut-off `sessions_invalid_before` optional), `UserStore[UserT]` (`get`, `by_email`, `by_emails`, `count_people`, `count_active(role=)` (0.29), `add(NewAccount)`, `apply(row, changes)` with `ACCOUNT_FIELDS` keys only, `delete`); `SessionRow`, `SessionStore` (`start(NewSession)`, `get`, `touch`, `end`, `end_all(user_id, keep=)`, `live`); `OneTimeTokenRow`, `OneTimeTokenStore` (`put`, `take`, `pending`, `drop`); `InvitationRow`, `InvitationStore` (`get`, `by_token_hash`, `open_for`, `listing`, `add(NewInvitation)`, `remint`, `accept`, `revoke`); `PasskeyRow`, `PasskeyStore` (`for_user`, `by_credential_id`, `add(NewPasskey)`, `used`, `rename`, `remove`, `spend_challenge`); `AdminActionLog`; `AfterCommit` (`later`, `commit_now`); `TokenSigner` (`sign`, `verify`); `PasswordHasher` (`hash`, `verify`) |
-| Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…)`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
+| Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep, timer=time.monotonic)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", invitable_roles=None, bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…, answer_floor=timedelta(seconds=3))`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
 | Routes (`auth.router`) | `AuthDeps` (below), `auth_router(deps, *, prefix="/auth", tags=("auth",))`, `invitations_admin_router(deps, *, prefix="/admin/invitations", tags=("admin",), guard=None)`, `current_user(deps)`, `admin_guard(deps)`, `account_service(deps)`, `app_state_limiters`, `peer_address`, `no_hooks` |
 | Mails (`auth.mails`) | `AccountMailText` (`password_reset`, `verification`, `email_change`, `email_change_notice`, `invitation`, `account_deletion`, `account_deletion_operator`, `passkey_added_notice`), `ACCOUNT_MAIL_TEXTS` (seven languages each, `de-CH` formal with "ss"), `ACCOUNT_MAIL_KINDS` (the `kind` each is sent under), `ACCOUNT_MAIL_VALUES` (the placeholders each fills), `account_mail_texts(overrides)`, `mail_date(when, locale)` |
 | Passkeys (`auth.passkeys`) | `RelyingParty(rp_id, rp_name, origins)` (0.30: an origin that does not fit the RP id is logged once as a WARNING naming it; the construction stands), `rp_id_fits(rp_id, origin)` (0.30: the origin's host or a suffix of it at a dot, the browser's rule), `registration_options`, `authentication_options`, `verify_registration` → `VerifiedPasskey`, `verify_authentication`, `credential_id_of`, `user_handle_of`, `PasskeyCheckError`, `DEFAULT_PASSKEY_NAME`, `base64url_encode` / `_decode`; py_webauthn imported only here, lazily |
@@ -684,7 +685,9 @@ never-list routes, as `FeedbackDeps` takes it); the app's bodies `register_model
 `reset_state_model`, `invitation_check_model`, `invitation_accepted_model`,
 `invitation_row_model`, `invitation_issued_model`, `deletion_terms_model`,
 `deletion_result_model`; and `mail_texts` (the app's table in place of a kind; checked when
-the router is built), `client_address`, `limiters`, `now`, `sleep`.
+the router is built), `client_address`, `limiters`, `now`, `sleep` and `timer` (0.31: the
+monotonic clock the reset request's floor is measured on; a test passes a fake one with a fake
+`sleep`).
 
 **`AuthHooks`** — what differs between the apps (§12.2's six seams), every member an optional
 coroutine; the `hooks` dependency answers them per request, on the request's own session, so a
@@ -695,6 +698,7 @@ rides on the route's answer, which the app's answer model declares.
 |---|---|---|
 | `on_register(user, invitation \| None, body)` | a sign-up, with its invitation (`None` for the first account) and the app's `register_model` body | 1 |
 | `on_invitation_redeemed(user, invitation)` | `/invitations/accept`; an address confirmation's open invitations | 1 |
+| `on_email_changed(user, old, new)` | `/auth/me/email/confirm`, after the switch and the new address's invitations (0.31; Kurvenschmiede's pending shares) | 1 |
 | `describe_invitation(invitation)` → extras | the check, the accept and the admin's rows (a team's name) | 1 |
 | `invitation_scope(admin, scope)` → stored mapping | an admin's `scope`; without it a scope is `invitation_scope_invalid` | 1 |
 | `claims(user, session)` → extra claims | every access token minted; may refuse a refresh | 2 |
@@ -706,19 +710,39 @@ rides on the route's answer, which the app's answer model declares.
 | `passkey_removing(user, passkey)` | before a passkey goes; may refuse | 3 |
 | `sessions_ended(user, reason)` | every "every session ends": `logout_everywhere`, `password_changed`, `password_reset`, `forced_change`, `deletion_requested` (and 0.30's `deactivated`) | 4 |
 | `deletion_terms(user)` → extras | `GET /auth/me/deletion` (Kurvenschmiede's hand-over count) | 5 |
-| `on_deletion_requested(user)` → extras | after the deactivation, before the mail | 5 |
-| `on_deletion_withdrawn(user)` | `withdraw_deletion` (0.30's admin) | 5 |
+| `on_deletion_requested(user)` → extras | after the deactivation, before the mail; the extras are the `deletion_request` row's detail too (0.31) | 5 |
+| `on_deletion_withdrawn(user)` → extras | `withdraw_deletion` (0.30's admin); the extras are the `deletion_cancel` row's detail (0.31) | 5 |
 | `export_data(user)` → `data` | the export's `data` | 5 |
+| `erase(user, *, actor_id)` → extras | the erasure (0.30; the actor since 0.31: the admin, `None` for the job) | 5 |
+| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30) | 5 |
 | `to_me(user)` → the app's `me_model` | `/auth/me` and every token answer's user | 6 |
 
 **The work after the commit** (`AfterCommit`, §12.5 item 2): the kit never commits but where
 a route's answer says whether its mail went out (an address change and its re-send, the
 verification's re-send, an invitation and its re-send, a deletion request): there it calls
 `commit_now()` and then sends, so a rollback never mails a dead link and the answer is true.
-Every other mail (the sign-up's verification, the reset, the passkey notice) goes to
-`later()`. The app's adapter commits the request's session in `commit_now` and runs the
-`later` queue from its session's commit event, each item on its own, dropping it on a
-rollback (Kurvenschmiede's `send_after_commit`).
+The reset request does the same inside its floor (below). Every other mail (the sign-up's
+verification, the passkey notice) goes to `later()`. The app's adapter commits the request's
+session in `commit_now` and runs the `later` queue from its session's commit event, each item
+on its own, dropping it on a rollback (Kurvenschmiede's `send_after_commit`).
+
+**The reset request answers in the same time, account or not** (0.31, security;
+Kurvenschmiede's audit F29). Its answer is `204` either way, and its time must not tell either:
+with the unit of work function-scoped (below), a mail queued with `later()` went out inside the
+request, so an address with an account answered a provider's round trip later than one
+without. Since 0.31 the route charges its windows (a `429` answers at once: they key on the IP
+and the typed address, never on the account), then commits its link (`commit_now`) and mails it
+inline, and every path, the absent account's, a deactivated one's and a demo's included, commits
+too and answers when `AccountPolicy.answer_floor` (default 3 s) has passed since the charge. The
+send stays before the answer, so Cloud Run's request-based CPU allocation does not starve it, as
+it would a background task after the response. It gets the time left to the floor: a send still
+running there (a provider that has stopped answering; Resend times out after 10 s, then retries)
+is cut and logged at ERROR, and the person asks again, rather than the answer coming late and
+telling. Raise `answer_floor` if the app's provider is slower than about 2.5 s at its slowest.
+The kit's other routes need no floor: the sign-up answers `email_taken` by design (after the
+invitation and the gate), the invitation's check answers `account_exists` to the link's holder,
+the sign-in's absent account is hashed like a present one, and every other anonymous route needs
+a link's secret.
 
 | Route | Answer | Codes | Limit |
 |---|---|---|---|
@@ -742,7 +766,7 @@ rollback (Kurvenschmiede's `send_after_commit`).
 | `GET /auth/me/export` | the JSON download | `demo_refused` | `export` |
 | `POST /auth/verify-email` | `EmailVerificationStatus` | `token_invalid`, `token_expired` | `redeem` |
 | `POST /auth/resend-verification` | `EmailVerificationStatus` | `mail_not_sent` (503) | `verification_resend` |
-| `POST /auth/password-reset/request` | 204, always | — | `reset_ip`, `reset_address` |
+| `POST /auth/password-reset/request` | 204, always, at `answer_floor` (0.31) | — | `reset_ip`, `reset_address` |
 | `POST /auth/password-reset/check` / `confirm` | `reset_state_model`, no tokens | `token_invalid`, `token_expired` | `redeem` |
 | `POST /auth/invitations/check` | `invitation_check_model` | `invitation_invalid`, `invitation_expired` | `redeem` |
 | `POST /auth/invitations/accept` | `invitation_accepted_model` | `invitation_invalid`, `invitation_expired`, `demo_refused` | `redeem` |
@@ -864,12 +888,15 @@ the admin mail's answer.
   and its `extra` tiles; a demo admin sees no count.
 
 **The erasure** (user-admin §6.4), `AccountService.erase(user, *, actor_id, feedback=None)`,
-for the operator's route and the job alike: the `AuthHooks.erase` hook (the app's own rows: what
-an erasure deletes or hands over stays the app's; its counts ride on the answer and the row),
+for the operator's route and the job alike: the `AuthHooks.erase(user, *, actor_id)` hook (0.31:
+the admin who erased, `None` for the job; the app's own rows: what an erasure deletes or hands
+over stays the app's; its counts ride on the answer and the row),
 the feedback through `FeedbackService.erase_author` with `erasure_identifiers` (its files to
 `AuthHooks.purge_files` after the commit), the invitations the account accepted deleted where
 the store has `forget_accepted`, the log scrubbed of the account's address and those
-invitations', every session and link ended, an `erase` row (the admin or no actor, no target,
+invitations' and, where the log has `scrub_account` (0.31: `[sql]`'s and the in-memory one),
+of every row about the account whatever address it names (an address changed since), before
+the row goes, every session and link ended, an `erase` row (the admin or no actor, no target,
 `{feedback_anonymised, …}`), and the row deleted (`[sql]`'s sessions, links and passkeys
 cascade; the log's keys are `SET NULL`). **The `after_days` job** is the app's scheduled job:
 
@@ -898,13 +925,13 @@ the app's (Kurvenschmiede's `demo_router`, keksdose's demo).
 
 | Area | Names |
 |---|---|
-| Ports (`user_admin.ports`) | `RosterStore` (`page(query, *, admin_role, reviewer_role)`, `counts(*, since)` → `RosterCounts(people, new, deletion_requests)`, `deletion_requested()`), `AcceptedInvitations` (`forget_accepted(user_id)`, optional, runtime-checkable) |
+| Ports (`user_admin.ports`) | `RosterStore` (`page(query, *, admin_role, reviewer_role)`, `counts(*, since)` → `RosterCounts(people, new, deletion_requests)`, `deletion_requested()`), `AcceptedInvitations` (`forget_accepted(user_id)`, optional, runtime-checkable), `AccountLogScrub` (`scrub_account(user_id)`, optional, runtime-checkable; 0.31) |
 | Scope (`user_admin.scope`) | `AdminScope` (`find`, `roster`, `counts`, `roles_of`, `grantable_roles`, `set_roles`, `active_admins`, `refuse_last_admin`, `refuse_account_wide`, `record_fields`), `GlobalScope` |
 | Service (`user_admin.service`) | `UserAdminService`, `AdminPolicy(roles, grantable, reviewer_role, review_locales, review_areas, states, sort_keys, app_actions)`, `UserAdminHooks(to_row, attention, confirmation, role_changing, activating, group_names)`, `ADMIN_ACTIONS`, `erase_due_accounts`, `ErasureRun` |
 | Routes (`user_admin.router`) | `UserAdminDeps(auth, roster, scope, hooks, feedback, guard, policy, role_sets, row_model, action_row_model, attention_model, erasure_result_model, active_change_model, role_change_model, roles_change_model, mail_request_model)`, `user_admin_router(deps, *, prefix="/admin", tags=("admin",))`, `no_admin_hooks` |
 | Account layer (0.30) | `AccountService.start_session`, `end_sessions`, `send_account_mail`, `erase`, `erase_if_due`; `StartedSession`; `AuthHooks.erase`, `purge_files`; `SessionsEndedReason.PASSWORD_CHANGE_REQUIRED`; `AccountPolicy.invitable_roles`; `AuthDeps.offered_locales`; `AuthLimiters(mail_test=MAIL_TEST_PER_ACCOUNT)` |
 | Answers (`user_admin`) | `AdminActionPage[RowT]`, `AdminActionRow.target`, `ReviewerResult`, `MailBackendInfo`, `ErasureResult`; `AccountErrorCode` `user_not_found`, `role_not_grantable`, `reviewer_is_admin`, `account_inactive`, `email_already_verified`, `deletion_not_requested` |
-| Testing (`user_admin.testing`) | `InMemoryRosterStore(rows)`, `check_roster_store(roster, users, *, admin_role, member_role, reviewer_role, add_demo=None)`, `check_accepted_invitations(store, *, inviter_id, user_id, other_user_id)` |
+| Testing (`user_admin.testing`) | `InMemoryRosterStore(rows)`, `check_roster_store(roster, users, *, admin_role, member_role, reviewer_role, add_demo=None)`, `check_accepted_invitations(store, *, inviter_id, user_id, other_user_id)`, `check_account_log_scrub(log, *, actor_id, user_id, other_user_id)` (0.31) |
 
 **On `[sql]` (Staunlabor):** 0.30 adds **no table and no column**, so the 0.29 migration
 needs nothing new. It adds `SqlRosterStore(session, User)` (the roster, the overview's counts
@@ -912,7 +939,9 @@ and the job's candidates, over `AccountColumns` as it is; demo accounts left out
 model has `DemoAccountColumn`) and `SqlInvitationStore.forget_accepted` (deletes rows of the
 invitations table as it is). Run `check_roster_store(SqlRosterStore(session, User),
 SqlUserStore(session, User))` and `check_accepted_invitations(SqlInvitationStore(session,
-Invitation), …)` beside 0.29's suites. No 0.29 Protocol gained a method.
+Invitation), …)` beside 0.29's suites, and since 0.31
+`check_account_log_scrub(SqlAdminActionLog(session, AdminAction), …)`. No 0.29 Protocol gained a
+method.
 
 **Stays app-side:** what an erasure deletes or hands over (the `erase` hook), keksdose's API
 tokens and push devices at a deactivation (the `sessions_ended` hook), plans and billing,
@@ -2014,7 +2043,7 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.30.0/eifi1_server_kit-0.30.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.31.0/eifi1_server_kit-0.31.0-py3-none-any.whl"
 ```
 
 With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15), a cloud object store (`[gcs]`, `[s3]`, 0.26) the account layer's passkeys and ready tables (`[passkeys]`, `[sql]`, 0.29, with `[fastapi]`) or its ready signer and hasher (`[jwt]`, `[bcrypt]`, 0.30), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
@@ -2024,7 +2053,7 @@ With the image guard, the Resend client, the Paddle client, a router, the sync s
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.30.0/eifi1_server_kit-0.30.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.31.0/eifi1_server_kit-0.31.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —
@@ -2378,6 +2407,22 @@ install_contract_error_handlers(app)
 Run `auth.testing`'s contract suites (`check_user_store`, `check_session_store`, …) once
 against the stores on the test database.
 
+**The test app** waits on nothing real. Since 0.31 every reset request holds its answer to
+`answer_floor` (3 s on the real clock), so the app's test `AuthDeps` pass a `sleep` that returns
+at once, as the kit's own test world does (it records the waits), or the test policy sets
+`answer_floor=timedelta(0)`:
+
+```python
+async def no_wait(seconds: float) -> None:
+    waits.append(seconds)
+
+
+deps = replace(production_deps, sleep=no_wait)  # or AccountPolicy(..., answer_floor=timedelta(0))
+```
+
+A test of the floor itself passes a fake `timer` too, which its fake `sleep` moves on (the
+kit's `tests/auth/test_reset_timing.py`).
+
 **The budget in front.** The kit limits what it must (sign-in, sign-up, every anonymous
 redemption, the refresh, every password check) and nothing else: `GET /auth/me`, the
 sessions list, `POST /auth/passkey/login/begin` and the admin's list have no window of the
@@ -2409,28 +2454,99 @@ anyway. So on a laptop whose page does not fit (the dev server opened over the L
 does better to ask `rp_id_fits` first and pass neither `passkeys` nor `relying_party`: the
 passkey routes stay unmounted rather than fail in the browser, and the password works.
 
-**7. Pruning.** Nothing in the kit deletes an ended session, an expired link, an invitation
-never taken up or a spent challenge. Left alone, an ended session keeps its IP address and
-User-Agent for ever, which the privacy policy has to answer for. A scheduled job deletes them
-at the retention the policy names (0.30), behind the scheduler's token
-([`jobs`](#eifi1_server_kitjobs)) and on the request's unit of work, which commits it:
+**7. The daily jobs: pruning and the due erasures.** Nothing in a request deletes an ended
+session, an expired link, an invitation never taken up or a spent challenge. Left alone, an
+ended session keeps its IP address and User-Agent for ever, which the privacy policy has to
+answer for; and an `after_days` deletion's mail promises a day. **Schedule both before the
+first deploy of the account routes, and name the retention (30 days) in the privacy policy.**
+
+`account_jobs_router` (`auth.jobs`, 0.31) is the scheduler's side: `POST /ops/accounts/daily`
+runs the due erasures, then the prune, behind the app's jobs token
+([`jobs`](#eifi1_server_kitjobs), `X-Jobs-Token`); `/prune` and `/erase-due` run one each. The
+kit fixes the retention (`ACCOUNT_ROWS_RETENTION`, 30 days; `retention=` for another), the
+order and the answer; the app hands it the two jobs, because the transactions are its own:
 
 ```python
-@ops.post("/ops/prune-accounts", dependencies=[Depends(require_jobs_token(lambda: get_settings().jobs_token))])
-async def prune_accounts(session: RequestSession) -> dict[str, int]:
-    pruned = await prune_account_rows(
-        before=utc_now() - timedelta(days=30),
-        sessions=SqlSessionStore(session, UserSession),
-        passkeys=SqlPasskeyStore(session, Passkey, SpentChallenge),
-        links=SqlOneTimeTokenStore(session, OneTimeToken),
-        invitations=SqlInvitationStore(session, Invitation),
-    )
-    return {"pruned": pruned.total}
+async def prune(before: datetime) -> AccountPrune:
+    async with sessions() as session, session.begin():
+        return await prune_account_rows(
+            before=before,
+            sessions=SqlSessionStore(session, UserSession),
+            passkeys=SqlPasskeyStore(session, Passkey, SpentChallenge),
+            links=SqlOneTimeTokenStore(session, OneTimeToken),
+            invitations=SqlInvitationStore(session, Invitation),
+        )
+
+
+async def erase_due() -> ErasureRun:  # after_days only; leave it out in operator mode
+    async with sessions() as session:
+        ids = await SqlRosterStore(session, User).deletion_requested()
+    return await erase_due_accounts(ids, erase_one)  # erase_one: see erase_due_accounts
+
+
+async def sweep_uploads(before: datetime) -> int:  # with feedback.sql's uploads
+    async with sessions() as session, session.begin():
+        storage = SqlAttachmentStorage(
+            session, Upload, objects=store, reports=Feedback, replies=Reply, comments=Comment
+        )
+        swept = await storage.prune(before=before)
+    await purge_objects(store, [storage.object_key(key) for key in swept.keys], reason="upload_sweep")
+    return swept.uploads
+
+
+app.include_router(
+    account_jobs_router(
+        AccountJobsDeps(
+            token=lambda: get_settings().jobs_token, prune=prune, erase_due=erase_due, sweep_uploads=sweep_uploads
+        )
+    ),
+    prefix="/api/v1",
+)
 ```
+
+The daily call runs the due erasures, the prune, then the upload sweep (uploads nothing named
+for a day, `UPLOAD_WAIT`): a file `purge_objects` spared because it was written in the last
+minutes (0.31, on by default) ends there.
+
+Then one Cloud Scheduler HTTP job, once a day (03:30 Europe/Zurich, say), `POST
+https://<host>/api/v1/ops/accounts/daily` with the header `X-Jobs-Token` from Secret Manager —
+as kastlan's and Kurvenschmiede's daily jobs already run. A one-off run clears the backlog of
+the day it runs and no more: the rows keep coming with every sign-in.
 
 A table kept longer than the others gets its own call to its store's `prune(before=…)`. A
 `before` that has not passed is refused: a row that expires later is still in use. "Passed"
 is by `now=`, the kit's clock unless given, so an app's test with a frozen clock hands it on.
+
+## Adopting the feedback and translation review tables
+
+The `sql` extra also ships the tables behind layer 2's feedback and translation review
+(`eifi1_server_kit.feedback.sql`, `eifi1_server_kit.translation_review.sql`), so an app that
+mounts `feedback_router` and `translation_review_router` writes no store of its own. The
+recipe is the account layer's:
+
+1. **Models from the mixins**, on the app's declarative base with its naming convention:
+   `class Feedback(FeedbackColumns, Base): __tablename__ = "feedback"`, likewise the reply,
+   comment, vote and attachment tables and `TranslationReviewColumns`. Every foreign key to an
+   account follows `__accounts_table__` (default `"users"`), every key to a report follows
+   `__feedback_table__` (default `"feedback"`); set them once on a mixin of your own when your
+   tables are called otherwise. A subclass that needs table arguments of its own adds them to
+   the mixin's: `__table_args__ = (*FeedbackAttachmentColumns.table_args(), ...)`.
+2. **Alembic**: add the tables to your next migration; `alembic_render_item` from
+   `eifi1_server_kit.auth.sql` renders their `UtcDateTime` columns as plain
+   `sa.DateTime(timezone=True)`.
+3. **The stores**, on the request's session, handed to `FeedbackDeps` and
+   `TranslationReviewDeps`: `SqlFeedbackRepository`, `SqlFeedbackReplyStore`,
+   `SqlFeedbackCommentStore`, `SqlFeedbackVoteStore`, `SqlPeopleLookup`, `SqlAttachmentStorage`
+   (the database half; the bytes stay in the app's `ObjectStore`), and
+   `SqlTranslationReviewStore(session, TranslationReview, accounts=User)`. Pass `uploads=` where
+   the docstrings say so: a writer may then name only a file they uploaded.
+4. **The checks**: run `feedback.testing`'s and `translation_review.testing`'s contract suites
+   against your stores, as `tests/sql_tables.py` does here; on PostgreSQL too if you can, as
+   `tests/test_sql_on_postgresql.py` shows (opt-in through `EIFI1_TEST_POSTGRES_URL`).
+
+What stays the app's: sealing a column (override it with your own type), a tenant's row
+filter, and the mails a reply or a comment sends (the stores fire the ports' notices; the app's
+`FeedbackAlerts` words and sends them).
 
 ## Developing
 

@@ -409,7 +409,10 @@ class FeedbackCommentFilePurge(Protocol):
     erasure's shared-key check, ``urls_named_except``). Called after ``delete`` flushed,
     before the commit, never with an empty list: arm an after-commit delete (keksdose's
     purge) or delete after the app's one commit. A store without it keeps the file as an
-    unattached upload, as before 0.18 (the app's sweep, if it has one)."""
+    unattached upload, as before 0.18 (the app's sweep, if it has one). Delete through
+    ``objects.purge_objects``: since 0.31 it spares a file written in the last minutes by
+    default, as the shared-key check ran before the commit and a byte-identical upload
+    committed after it names the same content-addressed object."""
 
     async def purge_files(self, keys: Sequence[str]) -> None:
         """The deleted comment's keys nothing names any more; never empty."""

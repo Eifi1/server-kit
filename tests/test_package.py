@@ -119,6 +119,16 @@ def test_the_account_router_names_its_extra_without_fastapi(monkeypatch: pytest.
         importlib.import_module("eifi1_server_kit.auth.router")
 
 
+def test_the_account_jobs_name_their_extra_without_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "eifi1_server_kit.auth.jobs", raising=False)
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+    with pytest.raises(
+        ImportError,
+        match=r"auth\.jobs needs FastAPI: install the kit with its fastapi extra, eifi1-server-kit\[fastapi\]",
+    ):
+        importlib.import_module("eifi1_server_kit.auth.jobs")
+
+
 def test_translation_review_layer_2_loads_no_web_framework() -> None:
     """The reviewer view, the store port, the service and ``translation_review.testing`` run
     without FastAPI, httpx or SQLAlchemy (server-services §6.2.1). A fresh interpreter."""

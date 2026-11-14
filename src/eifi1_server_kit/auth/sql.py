@@ -918,11 +918,36 @@ class SqlAdminActionLog[ActionT: AdminActionColumns]:
         rows = await self._session.scalars(query.order_by(model.at.desc(), model.id.desc()).limit(limit).offset(offset))
         return list(rows), int(total or 0)
 
+    async def page_by_email(
+        self, *, target_email: str, target_user_id: int | None, limit: int, offset: int
+    ) -> tuple[Sequence[ActionT], int]:
+        """0.31's :class:`~eifi1_server_kit.user_admin.ports.AdminActionsByEmail`: the rows on
+        one address (an invitation's have no account), with ``target_user_id`` on that account
+        too; newest first."""
+        model = self._model
+        query = select(model).where(model.target_email == target_email)
+        if target_user_id is not None:
+            query = query.where(model.target_user_id == target_user_id)
+        total = await self._session.scalar(select(func.count()).select_from(query.subquery()))
+        rows = await self._session.scalars(query.order_by(model.at.desc(), model.id.desc()).limit(limit).offset(offset))
+        return list(rows), int(total or 0)
+
     async def scrub_email(self, email: str) -> None:
         model = self._model
         await self._session.execute(
             update(model)
             .where(model.target_email == email)
+            .values(target_email=None)
+            .execution_options(synchronize_session="fetch")
+        )
+
+    async def scrub_account(self, user_id: int) -> None:
+        """0.31's :class:`~eifi1_server_kit.user_admin.ports.AccountLogScrub`: the rows about
+        the account lose their address, whichever it was, before its row goes."""
+        model = self._model
+        await self._session.execute(
+            update(model)
+            .where(model.target_user_id == user_id, model.target_email.is_not(None))
             .values(target_email=None)
             .execution_options(synchronize_session="fetch")
         )

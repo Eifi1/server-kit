@@ -5,10 +5,12 @@ from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
+import pytest
+
 from eifi1_server_kit.auth import DeletionResult, DeletionTerms
 from eifi1_server_kit.auth.ports import NewPasskey
 from eifi1_server_kit.auth.service import AuthHooks
-from eifi1_server_kit.user_admin import DeletionMode, assert_no_secrets
+from eifi1_server_kit.user_admin import AuditDetailError, DeletionMode, assert_no_secrets
 from tests.auth._world import PASSWORD, POLICY, World
 from tests.auth_fakes import MemoryUser
 
@@ -65,6 +67,7 @@ async def test_a_deletion_request_deactivates_ends_every_session_logs_and_mails(
     assert events == ["deletion_requested", "requested"]
     (row,) = world.log.rows
     assert (row.action, row.actor_id, row.target_user_id) == ("deletion_request", user.id, user.id)
+    assert row.detail == {"guests_told": 2}, "the hook's answer is the row's detail too (0.31, G3)"
     (mail,) = world.mailer.of("account_deletion")
     assert mail.after_commits == commits + 1 and "13.12.2026" in mail.message.text
     assert mail.message.subject == "Ihr Staunlabor-Konto wird gelöscht"
@@ -91,7 +94,42 @@ async def test_an_operator_app_s_deletion_mail_names_no_day_and_the_answer_carri
             json={"password": PASSWORD, "confirm_email": user.email},
         )
         assert response.json() == {"deletion_scheduled_at": None, "mail_sent": False, "guests_told": 2}
+        assert world.log.rows[-1].detail == {"guests_told": 2}
         assert "An administrator will erase it" in world.mailer.of("account_deletion")[0].message.text
+
+
+async def test_a_deletion_request_without_a_hook_or_its_answer_logs_no_detail(world: World) -> None:
+    async def on_deletion_requested(account: MemoryUser) -> None:
+        return None
+
+    for hooks in (AuthHooks(), AuthHooks(on_deletion_requested=on_deletion_requested)):
+        world.hooks = hooks
+        user = world.account(email=f"{len(world.log.rows)}@example.com")
+        response = await world.call(
+            "POST",
+            "/auth/me/deletion",
+            token=await world.token_of(user),
+            json={"password": PASSWORD, "confirm_email": user.email},
+        )
+        assert response.status_code == 202 and world.log.rows[-1].detail == {}
+
+
+async def test_a_deletion_hook_s_answer_is_held_to_the_log_s_rule() -> None:
+    """The detail never holds content (``audit_detail``): a sentence is the app's bug, a 500
+    in its tests, and the request rolls back."""
+    world = World()
+    async with world.client:
+
+        async def on_deletion_requested(account: MemoryUser) -> dict[str, Any]:
+            return {"note": "Ada asked us to keep her drawings for her sister"}
+
+        world.hooks = AuthHooks(on_deletion_requested=on_deletion_requested)
+        user = world.account()
+        token = await world.token_of(user)
+        with pytest.raises(AuditDetailError):
+            await world.call(
+                "POST", "/auth/me/deletion", token=token, json={"password": PASSWORD, "confirm_email": user.email}
+            )
 
 
 async def test_a_deletion_request_is_refused_with_codes(world: World) -> None:

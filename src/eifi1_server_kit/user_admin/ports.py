@@ -21,12 +21,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from eifi1_server_kit.auth.ports import AccountRow
 from eifi1_server_kit.user_admin.roster import UserListQuery
 
-__all__ = ["AcceptedInvitations", "RosterCounts", "RosterStore"]
+__all__ = ["AcceptedInvitations", "AccountLogScrub", "AdminActionsByEmail", "RosterCounts", "RosterStore"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,3 +95,38 @@ class AcceptedInvitations(Protocol):
     async def forget_accepted(self, user_id: int) -> Sequence[str]:
         """Delete every invitation ``user_id`` accepted, flushed, and answer the addresses
         they were sent to (the erasure scrubs those from the admin log too)."""
+
+
+@runtime_checkable
+class AdminActionsByEmail(Protocol):
+    """An admin log that pages the rows on one address (0.31, G9; Kurvenschmiede's
+    ``?target_email=``): an invitation's rows name an address and no account, so ``target``
+    cannot find them. ``GET /admin/actions?target_email=`` asks for it.
+
+    Optional: the ``sql`` extra's and the in-memory logs have it; an app's own log without it
+    answers that query with ``501`` (0.29's ``AdminActionLog.page`` is unchanged)."""
+
+    async def page_by_email(
+        self, *, target_email: str, target_user_id: int | None, limit: int, offset: int
+    ) -> tuple[Sequence[Any], int]:
+        """The rows whose ``target_email`` is ``target_email`` (already normalised: trimmed
+        and lower-cased, as the kit writes it), and with ``target_user_id`` only those on that
+        account too; newest first (``at``, then ``id``), as ``page``."""
+        ...
+
+
+@runtime_checkable
+class AccountLogScrub(Protocol):
+    """An admin log that can scrub the rows about an account by its id (0.31, G2;
+    Kurvenschmiede): an erasure scrubs the log by address (``AdminActionLog.scrub_email``),
+    and a row written before an address change names the earlier one, which no address the
+    erasure knows matches.
+
+    Optional: the ``sql`` extra's and the in-memory logs have it; an app's own log adds the
+    method. The erasure checks for it with ``isinstance`` and calls it **before the account's
+    row is deleted**: on ``[sql]`` the log's keys are ``SET NULL``, so afterwards no row names
+    the account any more."""
+
+    async def scrub_account(self, user_id: int) -> None:
+        """Clear ``target_email`` on every row whose ``target_user_id`` is ``user_id``,
+        flushed; the rows stay, and so does everything else on them."""

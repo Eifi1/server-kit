@@ -44,10 +44,11 @@ import asyncio
 import enum
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlencode
 
 from pydantic import BaseModel
@@ -159,9 +160,10 @@ from eifi1_server_kit.user_admin.deletion import (
 )
 from eifi1_server_kit.user_admin.errors import AccountError, AccountErrorCode
 from eifi1_server_kit.user_admin.export import export_envelope
-from eifi1_server_kit.user_admin.ports import AcceptedInvitations
+from eifi1_server_kit.user_admin.ports import AcceptedInvitations, AccountLogScrub
 from eifi1_server_kit.user_admin.rules import refuse_last_admin, require_confirmation
 from eifi1_server_kit.user_admin.schemas import (
+    GroupRef,
     InvitationCreate,
     InvitationStatus,
     MailKind,
@@ -201,6 +203,7 @@ AUTH_THROTTLED: Mapping[str, str] = {
     "email_change": "Too many address changes requested — please try again later.",
     "mail": "Too many mails to this address — please try again later.",
     "export": "You exported your data a moment ago — please try again in a minute.",
+    "requests": "Too many requests — please try again in a moment.",
 }
 
 #: How much later than a cut-off stamped in the same flow its fresh tokens are minted, so
@@ -242,6 +245,13 @@ class SessionsEndedReason(enum.StrEnum):
 type _Extras = Mapping[str, Any]
 
 
+class _EraseHook[UserT](Protocol):
+    """``AuthHooks.erase``'s shape (0.31): the account, and the admin who erased it, ``None``
+    for the job."""
+
+    def __call__(self, user: UserT, /, *, actor_id: int | None) -> Awaitable[_Extras | None]: ...
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     """What differs between the apps (§12.3), as optional coroutines the app's hook
@@ -257,12 +267,28 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: Seam 1: an existing account took up an invitation (``/invitations/accept``), or an
     #: address confirmation found an open one for the new address (§12.5 item 9).
     on_invitation_redeemed: Callable[[UserT, InvT], Awaitable[None]] | None = None
+    #: An address change was confirmed (``/me/email/confirm``, 0.31): ``(user, old, new)``,
+    #: after the switch and the new address's invitations attached (Kurvenschmiede moves the
+    #: shares waiting for the old address to the new one).
+    on_email_changed: Callable[[UserT, str, str], Awaitable[None]] | None = None
     #: The answer's words for an invitation (its team's name), on ``/invitations/check``,
     #: ``/accept`` and the admin's rows.
     describe_invitation: Callable[[InvT], Awaitable[_Extras]] | None = None
     #: The admin named a ``scope`` (``InvitationCreate.scope``): what the store keeps for it,
     #: or a refusal (a team the admin may not invite into). Without it a scope is refused.
     invitation_scope: Callable[[UserT, int | str], Awaitable[Mapping[str, Any]]] | None = None
+    #: The group an invitation is for (0.31, G5/G6; Kurvenschmiede's team): its ``id`` goes
+    #: on the invitation's log rows (``target_group_id``), its ``name`` into the mail's
+    #: ``{group}``. ``None``, or no hook: no group.
+    invitation_group: Callable[[InvT], Awaitable[GroupRef | None]] | None = None
+    #: An admin is about to invite (0.31, G7): ``(admin, body, existing, scope)`` — the
+    #: request's ``InvitationCreate``, the account that already has the address or ``None``,
+    #: and what ``invitation_scope`` answered or ``None``. Raise a kit refusal to refuse it
+    #: (Kurvenschmiede refuses an address with an account, ``email_taken``); nothing is
+    #: stored, logged or sent then.
+    invitation_creating: Callable[[UserT, Any, AccountRow | None, Mapping[str, Any] | None], Awaitable[None]] | None = (
+        None
+    )
     #: Seam 2: the access token's extra claims (kastlan's ``company_id`` and ``roles``); may
     #: refuse with ``session_ended`` at a refresh (a lost membership). ``sid`` is the kit's.
     claims: Callable[[UserT, SessionRow], Awaitable[_Extras]] | None = None
@@ -289,19 +315,25 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: ``hand_over_count``).
     deletion_terms: Callable[[UserT], Awaitable[_Extras]] | None = None
     #: Seam 5: the account asked to be deleted and is deactivated: cancel or tell what is
-    #: the app's (billing, budget guests); the extras ride on the answer.
+    #: the app's (billing, budget guests); the extras ride on the answer and, since 0.31, are
+    #: the ``deletion_request`` row's detail (ids, counts and flags: ``audit_detail``'s rule).
     on_deletion_requested: Callable[[UserT], Awaitable[_Extras | None]] | None = None
-    #: Seam 5: an admin reactivated the account before its erasure (0.30's admin routes).
-    on_deletion_withdrawn: Callable[[UserT], Awaitable[None]] | None = None
+    #: Seam 5: an admin reactivated the account before its erasure (0.30's admin routes); what
+    #: it answers is the ``deletion_cancel`` row's detail (0.31), ``None`` none.
+    on_deletion_withdrawn: Callable[[UserT], Awaitable[_Extras | None]] | None = None
     #: Seam 5: the export's ``data`` (user-admin §6.5): the app's own rows.
     export_data: Callable[[UserT], Awaitable[_Extras]] | None = None
     #: Seam 5 (0.30): the account is being erased (:meth:`AccountService.erase`): delete or hand
     #: over the app's own rows (keksdose's budgets, Kurvenschmiede's shared work). The mapping
     #: it answers — counts and ids, never content — rides on the admin's answer and in the
-    #: ``erase`` row's detail.
-    erase: Callable[[UserT], Awaitable[_Extras | None]] | None = None
+    #: ``erase`` row's detail. ``erase(user, *, actor_id)`` (0.31): the admin who erased, ``None``
+    #: for the ``after_days`` job (Kurvenschmiede logs the hand-over in its own rows by it).
+    erase: _EraseHook[UserT] | None = None
     #: Seam 5 (0.30): the stored files an erasure left nobody naming (the feedback's), deleted
     #: after the commit (keksdose's object purge). Without it they are left to the app.
+    #: Delete them through ``objects.purge_objects``: since 0.31 it spares a file written in
+    #: the last minutes by default, as a byte-identical upload committed after the erasure's
+    #: decision names the same content-addressed object.
     purge_files: Callable[[Sequence[str]], Awaitable[None]] | None = None
     #: Seam 6: ``/auth/me`` and the user in every token answer, as the app's ``me_model``;
     #: without it, ``me_model.model_validate(user)`` with ``email_verified`` from the row.
@@ -354,8 +386,13 @@ class AccountPolicy:
     default_role: str = "MEMBER"
     #: The roles an invitation may name (0.30); another is ``422 role_not_grantable``, and
     #: ``default_role`` is one of them. ``None``: unchecked, as in 0.29. The admin router's
-    #: role change gives the same roles (``AdminPolicy.grantable_roles``).
+    #: role change may give more (``AdminPolicy.grantable_roles``, 0.31): invite members,
+    #: promote an admin later.
     invitable_roles: tuple[str, ...] | None = None
+    #: An invitation to an address that has an open one with the same role and scope sends
+    #: that one again — a new link, 14 more days, logged ``invite_resend`` — instead of adding
+    #: a second row (0.31, G7; Kurvenschmiede's). Off: every invitation is a row, as in 0.29.
+    reuse_open_invitations: bool = False
     #: The environment list that bootstraps the first admin (``parse_env_list``); ``None``:
     #: the first registration is open (``registration_decision``).
     bootstrap: frozenset[str] | None = None
@@ -364,6 +401,12 @@ class AccountPolicy:
     deletion_days: int = DEFAULT_DELETION_DAYS
     #: What the deletion mail says may outlive the erasure.
     retention: RetentionNote = field(default_factory=deletion_mail_retention_note)
+    #: How long an answer that must not tell whether an account exists takes, at least
+    #: (0.31, security: Kurvenschmiede's audit F29): ``POST /auth/password-reset/request``
+    #: commits and sends its mail inside this time, and every path answers when it has passed.
+    #: Above the mail provider's slow answers (Resend's are well under a second); a send still
+    #: running at the floor is cut and logged, so the answer is never late.
+    answer_floor: timedelta = timedelta(seconds=3)
 
     def __post_init__(self) -> None:
         if not _APP_NAME.match(self.app):
@@ -372,6 +415,8 @@ class AccountPolicy:
             raise ValueError("deletion_days is zero or more")
         if self.invitable_roles is not None and self.default_role not in self.invitable_roles:
             raise ValueError(f"default_role {self.default_role!r} is one of invitable_roles: {self.invitable_roles}")
+        if self.answer_floor < timedelta(0):
+            raise ValueError("answer_floor is zero or more")
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +511,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         absent_check: Callable[[str], bool] | None = None,
         now: Clock = utc_now,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        timer: Callable[[], float] = time.monotonic,
     ) -> None:
         self._users = users
         self._sessions = sessions
@@ -485,6 +531,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         self._absent = absent_check or absent_account_check(hasher.hash, hasher.verify)
         self._now = now
         self._sleep = sleep
+        self._timer = timer
 
     # --- the answers' pieces -------------------------------------------------------------
 
@@ -496,10 +543,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         answer = model.model_validate(user, from_attributes=True)
         return answer.model_copy(update={"email_verified": user.email_verified_at is not None})
 
-    async def _extras[T](self, hook: Callable[..., Awaitable[T]] | None, *args: Any) -> dict[str, Any]:
+    async def _extras[T](self, hook: Callable[..., Awaitable[T]] | None, *args: Any, **kwargs: Any) -> dict[str, Any]:
         if hook is None:
             return {}
-        return dict(cast(Mapping[str, Any], await hook(*args) or {}))
+        return dict(cast(Mapping[str, Any], await hook(*args, **kwargs) or {}))
 
     # --- sessions and tokens -------------------------------------------------------------
 
@@ -992,8 +1039,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     async def confirm_email_change(self, token: str, *, ip: str) -> EmailChangeConfirmed:
         """``POST /auth/me/email/confirm`` (user-admin §6.2), anonymous: the address switches
-        and is verified, the sessions stay, and the open, unexpired invitations for the new
-        address attach (§12.5 item 9). ``email_taken`` if it found an account meanwhile."""
+        and is verified, the sessions stay, the open, unexpired invitations for the new
+        address attach (§12.5 item 9), and the ``on_email_changed`` hook is told (0.31).
+        ``email_taken`` if it found an account meanwhile."""
         row, user = await self._redeem(OneTimeTokenKind.EMAIL_CHANGE, token, ip)
         if not user.is_active:
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
@@ -1001,6 +1049,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         if holder is not None and holder.id != user.id:
             raise AuthError(AuthErrorCode.EMAIL_TAKEN)
         now = self._now()
+        old = user.email
         user = await self._users.apply(user, {"email": row.email, "email_verified_at": now})
         for kind in (OneTimeTokenKind.EMAIL_CHANGE, OneTimeTokenKind.VERIFICATION, OneTimeTokenKind.PASSWORD_RESET):
             await self._tokens.drop(kind, user.id)
@@ -1011,6 +1060,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 if self._hooks.on_invitation_redeemed is not None:
                     await self._hooks.on_invitation_redeemed(user, invitation)
                 attached += 1
+        if self._hooks.on_email_changed is not None:
+            await self._hooks.on_email_changed(user, old, user.email)
         return EmailChangeConfirmed(email=user.email, invitations_attached=attached)
 
     # --- verification --------------------------------------------------------------------
@@ -1060,26 +1111,54 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
     async def request_password_reset(self, body: PasswordResetRequest, *, ip: str) -> None:
         """``POST /auth/password-reset/request``: always ``204``, account or not (§4.5). The
         caller's window first, then the address's (a request the first refused spends
-        nothing of the second). The address's tagged variant is tried too; the mail goes
-        to the account's own address, after the commit. A deactivated account or a demo
-        gets none."""
+        nothing of the second): a refusal answers at once, account or not, since both windows
+        key on what the caller sent. The address's tagged variant is tried too; the mail goes
+        to the account's own address. A deactivated account or a demo gets none.
+
+        **In the same time, account or not** (0.31, security; Kurvenschmiede's audit F29).
+        The link is committed (``commit_now``) and mailed here, before the answer — after
+        it, Cloud Run's request-based CPU would starve the send — and every path, its commit
+        included, answers when ``AccountPolicy.answer_floor`` has passed since the windows
+        were charged (``timer``, ``sleep``). The send gets the time left: one still running at
+        the floor is cut and logged, and the person asks again. Only a write that has already
+        overrun the floor, when the answer is late anyway, sends unbounded."""
         charge(self._limiters.reset_ip, ip, AUTH_THROTTLED["reset"])
         charge(self._limiters.reset_address, body.email, AUTH_THROTTLED["reset"])
+        floor = self._policy.answer_floor.total_seconds()
+        start = self._timer()
         addresses = addresses_for_reset(body.email, self._policy.app)
         found = {row.email: row for row in await self._users.by_emails(addresses)}
         user = next((found[address] for address in addresses if address in found), None)
-        if user is None or not user.is_active or getattr(user, "is_demo", False):
-            return
-        raw, digest = mint()
-        await self._tokens.put(
-            OneTimeTokenKind.PASSWORD_RESET,
-            user_id=user.id,
-            token_hash=digest,
-            email=user.email,
-            expires_at=self._now() + RESET_TTL,
-        )
-        link = self._policy.links.url(self._policy.links.reset_password, token=raw)
-        self._send_later(user.email, AccountMailText.PASSWORD_RESET, user.locale, link=link, name=self._name(user))
+        if user is not None and user.is_active and not getattr(user, "is_demo", False):
+            raw, digest = mint()
+            await self._tokens.put(
+                OneTimeTokenKind.PASSWORD_RESET,
+                user_id=user.id,
+                token_hash=digest,
+                email=user.email,
+                expires_at=self._now() + RESET_TTL,
+            )
+            await self._after.commit_now()
+            link = self._policy.links.url(self._policy.links.reset_password, token=raw)
+            left = floor - (self._timer() - start)
+            try:
+                async with asyncio.timeout(left if left > 0 else None):
+                    await self._send(
+                        user.email, AccountMailText.PASSWORD_RESET, user.locale, link=link, name=self._name(user)
+                    )
+            except TimeoutError:
+                logger.error(
+                    "The %s mail was still sending at the answer's floor (%.1f s) and was cut, so the "
+                    "answer does not tell that the account exists",
+                    ACCOUNT_MAIL_KINDS[AccountMailText.PASSWORD_RESET],
+                    floor,
+                )
+        else:
+            # The same commit as the account's path, so nothing after the floor differs.
+            await self._after.commit_now()
+        left = floor - (self._timer() - start)
+        if left > 0:
+            await self._sleep(left)
 
     async def _reset_account(self, token: str, ip: str) -> UserT:
         row, user = await self._redeem(OneTimeTokenKind.PASSWORD_RESET, token, ip)
@@ -1178,11 +1257,18 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             **(await self._extras(self._hooks.describe_invitation, invitation)),
         }
 
-    async def _mail_invitation(self, invitation: InvT, raw: str) -> tuple[str, bool]:
-        """Commit, then mail the invitation in the invitee's language."""
+    async def _group_of(self, invitation: InvT) -> GroupRef | None:
+        hook = self._hooks.invitation_group
+        return None if hook is None else await hook(invitation)
+
+    async def _mail_invitation(self, invitation: InvT, raw: str, group: GroupRef | None) -> tuple[str, bool]:
+        """Commit, then mail the invitation in the invitee's language, naming its group."""
         await self._after.commit_now()
         link = self._policy.links.url(self._policy.links.register, invite=raw)
-        return link, await self._send(invitation.email, AccountMailText.INVITATION, invitation.locale, link=link)
+        name = "" if group is None or group.name is None else group.name
+        return link, await self._send(
+            invitation.email, AccountMailText.INVITATION, invitation.locale, link=link, group=name
+        )
 
     async def _issued(self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool) -> dict[str, Any]:
         inviter = PersonRef.model_validate(admin, from_attributes=True)
@@ -1204,7 +1290,14 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             if self._hooks.invitation_scope is None:
                 raise AuthError(AuthErrorCode.INVITATION_SCOPE_INVALID)
             scope = await self._hooks.invitation_scope(admin, body.scope)
+        if self._hooks.invitation_creating is not None:
+            existing = await self._users.by_email(body.email)
+            await self._hooks.invitation_creating(admin, body, existing, scope)
         charge(self._limiters.verification_resend, body.email, AUTH_THROTTLED["mail"])
+        if self._policy.reuse_open_invitations:
+            for open_one in await self._invitations.open_for(body.email):
+                if open_one.role == body.role and (open_one.scope or None) == (scope or None):
+                    return await self._send_again(admin, open_one, show_link=show_link)
         now = self._now()
         raw, digest = mint()
         invitation = await self._invitations.add(
@@ -1219,8 +1312,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 note=body.note,
             )
         )
-        await self._record(AdminAction.INVITE, admin, invitation, now)
-        link, sent = await self._mail_invitation(invitation, raw)
+        group = await self._group_of(invitation)
+        await self._record(AdminAction.INVITE, admin, invitation, now, group)
+        link, sent = await self._mail_invitation(invitation, raw, group)
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def _closed_or_found(self, invitation_id: int) -> InvT:
@@ -1236,11 +1330,18 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         if not _unspent(invitation):
             raise AuthError(AuthErrorCode.INVITATION_CLOSED)
         charge(self._limiters.verification_resend, invitation.email, AUTH_THROTTLED["mail"])
+        return await self._send_again(admin, invitation, show_link=show_link)
+
+    async def _send_again(self, admin: UserT, invitation: InvT, *, show_link: bool) -> dict[str, Any]:
+        """A new token and 14 more days for an unspent invitation, the old link dead, logged
+        as ``invite_resend``: the re-send, and a reused invitation (0.31). Charged by the
+        caller."""
         now = self._now()
         raw, digest = mint()
         invitation = await self._invitations.remint(invitation, token_hash=digest, expires_at=now + INVITE_TTL)
-        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now)
-        link, sent = await self._mail_invitation(invitation, raw)
+        group = await self._group_of(invitation)
+        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group)
+        link, sent = await self._mail_invitation(invitation, raw, group)
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def revoke_invitation(self, admin: UserT, invitation_id: int) -> None:
@@ -1254,9 +1355,11 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             return
         now = self._now()
         await self._invitations.revoke(invitation, at=now)
-        await self._record(AdminAction.INVITE_REVOKE, admin, invitation, now)
+        await self._record(AdminAction.INVITE_REVOKE, admin, invitation, now, await self._group_of(invitation))
 
-    async def _record(self, action: AdminAction, admin: UserT, invitation: InvT, now: datetime) -> None:
+    async def _record(
+        self, action: AdminAction, admin: UserT, invitation: InvT, now: datetime, group: GroupRef | None
+    ) -> None:
         detail = (
             {"invitation_id": invitation.id, "role": invitation.role}
             if invitation.role
@@ -1264,7 +1367,13 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         )
         await self._log.add(
             admin_action_record(
-                action, actor_id=admin.id, target_user_id=None, target_email=invitation.email, detail=detail, now=now
+                action,
+                actor_id=admin.id,
+                target_user_id=None,
+                target_email=invitation.email,
+                detail=detail,
+                target_group_id=None if group is None else group.id,
+                now=now,
             )
         )
 
@@ -1308,15 +1417,18 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         ``after_days`` job (:meth:`erase_if_due`, no actor). The caller has checked that the
         account asked for it. In order:
 
-        1. the ``erase`` hook: the app's own rows (what an erasure deletes or hands over is
-           the app's);
+        1. the ``erase`` hook, with the actor (0.31): the app's own rows (what an erasure
+           deletes or hands over is the app's);
         2. with ``feedback`` (the app's ``FeedbackService``), the person leaves their reports,
            comments, votes and replies (``erase_author`` with ``erasure_identifiers``); the
            files no other row names go to ``purge_files`` after the commit;
         3. the invitations the account accepted are deleted, where the store can
            (:class:`~eifi1_server_kit.user_admin.ports.AcceptedInvitations`);
         4. the admin log keeps its rows and loses the addresses: the account's and those
-           invitations' (``scrub_email``); the account's id goes with the row's foreign key;
+           invitations' (``scrub_email``), and, where the log can (0.31,
+           :class:`~eifi1_server_kit.user_admin.ports.AccountLogScrub`), every row about the
+           account whatever address it names; the account's id goes with the row's foreign
+           key;
         5. every session row ends and every link is dropped, for a table that does not
            cascade;
         6. an ``erase`` row: the actor, no target, ``{feedback_anonymised, **the hook's}``;
@@ -1324,7 +1436,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
         Answers the row's detail."""
         email = user.email
-        extras = await self._extras(self._hooks.erase, user)
+        extras = await self._extras(self._hooks.erase, user, actor_id=actor_id)
         anonymised = 0
         if feedback is not None:
             erased = await feedback.erase_author(user.id, erasure_identifiers(email, user.first_name, user.last_name))
@@ -1335,6 +1447,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             addresses.update(await self._invitations.forget_accepted(user.id))
         for address in sorted(addresses):
             await self._log.scrub_email(address)
+        if isinstance(self._log, AccountLogScrub):
+            await self._log.scrub_account(user.id)
         await self._sessions.end_all(user.id)
         for kind in (OneTimeTokenKind.PASSWORD_RESET, OneTimeTokenKind.VERIFICATION, OneTimeTokenKind.EMAIL_CHANGE):
             await self._tokens.drop(kind, user.id)
@@ -1402,8 +1516,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         """``POST /auth/me/deletion`` (user-admin §6.4): the password (``password_incorrect``)
         and the typed address (``confirmation_required`` / ``_mismatch``); never the last
         active admin (``last_admin``). The account is deactivated at once, every session
-        ends, the request is logged with the account as its actor; the confirming mail goes
-        after the commit, and the answer says whether it did."""
+        ends, the ``on_deletion_requested`` hook runs, and the request is logged with the
+        account as its actor and the hook's extras as its detail (0.31, held to
+        ``audit_detail``); the confirming mail goes after the commit, and the answer says
+        whether it did, with the extras."""
         refuse_demo(getattr(user, "is_demo", False), "deleting the account")
         await self._check_password(user, password)
         require_confirmation(
@@ -1428,12 +1544,17 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         )
         await self._sessions.end_all(user.id)
         await self._sessions_ended(user, SessionsEndedReason.DELETION_REQUESTED)
+        extras = await self._extras(self._hooks.on_deletion_requested, user)
         await self._log.add(
             admin_action_record(
-                AdminAction.DELETION_REQUEST, actor_id=user.id, target_user_id=user.id, target_email=user.email, now=now
+                AdminAction.DELETION_REQUEST,
+                actor_id=user.id,
+                target_user_id=user.id,
+                target_email=user.email,
+                detail=extras or None,
+                now=now,
             )
         )
-        extras = await self._extras(self._hooks.on_deletion_requested, user)
         await self._after.commit_now()
         values: dict[str, Any] = {"name": self._name(user), "contact": self._policy.contact, **self._policy.retention}
         if scheduled is None:
@@ -1446,18 +1567,23 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     async def withdraw_deletion(self, user: UserT, *, actor_id: int) -> UserT:
         """An admin's reactivation before the erasure (user-admin §6.4; 0.30's admin route):
-        both stamps cleared, the account active, ``deletion_cancel`` logged, the hook told."""
+        both stamps cleared, the account active, the hook told, then ``deletion_cancel``
+        logged with what the hook answered as its detail (0.31)."""
         now = self._now()
         user = await self._users.apply(
             user, {"is_active": True, "deletion_requested_at": None, "deletion_scheduled_at": None}
         )
+        extras = await self._extras(self._hooks.on_deletion_withdrawn, user)
         await self._log.add(
             admin_action_record(
-                AdminAction.DELETION_CANCEL, actor_id=actor_id, target_user_id=user.id, target_email=user.email, now=now
+                AdminAction.DELETION_CANCEL,
+                actor_id=actor_id,
+                target_user_id=user.id,
+                target_email=user.email,
+                detail=extras or None,
+                now=now,
             )
         )
-        if self._hooks.on_deletion_withdrawn is not None:
-            await self._hooks.on_deletion_withdrawn(user)
         return user
 
     async def export(self, user: UserT) -> dict[str, Any]:

@@ -70,7 +70,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from operator import attrgetter
 from pathlib import Path
 from stat import S_ISREG
@@ -85,6 +85,7 @@ __all__ = [
     "MAX_KEY_BYTES",
     "MAX_SEGMENT_BYTES",
     "PURGE_CONCURRENCY",
+    "PURGE_SPARE_RECENT",
     "GcsObjectStore",
     "LocalObjectStore",
     "ObjectNotFoundError",
@@ -106,6 +107,10 @@ MAX_SEGMENT_BYTES = 255
 #: ``_PURGE_CONCURRENCY``, ``invoice_file_store.py:62``): a wipe is hundreds of objects and
 #: each a round trip, so not one at a time; and each a worker thread, so not all at once.
 PURGE_CONCURRENCY = 16
+#: How recently written a file :func:`purge_objects` spares when asked to
+#: (``spare_written_within``, 0.31): longer than a request takes from its upload's write to
+#: its commit, so an upload that raced the purge keeps its file.
+PURGE_SPARE_RECENT = timedelta(minutes=5)
 
 #: The type an object is stored with when ``save`` is given none.
 _OCTET_STREAM = "application/octet-stream"
@@ -646,7 +651,13 @@ class S3ObjectStore:
 
 
 async def purge_objects(
-    store: ObjectStore, keys: Iterable[str], *, reason: str, concurrency: int = PURGE_CONCURRENCY
+    store: ObjectStore,
+    keys: Iterable[str],
+    *,
+    reason: str,
+    concurrency: int = PURGE_CONCURRENCY,
+    spare_written_within: timedelta | None = PURGE_SPARE_RECENT,
+    now: datetime | None = None,
 ) -> list[str]:
     """Remove many objects; return the keys left behind, in the order given (keksdose
     ``purge_objects``, ``invoice_file_store.py:404``).
@@ -663,6 +674,17 @@ async def purge_objects(
     not at all. An app's own placeholders (keksdose's ``(pending)`` and ``(manual)``) are
     the app's to leave out; when to purge (keksdose's ``delete_after_commit``) stays the
     app's too.
+
+    **``spare_written_within``** (0.31, **on by default**: :data:`PURGE_SPARE_RECENT`, 5
+    minutes) protects **content-addressed keys** (keksdose's and Kurvenschmiede's
+    ``<sha12>.<ext>``), which two rows share: the purge's keys were decided inside a
+    transaction, and a byte-identical upload committed after that decision names the same
+    object. Such an upload writes the object again, so a file written within that span
+    before ``now`` (default: the clock's) is spared, logged, and left to the app's orphan
+    sweep; a file already gone is nothing to do. It asks each key's age first (a listing by
+    the key), one more round trip per key; a key whose age it cannot ask is one it left.
+    ``None`` removes at once, as before 0.31 — for keys no two rows share (kastlan's
+    ``<uuid>_<sha12>``) or a store that cannot list.
     """
     if concurrency < 1:
         raise ValueError("purge_objects needs a concurrency of at least 1")
@@ -671,10 +693,17 @@ async def purge_objects(
         return []
     limit = asyncio.Semaphore(concurrency)
     failed: set[str] = set()
+    spared: set[str] = set()
+    cutoff = None if spare_written_within is None else (now or datetime.now(UTC)) - spare_written_within
 
     async def remove(key: str) -> None:
         async with limit:
             try:
+                if cutoff is not None:
+                    written = [found.modified for found in await store.list_objects(key) if found.key == key]
+                    if written and written[0] > cutoff:
+                        spared.add(key)
+                        return
                 await store.remove(key)
             except Exception:
                 failed.add(key)
@@ -691,5 +720,13 @@ async def purge_objects(
             ", ".join(left),
         )
     else:
-        logger.info("purge (%s): removed %d object(s)", reason, len(wanted))
+        logger.info("purge (%s): removed %d object(s)", reason, len(wanted) - len(spared))
+    if spared:
+        logger.info(
+            "purge (%s): spared %d object(s) written in the last %s, for the orphan sweep: %s",
+            reason,
+            len(spared),
+            spare_written_within,
+            ", ".join(key for key in wanted if key in spared),
+        )
     return left

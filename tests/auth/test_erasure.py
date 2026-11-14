@@ -128,8 +128,8 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
     events: list[str] = []
     purged: list[tuple[str, ...]] = []
 
-    async def erase(account: MemoryUser) -> dict[str, Any]:
-        events.append(f"erase:{account.id}")
+    async def erase(account: MemoryUser, *, actor_id: int | None) -> dict[str, Any]:
+        events.append(f"erase:{account.id} by {actor_id}")
         return {"handed_over": {"projects": 3}}
 
     async def purge_files(keys: Any) -> None:
@@ -142,7 +142,7 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
         feedback=feedback,  # type: ignore[arg-type]
     )
     assert detail == {"feedback_anonymised": 2, "handed_over": {"projects": 3}}
-    assert events == [f"erase:{user.id}"]
+    assert events == [f"erase:{user.id} by {admin.id}"], "the hook knows the admin who erased"
     (asked_id, identifiers) = feedback.asked[0]
     assert asked_id == user.id and "ada@example.com" in identifiers and "Ada Lovelace" in identifiers
     assert purged == [], "the files go after the commit"
@@ -163,6 +163,52 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
     assert erased.detail == detail
 
 
+async def test_an_erasure_scrubs_the_rows_about_the_account_whatever_address_they_name(world: World) -> None:
+    """G2: a row written before an address change names the earlier address; the erasure
+    scrubs every row about the account by its id too, before the row goes (``[sql]``'s keys
+    are ``SET NULL``: after the delete nothing names the account any more)."""
+    admin = world.account(email="root@example.com", role="ADMIN")
+    user = world.account(email="ada@new.example", is_active=False, deletion_requested_at=world.clock())
+    for address, target in (("ada@old.example", user.id), (user.email, user.id), ("bob@example.com", 99)):
+        await world.log.add(
+            admin_action_record(
+                "deactivate", actor_id=admin.id, target_user_id=target, target_email=address, now=world.clock()
+            )
+        )
+    present: list[bool] = []
+    scrub = world.log.scrub_account
+
+    async def scrub_account(user_id: int) -> None:
+        present.append(user_id in world.users.rows)
+        await scrub(user_id)
+
+    world.log.scrub_account = scrub_account  # type: ignore[method-assign]
+    await world.service().erase(user, actor_id=admin.id)
+    assert [row.target_email for row in world.log.rows[:3]] == [None, None, "bob@example.com"]
+    assert present == [True], "scrubbed by the account while its row is still there"
+
+
+async def test_a_log_without_scrub_account_is_scrubbed_by_address_alone(world: World) -> None:
+    class Plain:
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            if name == "scrub_account":
+                raise AttributeError(name)
+            return getattr(self.inner, name)
+
+    user = world.account(email="ada@new.example", is_active=False, deletion_requested_at=world.clock())
+    for address in ("ada@old.example", user.email):
+        await world.log.add(
+            admin_action_record(
+                "deactivate", actor_id=None, target_user_id=user.id, target_email=address, now=world.clock()
+            )
+        )
+    await world.service(log=Plain(world.log)).erase(user, actor_id=None)
+    assert [row.target_email for row in world.log.rows[:2]] == ["ada@old.example", None]
+
+
 async def test_an_erasure_without_feedback_files_or_hooks_still_erases(world: World) -> None:
     user = world.account(is_active=False, deletion_requested_at=world.clock())
     assert await world.service().erase(user, actor_id=None) == {"feedback_anonymised": 0}
@@ -171,6 +217,17 @@ async def test_an_erasure_without_feedback_files_or_hooks_still_erases(world: Wo
     await world.service().erase(world.account(email="b@example.com"), actor_id=None, feedback=FakeFeedback())  # type: ignore[arg-type]
     assert world.after.queue == [], "files with nowhere to go are not queued"
     await world.service().erase(world.account(email="c@example.com"), actor_id=None, feedback=FakeFeedback(keys=()))  # type: ignore[arg-type]
+
+
+async def test_the_job_s_erasure_tells_the_hook_it_has_no_actor(world: World) -> None:
+    actors: list[int | None] = []
+
+    async def erase(account: MemoryUser, *, actor_id: int | None) -> None:
+        actors.append(actor_id)
+
+    user = world.account(is_active=False, deletion_requested_at=world.clock() - timedelta(days=31))
+    assert await world.service(AuthHooks(erase=erase)).erase_if_due(user.id) is True
+    assert actors == [None]
 
 
 async def test_the_job_erases_only_an_account_whose_deletion_is_due(world: World) -> None:

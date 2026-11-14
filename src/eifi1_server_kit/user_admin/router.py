@@ -35,7 +35,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel
 
-from eifi1_server_kit.auth.router import AuthDeps, account_service, admin_guard, current_user
+from eifi1_server_kit.auth.router import AuthDeps, account_request_window, account_service, admin_guard, current_user
 from eifi1_server_kit.auth.service import AccountService
 from eifi1_server_kit.mail import MailTestResult
 from eifi1_server_kit.user_admin.attention import AdminAttention
@@ -61,7 +61,7 @@ from eifi1_server_kit.user_admin.scope import GlobalScope
 from eifi1_server_kit.user_admin.service import AdminPolicy, UserAdminHooks, UserAdminService
 
 try:
-    from fastapi import APIRouter, Depends, Query, Request
+    from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 except ImportError as exc:
     raise ImportError(
         "eifi1_server_kit.user_admin.router needs FastAPI: install the kit with its fastapi extra, "
@@ -201,7 +201,11 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
     deps.policy.check(auth.policy)
     Service = Annotated[UserAdminService[Any], Depends(_service(deps))]  # noqa: N806
     Admin = Annotated[Any, Depends(current_user(auth))]  # noqa: N806
-    router = APIRouter(prefix=prefix, tags=list(tags), dependencies=[Depends(deps.guard or admin_guard(auth))])
+    router = APIRouter(
+        prefix=prefix,
+        tags=list(tags),
+        dependencies=[Depends(account_request_window(auth)), Depends(deps.guard or admin_guard(auth))],
+    )
     row_model = deps.row_model
     list_model = UserListResponse[row_model]  # type: ignore[valid-type]
 
@@ -299,9 +303,17 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
         limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
         offset: Annotated[int, Query(ge=0)] = 0,
         target: Annotated[int | None, Query(description="Only the actions on this account")] = None,
+        target_email: Annotated[
+            str | None, Query(max_length=320, description="Only the actions on this address (an invitation's)")
+        ] = None,
     ) -> BaseModel:
-        """The admin log, newest first (§4.3)."""
-        return action_page.model_validate(await service.actions(limit=limit, offset=offset, target_user_id=target))
+        """The admin log, newest first (§4.3); ``target_email`` (0.31) needs a log that pages by
+        address, else ``501``."""
+        try:
+            page = await service.actions(limit=limit, offset=offset, target_user_id=target, target_email=target_email)
+        except NotImplementedError as exc:
+            raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(exc)) from exc
+        return action_page.model_validate(page)
 
     attention_model = deps.attention_model
 

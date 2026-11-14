@@ -10,6 +10,138 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.31.0] (2026-11-14)
+
+server-kit 0.31.0: what the first two apps on the account layer found (Kurvenschmiede's move
+inventory, Staunlabor's 0.30 adoption), the purge race, the daily jobs as the scheduler's
+routes, and the feedback's and the verdicts' ready tables. A **minor** with **one breaking
+change** (the erase hook is told who erased, a 0.30 hook no app had written yet). The reset
+request no longer tells by its time whether an account exists (Kurvenschmiede's audit F29):
+**no app deploys the kit's account routes on an older version.** No 0.29/0.30 Protocol gains a
+method and no `[sql]` table a column; the feedback and review tables are new.
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** `AuthHooks.erase` is called as `erase(user, *, actor_id)` (G1): the admin who erased,
+  `None` for the `after_days` job. A 0.30 hook taking the account alone fails with a
+  `TypeError` at the first erasure; add the keyword. No app had written the hook yet.
+
+### Added
+
+* **auth (security):** `AccountPolicy.answer_floor` (`timedelta`, default 3 s): how long
+  `POST /auth/password-reset/request` takes at least, account or not; `AuthDeps.timer` and
+  `AccountService(timer=)` (`time.monotonic` by default), the clock it is measured on, which a
+  test fakes with `sleep`.
+* **auth:** `AuthHooks.on_email_changed(user, old, new)` (G4): an address change was confirmed,
+  called after the switch and after the new address's open invitations attached
+  (Kurvenschmiede moves the shares waiting for the old address there). A refused confirmation
+  calls nothing.
+* **user_admin.ports:** `AccountLogScrub` (`scrub_account(user_id)`, optional, runtime-checkable,
+  like 0.30's `AcceptedInvitations`; G2): the erasure also clears `target_email` on every log row
+  about the account, so a row written before an address change loses the earlier address too.
+  It runs before the account's row is deleted (`[sql]`'s log keys are `SET NULL`).
+  **auth.sql:** `SqlAdminActionLog.scrub_account`; **auth.testing:**
+  `InMemoryAdminActionLog.scrub_account`; **user_admin.testing:** `check_account_log_scrub(log,
+  *, actor_id, user_id, other_user_id)`. An app's own log without it is scrubbed by address, as
+  in 0.30.
+* **user_admin.ports:** `AdminActionsByEmail` (`page_by_email(*, target_email, target_user_id,
+  limit, offset)`, optional, runtime-checkable; G9, Kurvenschmiede): `GET /admin/actions` takes
+  `?target_email=` (trimmed and lower-cased, combinable with `target`), so an invitation's rows,
+  which name an address and no account, can be found. **auth.sql:**
+  `SqlAdminActionLog.page_by_email`; **auth.testing:** `InMemoryAdminActionLog.page_by_email`.
+  An app's own log without it answers that query with `501`; 0.29's `page` is unchanged.
+* **auth (G7, Kurvenschmiede):** `AuthHooks.invitation_creating(admin, body, existing, scope)`,
+  before an admin's invitation is stored: the account that already has the address (or `None`)
+  and the scope `invitation_scope` answered; a kit refusal refuses it, with nothing stored,
+  logged or sent (Kurvenschmiede refuses an address with an account, `email_taken`). And
+  `AccountPolicy.reuse_open_invitations` (default off): an invitation to an address with an
+  open one of the same role and scope sends that one again (a new link, 14 more days,
+  `invite_resend`) instead of adding a second row.
+* **auth (G5/G6, Kurvenschmiede):** `AuthHooks.invitation_group(invitation) -> GroupRef | None`:
+  the group an invitation is for (a team). Its `id` goes on the invitation's `invite`,
+  `invite_resend` and `invite_revoke` rows (`target_group_id`), its `name` into the invitation
+  mail's new `{group}` placeholder (empty without a group). The kit's own invitation text names
+  none; an app's own table (`AuthDeps.mail_texts`) may ("you are invited to the team {group}").
+* **objects (the purge race; Kurvenschmiede's flaky 404):** `purge_objects(...,
+  spare_written_within=None, now=None)` and `PURGE_SPARE_RECENT` (5 minutes). With
+  content-addressed keys (keksdose's and Kurvenschmiede's `<sha12>.<ext>`) two rows share an
+  object, and the erasure's and a deleted comment's shared-key check runs inside the
+  transaction while the delete runs after the commit: a byte-identical upload committed in
+  between lost its file. Such an upload writes the object again, so a purge that spares files
+  written within the span keeps it, logs it, and leaves it to the app's orphan sweep. **On by
+  default** (Marcel, 2026-11-14: an app that forgot a switch would keep losing files); see
+  **Changed**.
+* **auth.jobs** (`fastapi` extra): `account_jobs_router(AccountJobsDeps(token, prune,
+  erase_due=None, retention=ACCOUNT_ROWS_RETENTION))`, the account layer's daily jobs as the
+  scheduler's routes behind the jobs token: `POST /ops/accounts/daily` (the due `after_days`
+  erasures, then the prune of rows done with for 30 days — an ended session's IP address and
+  browser among them), `/prune` and `/erase-due`. The app hands it its two jobs (its own
+  transactions); the kit fixes the retention, the order and the answer. One Cloud Scheduler
+  job a day runs it. With `sweep_uploads` the same call sweeps the feedback's uploads nothing
+  named for a day (`UPLOAD_WAIT`; `SqlAttachmentStorage.prune`), also `/sweep-uploads`: a file
+  the purge spared ends there.
+* **auth (Staunlabor's pilot):** `AuthLimiters(requests=REQUESTS_PER_IP)`, one window per IP
+  over every route of `auth_router`, `invitations_admin_router` and `user_admin_router`
+  (600 a minute; `account_request_window(deps)`, the dependency they carry): `/me`, the
+  sessions, the passkey sign-in's begin and the admin's lists had none of their own. A flood
+  guard beside the routes' own windows; `requests=None` leaves it out for an app that budgets
+  the routes itself (Staunlabor's `include_router(dependencies=...)`).
+* **`feedback.sql` and `translation_review.sql`, the feedback's and the verdicts' ready tables and
+  stores** behind the existing `sql` extra (Marcel, 2026-11-13: everything that is the same in
+  every app goes into the kits). Declarative mixins (`FeedbackColumns`, `FeedbackReplyColumns`,
+  `FeedbackCommentColumns`, `FeedbackVoteColumns`, `FeedbackAttachmentColumns`,
+  `TranslationReviewColumns`) on the pattern of `auth.sql`: foreign keys follow
+  `__accounts_table__` (and `__feedback_table__`), constraints are unnamed for the app's naming
+  convention, every instant is a `UtcDateTime`. The stores implement every port of
+  `feedback.ports` (`SqlFeedbackRepository` with the public repository,
+  `SqlFeedbackReplyStore`, `SqlFeedbackCommentStore`, `SqlFeedbackVoteStore`, `SqlPeopleLookup`,
+  `SqlAttachmentStorage`) and `translation_review.ports` (`SqlTranslationReviewStore`); every
+  write flushes and none commits. The existing contract suites pass against them on SQLite and,
+  opt-in, on PostgreSQL (`tests/test_sql_on_postgresql.py`, with `EIFI1_TEST_POSTGRES_URL`).
+  No protocol changed.
+
+### Changed
+
+* **auth (security, Kurvenschmiede's audit F29):** the reset request no longer tells by its time
+  whether an account exists. Its mail moved from `later()` (which a function-scoped unit of
+  work ran inside the request, so an existing account answered a provider's round trip later)
+  to `commit_now()` and an inline send bounded by the time left to `answer_floor`; every path,
+  the absent, deactivated and demo accounts' too, commits and answers when the floor has passed
+  since the windows were charged. A `429` still answers at once (the windows key on the IP and
+  the typed address). The send stays before the answer, so Cloud Run's request-based CPU does
+  not starve it; one still running at the floor is cut and logged at ERROR. An app's tests that
+  call the route on the real clock now wait 3 s each: pass a fake `AuthDeps.sleep`, or
+  `answer_floor=timedelta(0)`.
+* **auth:** what `AuthHooks.on_deletion_requested` and `on_deletion_withdrawn` answer is the
+  `deletion_request` / `deletion_cancel` row's `detail` (G3), through `audit_detail`; `None` or
+  `{}` writes none, as before. Both rows are now written after their hook (0.30 wrote them
+  first), and `on_deletion_withdrawn` may answer a mapping. The extras are held to the log's
+  rule (ids, counts, flags, short tokens): a sentence there is an `AuditDetailError`, as
+  everywhere in the log.
+
+* **user_admin (G8, Staunlabor):** `AccountPolicy.invitable_roles` no longer limits the role
+  change: `AdminPolicy.grantable_roles` is `grantable`, else every role but the reviewer role, and
+  an invitable role need only be grantable or the reviewer role (a subset, checked when the
+  router is built; 0.30 wanted the same list). "Invite members, promote an admin later" needs no
+  `grantable` of its own; an app that set `invitable_roles` to narrow the role change sets
+  `grantable` too.
+* **user_admin.testing:** `check_roster_store`'s roles default to `"ADMIN"`, `"MEMBER"` and
+  `"REVIEWER"`, as `auth.testing`'s since 0.30 (a role column with a CHECK refused the old
+  lower-case ones).
+* **mail:** `ConsoleMailer` logs at `WARNING` by default (was `INFO`, which uvicorn's logging
+  leaves out); `level=` sets another.
+
+* **objects:** `purge_objects` spares a file written in the last 5 minutes by default
+  (`spare_written_within=PURGE_SPARE_RECENT`), asking each key's age first: one listing more
+  per key, and a file a racing upload names stays for the orphan sweep. `spare_written_within=None`
+  removes at once, as before — for keys no two rows share (kastlan's `<uuid>_<sha12>`) or a
+  store that cannot list.
+
+### Documentation
+
+* **README:** the reset request's floor beside "The work after the commit", and the test app's
+  fake `sleep` in "Adopting the account layer".
+
 ## [0.30.0] (2026-11-13)
 
 server-kit 0.30.0: the admin half of the account layer (docs/auth-harmonization.md §12.3–§12.6,

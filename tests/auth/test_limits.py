@@ -156,3 +156,18 @@ def test_a_budget_s_limiter_defaults_to_the_monotonic_clock() -> None:
     # kastlan's 0.31 adoption: a per-demo PDF budget built without passing a clock.
     limiter = Budget(2, 60).limiter()
     assert limiter.hit("demo-1") is None
+
+
+def test_the_shared_request_window_is_generous_and_can_be_left_out() -> None:
+    from eifi1_server_kit.auth import REQUESTS_PER_IP
+
+    assert Budget(600, 60) == REQUESTS_PER_IP
+    clock = [0.0]
+    limiters = AuthLimiters(requests=Budget(1, 60), clock=lambda: clock[0])
+    assert limiters.requests is not None
+    assert limiters.requests.hit("10.0.0.1") is None and limiters.requests.hit("10.0.0.1") is not None
+    limiters.reset()
+    assert limiters.requests.hit("10.0.0.1") is None
+    none = AuthLimiters(requests=None)
+    none.reset()
+    assert none.requests is None

@@ -103,11 +103,15 @@ async def test_confirming_switches_the_address_and_attaches_only_open_invitation
     raw = await link(world, OneTimeTokenKind.EMAIL_CHANGE, user, email="new@example.com")
     await link(world, OneTimeTokenKind.VERIFICATION, user)
     redeemed: list[int] = []
+    changed: list[tuple[str, str, str, list[int]]] = []
 
     async def on_invitation_redeemed(account: MemoryUser, invitation: MemoryInvitation) -> None:
         redeemed.append(invitation.id)
 
-    world.hooks = AuthHooks(on_invitation_redeemed=on_invitation_redeemed)
+    async def on_email_changed(account: MemoryUser, old: str, new: str) -> None:
+        changed.append((account.email, old, new, list(redeemed)))
+
+    world.hooks = AuthHooks(on_invitation_redeemed=on_invitation_redeemed, on_email_changed=on_email_changed)
     open_one = world.invitations.seed(email="new@example.com")
     world.invitations.seed(email="new@example.com", expires_at=world.clock() - timedelta(days=1))
     world.invitations.seed(email="new@example.com", expires_at=None)
@@ -117,6 +121,9 @@ async def test_confirming_switches_the_address_and_attaches_only_open_invitation
     assert user.email == "new@example.com" and user.email_verified_at == world.clock()
     assert redeemed == [open_one.id] and open_one.accepted_by_user_id == user.id
     assert world.tokens.rows == [], "the old address's links die with it"
+    assert changed == [("new@example.com", "ada@example.com", "new@example.com", [open_one.id])], (
+        "the app is told once the address switched and its invitations attached (0.31, G4)"
+    )
 
 
 async def test_a_confirmation_is_refused_with_codes(world: World) -> None:
@@ -134,6 +141,20 @@ async def test_a_confirmation_is_refused_with_codes(world: World) -> None:
     orphan = await link(world, OneTimeTokenKind.EMAIL_CHANGE, gone, email="new@example.com")
     del world.users.rows[gone.id]
     assert code(await world.call("POST", "/auth/me/email/confirm", json={"token": orphan})) == "token_invalid"
+
+
+async def test_a_refused_confirmation_tells_the_app_nothing(world: World) -> None:
+    told: list[str] = []
+
+    async def on_email_changed(account: MemoryUser, old: str, new: str) -> None:
+        told.append(new)
+
+    world.hooks = AuthHooks(on_email_changed=on_email_changed)
+    user = world.account()
+    taken = await link(world, OneTimeTokenKind.EMAIL_CHANGE, user, email="bob@example.com")
+    world.account(email="bob@example.com")
+    assert code(await world.call("POST", "/auth/me/email/confirm", json={"token": taken})) == "email_taken"
+    assert told == []
 
 
 async def test_the_redemptions_share_a_window_per_caller(world: World) -> None:

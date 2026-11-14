@@ -36,15 +36,19 @@ async def test_an_admin_withdraws_a_deletion_before_the_erasure(world: World) ->
     admin = world.account(email="root@example.com", role="ADMIN")
     told: list[int] = []
 
-    async def on_deletion_withdrawn(account: MemoryUser) -> None:
+    async def on_deletion_withdrawn(account: MemoryUser) -> dict[str, Any] | None:
         told.append(account.id)
+        return {"plan_restored": True} if len(told) == 1 else None
 
     service = service_of(world, AuthHooks(on_deletion_withdrawn=on_deletion_withdrawn))
     await service.withdraw_deletion(user, actor_id=admin.id)
     assert user.is_active and user.deletion_requested_at is None and user.deletion_scheduled_at is None
     assert told == [user.id] and world.log.actions() == ["deletion_cancel"]
+    assert world.log.rows[-1].detail == {"plan_restored": True}, "the hook's answer is the row's detail (G3)"
+    await service.withdraw_deletion(user, actor_id=admin.id)
+    assert world.log.rows[-1].detail == {}, "None: no detail"
     await service_of(world).withdraw_deletion(user, actor_id=admin.id)
-    assert told == [user.id]
+    assert told == [user.id, user.id] and world.log.rows[-1].detail == {}
 
 
 async def test_without_a_passkey_store_the_ceremonies_refuse_to_run(world: World) -> None:

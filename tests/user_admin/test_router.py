@@ -476,7 +476,7 @@ async def test_the_log_pages_newest_first_naming_the_people_and_the_groups(world
     gone = await world.log.add(
         admin_action_record("erase", actor_id=None, target_user_id=None, target_email=None, now=world.clock())
     )
-    gone.target_group_id = 7  # type: ignore[attr-defined]
+    gone.target_group_id = 7
 
     async def group_names(ids: Any) -> dict[int, str | None]:
         return {7: "Fahrwerk"}
@@ -497,6 +497,46 @@ async def test_the_log_pages_newest_first_naming_the_people_and_the_groups(world
     mine = (await world.call("GET", f"/admin/actions?target={user.id}&offset=1", token=token)).json()
     assert mine["total"] == 2 and [row["action"] for row in mine["actions"]] == ["deactivate"]
     assert (await world.call("GET", "/admin/actions?limit=0", token=token)).status_code == 422
+
+
+class _LogWithoutSearch:
+    """An app's own admin log from before 0.31: no ``page_by_email``."""
+
+    def __init__(self, log: Any) -> None:
+        self._log = log
+
+    async def add(self, record: Any) -> Any:
+        return await self._log.add(record)
+
+    async def page(self, *, target_user_id: int | None, limit: int, offset: int) -> Any:
+        return await self._log.page(target_user_id=target_user_id, limit=limit, offset=offset)
+
+    async def scrub_email(self, email: str) -> None:
+        await self._log.scrub_email(email)
+
+
+async def test_the_log_finds_the_rows_on_an_address(world: AdminWorld) -> None:
+    """Kurvenschmiede's G9: an invitation's rows name an address and no account."""
+    admin, token = await world.admin_token()
+    user = world.account()
+    for action, target_id, email in (
+        ("deactivate", user.id, user.email),
+        ("invite", None, "new@example.org"),
+        ("invite_revoke", None, "new@example.org"),
+    ):
+        await world.log.add(
+            admin_action_record(
+                action, actor_id=admin.id, target_user_id=target_id, target_email=email, now=world.clock()
+            )
+        )
+    found = (await world.call("GET", "/admin/actions?target_email=%20New@Example.org%20", token=token)).json()
+    assert found["total"] == 2 and {row["action"] for row in found["actions"]} == {"invite", "invite_revoke"}
+    both = await world.call("GET", f"/admin/actions?target={user.id}&target_email=new@example.org", token=token)
+    assert both.json()["total"] == 0
+    world.log = _LogWithoutSearch(world.log)  # type: ignore[assignment]
+    refused = await world.call("GET", "/admin/actions?target_email=new@example.org", token=token)
+    assert refused.status_code == 501
+    assert (await world.call("GET", "/admin/actions", token=token)).json()["total"] == 3
 
 
 # ── the overview ────────────────────────────────────────────────────────────
@@ -552,6 +592,7 @@ async def test_an_operator_counts_the_deletion_requests_and_a_demo_admin_sees_no
 async def test_an_operator_erases_an_account_that_asked(operator_world: AdminWorld) -> None:
     class Erased(ErasureResult):
         handed_over: int = 0
+        by_admin: int = 0
 
     world = AdminWorld(policy=operator_world.deps.policy, admin={"erasure_result_model": Erased})
     async with world.client:
@@ -559,8 +600,8 @@ async def test_an_operator_erases_an_account_that_asked(operator_world: AdminWor
         user = world.account(is_active=False, deletion_requested_at=world.clock())
         purged: list[Any] = []
 
-        async def erase(account: MemoryUser) -> dict[str, Any]:
-            return {"handed_over": 2}
+        async def erase(account: MemoryUser, *, actor_id: int | None) -> dict[str, Any]:
+            return {"handed_over": 2, "by_admin": int(actor_id == admin.id)}
 
         async def purge_files(keys: Any) -> None:
             purged.append(list(keys))
@@ -574,7 +615,7 @@ async def test_an_operator_erases_an_account_that_asked(operator_world: AdminWor
         assert code(await world.call("POST", path, token=token)) == "confirmation_required"
         response = await world.call("POST", path, token=token, json=TYPED)
         assert response.status_code == 200, response.text
-        assert response.json() == {"feedback_anonymised": 1, "handed_over": 2}
+        assert response.json() == {"feedback_anonymised": 1, "handed_over": 2, "by_admin": 1}
         assert await world.users.get(user.id) is None and purged == [["feedback/x.png"]]
         levels = (await world.call("GET", "/admin/users", token=token)).json()["levels"]
         assert levels["erase"] == "type_email"
@@ -633,30 +674,40 @@ def test_a_policy_that_names_a_role_the_app_has_not_is_refused(
 # ── the roles an admin gives are the roles an invitation names (0.30) ──────
 
 
-async def test_an_app_s_invitable_roles_are_the_roles_the_role_change_gives() -> None:
-    world = AdminWorld(policy=replace(_auth_policy(), invitable_roles=("MEMBER",)))
+async def test_invitable_roles_do_not_limit_what_the_role_change_gives() -> None:
+    """Staunlabor and Kurvenschmiede (G8): invite as a member, promote to admin later."""
+    world = AdminWorld(policy=replace(_auth_policy(), invitable_roles=("MEMBER", "REVIEWER")))
     async with world.client:
         _, token = await world.admin_token()
         user = world.account()
-        refused = await world.call(
+        promoted = await world.call(
+            "POST", f"/admin/users/{user.id}/role", token=token, json={"role": "ADMIN", "acknowledged": True}
+        )
+        assert promoted.status_code == 200, promoted.text
+    narrow = AdminWorld(admin={"policy": AdminPolicy(grantable=("MEMBER",))})
+    async with narrow.client:
+        _, token = await narrow.admin_token()
+        user = narrow.account()
+        refused = await narrow.call(
             "POST", f"/admin/users/{user.id}/role", token=token, json={"role": "ADMIN", "acknowledged": True}
         )
         assert (refused.status_code, code(refused)) == (422, "role_not_grantable")
 
 
-def test_grantable_and_invitable_roles_that_disagree_are_refused() -> None:
+def test_an_invitable_role_must_be_grantable_or_the_reviewer_role() -> None:
     from eifi1_server_kit.user_admin.router import UserAdminDeps, user_admin_router
     from tests.auth._world import World
 
-    auth = World(policy=replace(_auth_policy(), invitable_roles=("MEMBER",))).deps
+    def build(invitable: tuple[str, ...], grantable: tuple[str, ...] | None = None) -> None:
+        auth = World(policy=replace(_auth_policy(), invitable_roles=invitable)).deps
+        user_admin_router(UserAdminDeps(auth=auth, roster=lambda: None, policy=AdminPolicy(grantable=grantable)))
+
+    build(("MEMBER",), ("ADMIN", "MEMBER"))  # a subset: invite members, promote admins
+    build(("MEMBER", "REVIEWER"))  # the reviewer role is invitable, though only /reviewer gives it
     with pytest.raises(ValueError, match="invitable_roles"):
-        user_admin_router(
-            UserAdminDeps(auth=auth, roster=lambda: None, policy=AdminPolicy(grantable=("ADMIN", "MEMBER")))
-        )
+        build(("MEMBER", "ADMIN"), ("MEMBER",))  # an invitation would give what an admin cannot
     with pytest.raises(ValueError, match="OWNER"):
-        bad = World(policy=replace(_auth_policy(), invitable_roles=("MEMBER", "OWNER"))).deps
-        user_admin_router(UserAdminDeps(auth=bad, roster=lambda: None))
-    user_admin_router(UserAdminDeps(auth=auth, roster=lambda: None, policy=AdminPolicy(grantable=("MEMBER",))))
+        build(("MEMBER", "OWNER"))
 
 
 def _auth_policy() -> Any:
@@ -697,3 +748,12 @@ def test_the_router_names_its_extra_without_fastapi(monkeypatch: pytest.MonkeyPa
     monkeypatch.setitem(sys.modules, "fastapi", None)
     with pytest.raises(ImportError, match=r"eifi1-server-kit\[fastapi\]"):
         importlib.import_module("eifi1_server_kit.user_admin.router")
+
+
+async def test_the_admin_routes_share_the_account_routes_window(world: AdminWorld) -> None:
+    from eifi1_server_kit.auth import AuthLimiters, Budget
+
+    _, token = await world.admin_token()
+    world.app.state.auth_limiters = AuthLimiters(requests=Budget(1, 60))
+    assert (await world.call("GET", "/admin/users", token=token)).status_code == 200
+    assert (await world.call("GET", "/admin/actions", token=token)).status_code == 429

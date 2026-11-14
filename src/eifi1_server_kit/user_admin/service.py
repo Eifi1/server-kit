@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
+from eifi1_server_kit.auth.accounts import normalise_email
 from eifi1_server_kit.auth.limits import AuthLimiters
 from eifi1_server_kit.auth.ports import AccountRow, AdminActionLog, InvitationStore, UserStore
 from eifi1_server_kit.auth.service import AccountPolicy, AccountService, SessionsEndedReason
@@ -57,6 +58,7 @@ from eifi1_server_kit.user_admin.attention import AdminAttention
 from eifi1_server_kit.user_admin.audit import admin_action_record
 from eifi1_server_kit.user_admin.deletion import DeletionMode
 from eifi1_server_kit.user_admin.errors import AccountError, AccountErrorCode
+from eifi1_server_kit.user_admin.ports import AdminActionsByEmail
 from eifi1_server_kit.user_admin.roster import SORT_KEYS, STATE_TOKENS, parse_roster_query
 from eifi1_server_kit.user_admin.rules import refuse_self, require_confirmation
 from eifi1_server_kit.user_admin.schemas import (
@@ -139,19 +141,20 @@ class AdminPolicy:
     app_actions: tuple[AdminAction, ...] = ()
 
     def grantable_roles(self, accounts: AccountPolicy) -> frozenset[str]:
-        """The roles the role change gives — one source with the invitations' (0.30):
-        ``grantable``, else ``AccountPolicy.invitable_roles``, else every role but the reviewer
-        role."""
+        """The roles the role change gives: ``grantable``, else every role but the reviewer
+        role (which ``PUT /{id}/reviewer`` gives). Since 0.31 not limited by
+        ``AccountPolicy.invitable_roles``: an app invites members and promotes an admin later
+        (Staunlabor, Kurvenschmiede's G8). ``accounts`` stays for an app that subclasses this."""
+        del accounts
         if self.grantable is not None:
             return frozenset(self.grantable)
-        if accounts.invitable_roles is not None:
-            return frozenset(accounts.invitable_roles)
         return frozenset(role for role in self.roles if role != self.reviewer_role)
 
     def check(self, accounts: AccountPolicy) -> None:
-        """Refuse a policy that names a role the app does not have, and a ``grantable`` that
-        disagrees with ``AccountPolicy.invitable_roles`` (:class:`ValueError`): an admin gives
-        the roles an invitation may name, and no other."""
+        """Refuse a policy that names a role the app does not have, and an invitable role an
+        admin could not give (:class:`ValueError`): an invitation names a grantable role, or the
+        reviewer role, never more than the role change gives (0.31: a subset, no longer the
+        same list)."""
         named = {
             "the admin role": accounts.admin_role,
             "the default role": accounts.default_role,
@@ -162,11 +165,13 @@ class AdminPolicy:
         for what, role in named.items():
             if role is not None and role not in self.roles:
                 raise ValueError(f"AdminPolicy.roles lacks {what}, {role!r}: {', '.join(self.roles)}")
-        invitable = accounts.invitable_roles
-        if self.grantable is not None and invitable is not None and set(self.grantable) != set(invitable):
+        allowed = self.grantable_roles(accounts) | {self.reviewer_role} - {None}
+        beyond = [role for role in accounts.invitable_roles or () if role not in allowed]
+        if beyond:
             raise ValueError(
-                f"AdminPolicy.grantable {self.grantable} and AccountPolicy.invitable_roles {invitable} disagree: "
-                "an admin gives the roles an invitation may name; set one of them"
+                f"AccountPolicy.invitable_roles names {', '.join(beyond)}, which the role change does not give "
+                f"(grantable: {', '.join(sorted(self.grantable_roles(accounts)))}): an invitation never gives "
+                "more than an admin can"
             )
 
 
@@ -523,11 +528,22 @@ class UserAdminService[UserT: AccountRow]:
 
     # --- the log ---------------------------------------------------------------------------
 
-    async def actions(self, *, limit: int, offset: int, target_user_id: int | None) -> dict[str, Any]:
-        """``GET /admin/actions?limit=&offset=&target=`` (§4.3): newest first, with the actor
-        and the target joined as people (an erased one is ``None``) and the groups named by
-        the ``group_names`` hook."""
-        rows, total = await self._log.page(target_user_id=target_user_id, limit=limit, offset=offset)
+    async def actions(
+        self, *, limit: int, offset: int, target_user_id: int | None, target_email: str | None = None
+    ) -> dict[str, Any]:
+        """``GET /admin/actions?limit=&offset=&target=&target_email=`` (§4.3): newest first,
+        with the actor and the target joined as people (an erased one is ``None``) and the
+        groups named by the ``group_names`` hook. ``target_email`` (0.31) needs a log with
+        :class:`~eifi1_server_kit.user_admin.ports.AdminActionsByEmail`; without it,
+        :class:`NotImplementedError`."""
+        if target_email is None:
+            rows, total = await self._log.page(target_user_id=target_user_id, limit=limit, offset=offset)
+        elif isinstance(self._log, AdminActionsByEmail):
+            rows, total = await self._log.page_by_email(
+                target_email=normalise_email(target_email), target_user_id=target_user_id, limit=limit, offset=offset
+            )
+        else:
+            raise NotImplementedError("the admin log cannot page by address (user_admin.ports.AdminActionsByEmail)")
         people: dict[int, PersonRef | None] = {}
         for person_id in {row.actor_id for row in rows} | {row.target_user_id for row in rows}:
             if person_id is not None:

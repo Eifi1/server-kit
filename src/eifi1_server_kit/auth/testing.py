@@ -534,9 +534,27 @@ class InMemoryAdminActionLog:
         ordered = _newest_first(rows, lambda row: (row.at, row.id))
         return ordered[offset : offset + limit], len(ordered)
 
+    async def page_by_email(
+        self, *, target_email: str, target_user_id: int | None, limit: int, offset: int
+    ) -> tuple[Sequence[MemoryAdminActionRow], int]:
+        """0.31's :class:`~eifi1_server_kit.user_admin.ports.AdminActionsByEmail`."""
+        rows = [
+            row
+            for row in self.rows.values()
+            if row.target_email == target_email and (target_user_id is None or row.target_user_id == target_user_id)
+        ]
+        ordered = _newest_first(rows, lambda row: (row.at, row.id))
+        return ordered[offset : offset + limit], len(ordered)
+
     async def scrub_email(self, email: str) -> None:
         for row in self.rows.values():
             if row.target_email == email:
+                row.target_email = None
+
+    async def scrub_account(self, user_id: int) -> None:
+        """0.31's :class:`~eifi1_server_kit.user_admin.ports.AccountLogScrub`."""
+        for row in self.rows.values():
+            if row.target_user_id == user_id:
                 row.target_email = None
 
 
