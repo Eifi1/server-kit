@@ -517,7 +517,9 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
         """Renew the session (§11): every refusal ``401 session_ended``."""
         return await session_answer(accounts, await accounts.refresh(payload, ip=deps.client_address(request)))
 
-    @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+    @router.post(
+        "/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=_guards(deps, "signing out everywhere")
+    )
     async def logout(user: User, accounts: Accounts) -> Response:
         """Sign out everywhere: every session ends, this one included (§6.3)."""
         await accounts.logout_everywhere(user)

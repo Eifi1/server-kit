@@ -40,6 +40,9 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ### Changed
 
+* **auth (keksdose's KG-11):** `POST /auth/logout` carries the app's `demo_guard` ("signing out
+  everywhere"), as the password, address, passkey, deletion and export routes do; a demo still
+  ends its own session (`DELETE /auth/sessions/current`).
 * **auth:** 0.31's `{group}` in an app's own `invitation` table: a group invitation is its own
   mail now, so an app that words it itself names `group_invitation` in `AuthDeps.mail_texts`.
 * **auth (Kurvenschmiede):** an admin's invitation whose body names no `locale` is written in
