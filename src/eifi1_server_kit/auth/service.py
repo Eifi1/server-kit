@@ -320,6 +320,10 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: the app's (billing, budget guests); the extras ride on the answer and, since 0.31, are
     #: the ``deletion_request`` row's detail (ids, counts and flags: ``audit_detail``'s rule).
     on_deletion_requested: Callable[[UserT], Awaitable[_Extras | None]] | None = None
+    #: Before a deletion request changes anything (0.32, keksdose's KG-8): raise a kit
+    #: refusal to refuse it (``household_has_members``), so nothing is deactivated, ended,
+    #: mailed or logged — not a rollback after the fact.
+    deletion_requesting: Callable[[UserT], Awaitable[None]] | None = None
     #: Seam 5: an admin reactivated the account before its erasure (0.30's admin routes); what
     #: it answers is the ``deletion_cancel`` row's detail (0.31), ``None`` none.
     on_deletion_withdrawn: Callable[[UserT], Awaitable[_Extras | None]] | None = None
@@ -1542,6 +1546,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 active_admins=await self._users.count_active(role=self._policy.admin_role),
                 change_removes_admin=True,
             )
+        if self._hooks.deletion_requesting is not None:
+            await self._hooks.deletion_requesting(user)
         now = self._now()
         scheduled = deletion_schedule(now, self._policy.deletion_mode, self._policy.deletion_days)
         user = await self._users.apply(

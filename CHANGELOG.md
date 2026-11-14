@@ -42,6 +42,9 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `deactivate`, `password_change_require` and `reactivate` rows (keksdose's
   `revoked_api_token_count`, `live_api_token_count`). `AccountService.end_sessions_noting(user,
   reason)` answers the count and the hook's mapping; `end_sessions` still answers the count.
+* **auth (keksdose's KG-8):** `AuthHooks.deletion_requesting(user)`, after the kit's own checks and
+  before a deletion request changes anything: a kit refusal it raises (keksdose's
+  `household_has_members`) refuses the request with nothing deactivated, ended, mailed or logged.
 
 ### Changed
 

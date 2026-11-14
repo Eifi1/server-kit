@@ -200,3 +200,27 @@ async def test_a_demo_neither_deletes_nor_exports(cutoff_world: World) -> None:
         "POST", "/auth/me/deletion", token=token, json={"password": PASSWORD, "confirm_email": demo.email}
     )
     assert code(response) == "demo_refused"
+
+
+async def test_the_app_may_refuse_a_deletion_before_anything_changes() -> None:
+    """keksdose's KG-8 (0.32): ``household_has_members`` refuses before the account is
+    deactivated, its sessions end or a mail goes, not by a rollback after."""
+    from eifi1_server_kit.user_admin.errors import AccountError, AccountErrorCode
+
+    asked: list[int] = []
+
+    async def deletion_requesting(account: MemoryUser) -> None:
+        asked.append(account.id)
+        raise AccountError(AccountErrorCode.HOUSEHOLD_HAS_MEMBERS)
+
+    world = World()
+    async with world.client:
+        user = world.account()
+        token = await world.token_of(user)
+        world.hooks = AuthHooks(deletion_requesting=deletion_requesting)
+        body = {"password": PASSWORD, "confirm_email": user.email}
+        refused = await world.call("POST", "/auth/me/deletion", token=token, json=body)
+        assert (refused.status_code, code(refused)) == (409, "household_has_members")
+        assert asked == [user.id] and user.is_active and user.deletion_requested_at is None
+        assert world.log.rows == [] and not world.mailer.of("account_deletion")
+        assert (await world.call("GET", "/auth/me", token=token)).status_code == 200
