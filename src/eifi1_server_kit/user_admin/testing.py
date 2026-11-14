@@ -187,9 +187,9 @@ async def check_roster_store(
     roster: Any,
     users: UserStore[Any],
     *,
-    admin_role: str = "admin",
-    member_role: str = "member",
-    reviewer_role: str = "reviewer",
+    admin_role: str = "ADMIN",
+    member_role: str = "MEMBER",
+    reviewer_role: str = "REVIEWER",
     add_demo: Callable[[NewAccount], Awaitable[AccountRow]] | None = None,
 ) -> None:
     """Does the app's roster keep the port's promises (user-admin §3.1)? Raises
