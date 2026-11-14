@@ -45,6 +45,10 @@ entry in the Conventional Commit; this file is assembled from them at release.
 * **auth (keksdose's KG-8):** `AuthHooks.deletion_requesting(user)`, after the kit's own checks and
   before a deletion request changes anything: a kit refusal it raises (keksdose's
   `household_has_members`) refuses the request with nothing deactivated, ended, mailed or logged.
+* **auth (keksdose's KG-2):** `AuthHooks.bind_anonymous(user)`, the app's binding on a signed-out
+  path that names an account (a reset, a verification or an address change's link, the forced
+  change's challenge), called as soon as the account is loaded and before any other hook reads
+  under it (keksdose's key wraps are FORCE row-level security on the current user).
 
 ### Changed
 

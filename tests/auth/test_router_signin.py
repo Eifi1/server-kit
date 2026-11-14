@@ -402,3 +402,25 @@ async def test_an_empty_bootstrap_list_is_no_list() -> None:
     async with world.client:
         response = await world.call("POST", "/auth/register", json={"email": "eve@example.com", **REGISTER})
         assert response.status_code == 201 and response.json()["user"]["role"] == "ADMIN"
+
+
+async def test_the_forced_change_binds_the_account_before_its_hook(world: World) -> None:
+    """keksdose's KG-2 (0.32): the set-password step reads the key wrap signed out."""
+    user = world.account(password_change_required_at=world.clock())
+    events: list[str] = []
+
+    async def bind_anonymous(account: MemoryUser) -> None:
+        events.append("bind")
+
+    async def password_changing(account: MemoryUser, body: Any) -> dict[str, Any]:
+        events.append("password_changing")
+        return {}
+
+    world.hooks = AuthHooks(bind_anonymous=bind_anonymous, password_changing=password_changing)
+    challenge = (await world.call("POST", "/auth/login", json={"email": user.email, "password": PASSWORD})).json()
+    await world.call(
+        "POST",
+        "/auth/login/set-password",
+        json={"challenge_token": challenge["challenge_token"], "new_password": "a new one"},
+    )
+    assert events == ["bind", "password_changing"]

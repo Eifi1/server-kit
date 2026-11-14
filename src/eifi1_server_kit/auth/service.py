@@ -295,6 +295,11 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: Seam 2: every signed-in request, after the kit's checks: bind the request (kastlan's
     #: RLS variables), or refuse (its 401 for a lost membership, 403 for a closed company).
     bind: Callable[[UserT, Mapping[str, Any]], Awaitable[None]] | None = None
+    #: The same on a signed-out path that names an account (0.32, keksdose's KG-2): a mailed
+    #: link (reset, verification, address change) or a sign-in challenge (the forced
+    #: change). Called as soon as the account is loaded, before any other hook reads under
+    #: it (keksdose's key wraps are FORCE row-level security on the current user).
+    bind_anonymous: Callable[[UserT], Awaitable[None]] | None = None
     #: Seam 4: every session of the account ended, and why: what else ends with them.
     #: It may answer a mapping (0.32, keksdose's KG-7): its counts join the detail of the
     #: admin's row that ended the sessions (deactivate, password_change_require).
@@ -825,6 +830,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         user = await self._account_of(claims)
         if user is None or not user.is_active:
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
+        await self._bind_anonymous(user)
         if user.password_change_required_at is None:
             raise AuthError(AuthErrorCode.PASSWORD_CHANGE_NOT_REQUIRED)
         if self._hasher.verify(body.new_password, user.password_hash):
@@ -1045,7 +1051,12 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         user = await self._users.get(row.user_id)
         if user is None:
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
+        await self._bind_anonymous(user)
         return row, user
+
+    async def _bind_anonymous(self, user: UserT) -> None:
+        if self._hooks.bind_anonymous is not None:
+            await self._hooks.bind_anonymous(user)
 
     async def confirm_email_change(self, token: str, *, ip: str) -> EmailChangeConfirmed:
         """``POST /auth/me/email/confirm`` (user-admin §6.2), anonymous: the address switches
