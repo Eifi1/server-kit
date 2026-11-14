@@ -108,6 +108,8 @@ MODULES: tuple[tuple[str, str | None, str | None], ...] = (
     # Their routes, behind the `fastapi` extra: a member's and a manager's `/teams`, the admin's
     # `/admin/teams`.
     ("eifi1_server_kit.teams.router", "docs/user-admin-harmonization.md", "§11"),
+    # Their ready tables and store, behind the `sql` extra: Kurvenschmiede's, column for column.
+    ("eifi1_server_kit.teams.sql", "docs/user-admin-harmonization.md", "§11"),
     ("eifi1_server_kit.settings", "docs/settings-harmonization.md", "§6"),
     ("eifi1_server_kit.demo", "docs/landing-demo-harmonization.md", "§6"),
     ("eifi1_server_kit.dev_switch", "docs/top-bar-harmonization.md", "§2.7, §6.1, §6.2, §6.3"),

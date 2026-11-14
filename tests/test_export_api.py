@@ -148,8 +148,9 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         "eifi1_server_kit.feedback.sql",
         "eifi1_server_kit.translation_review.sql",
         "eifi1_server_kit.notifications.router",
-        # The teams' routes (0.32), behind the `fastapi` extra.
+        # The teams' routes (0.32), behind the `fastapi` extra, and their tables, behind `sql`.
         "eifi1_server_kit.teams.router",
+        "eifi1_server_kit.teams.sql",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.translation_review.router",
     }

@@ -63,6 +63,7 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.teams",
         "eifi1_server_kit.teams.router",
         "eifi1_server_kit.teams.service",
+        "eifi1_server_kit.teams.sql",
         "eifi1_server_kit.teams.testing",
         "eifi1_server_kit.tours",
         "eifi1_server_kit.tours.router",
