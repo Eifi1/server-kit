@@ -69,6 +69,11 @@ jwt = ["pyjwt>=2.10.0"]
 # The apps' floor, no ceiling: 4.x truncates past 72 bytes and 5.x raises, and the hasher
 # answers the same on both.
 bcrypt = ["bcrypt>=4.0.0"]
+# `auth.seal.SecretBox` (0.32), the account layer's `SecretSeal` ready-made: the TOTP secret
+# sealed with AES-256-GCM through pyca's cryptography, as keksdose seals it. Imported when it
+# seals or opens; the errors, the AAD and the two-factor routes need nothing. keksdose's floor,
+# no ceiling.
+seal = ["cryptography>=42"]
 
 [project.urls]
 Contract = "https://github.com/Eifi1/ui-kit/blob/main/docs/feedback-harmonization.md"

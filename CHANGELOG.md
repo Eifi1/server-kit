@@ -12,6 +12,37 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ### Added
 
+* **auth (keksdose's KG-1): two-factor sign-in**, keksdose's rules exactly. With
+  `AuthDeps(two_factor=…, secret_seal=…)` (one without the other is a `ValueError`) the router
+  mounts `POST /auth/login/2fa {challenge_token, code}` and `POST /auth/me/2fa/setup {password}`,
+  `/enable {code}` and `/disable {password, code}`. `/login` answers an account with 2FA on
+  with `{requires_2fa: true, challenge_token}` before a forced password change; the code step
+  checks active, still on, readable, unspent, the code (its step spent under the row's lock),
+  then the forced change, then the session on the shared computer the sign-in chose. The setup
+  takes the password every time and keeps the new secret pending beside the live one until a
+  code confirms it (charged to the password-check window); switching off takes the password and
+  a live code, or the password alone for a secret this server cannot open. A passkey sign-in
+  counts as both factors; `/auth/me` answers `totp_enabled` from the store. The ports
+  `TwoFactorState`, `TwoFactorStore` (`state(user_id, *, lock=False)`, `save`) and `SecretSeal`;
+  `AccountService(two_factor=, secret_seal=)` with `login_two_factor`, `begin_two_factor`,
+  `enable_two_factor` and `disable_two_factor`; the result `TwoFactorChallengeIssued`; the
+  bodies `TwoFactorLogin`, `TwoFactorSetupRequest`, `TwoFactorConfirm`,
+  `TwoFactorDisableRequest` and the answer `TwoFactorSetup {secret, otpauth_url}`; the codes
+  `two_factor_invalid` (400: wrong, malformed and replayed alike), `two_factor_unavailable`
+  (503: a key missing or no longer opening the secret) and `two_factor_not_pending` (404).
+* **auth.seal (the `seal` extra, `cryptography>=42`):** `SecretBox(keys, *, label=…)`, keksdose's
+  `secret_box` lifted: AES-256-GCM, `enc:v1:` values bound to their row by the AAD
+  (`totp_secret_aad`, `totp_pending_secret_aad`, keksdose's bytes), several keys newest first,
+  never a plaintext fallback; `SecretKeyMissingError` and `SecretUnreadableError` under
+  `SecretSealError`. keksdose's stored values open with `label=b"keksdose.secret_box.v1"`.
+* **auth (0.32):** `new_totp_secret()`, `totp_uri(secret, *, account, issuer)` (pyotp's
+  `provisioning_uri` byte for byte) and `totp_code(secret, *, now)`, the code an authenticator
+  shows, for tests.
+* **auth.sql:** `TwoFactorColumns` (`totp_enabled`, `totp_secret`, `totp_pending_secret`,
+  `totp_last_step`) on the account model and `SqlTwoFactorStore`, which locks the row `FOR
+  UPDATE` where the kit asks. **auth.testing:** `InMemoryTwoFactorStore`,
+  `check_two_factor_store` and `totp_code`.
+
 * **auth.router (Kurvenschmiede's gap 1):** `install_account_layer(app, deps)` and the
   placeholders `app_current_user`, `app_admin` and `app_account_service`. An app's own routers
   are made when their module is imported, before its `AuthDeps` exist, so they could not call

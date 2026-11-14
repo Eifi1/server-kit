@@ -136,6 +136,8 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         # The ports' ready signer and hasher (0.30), behind the `jwt` and `bcrypt` extras.
         "eifi1_server_kit.auth.bcrypt_hasher",
         "eifi1_server_kit.auth.jwt_signer",
+        # The ports' ready seal for the TOTP secret (0.32), behind the `seal` extra.
+        "eifi1_server_kit.auth.seal",
         # The admin half (0.30): its ports, scope and service, beside its routes.
         "eifi1_server_kit.user_admin.ports",
         "eifi1_server_kit.user_admin.router",

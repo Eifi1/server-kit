@@ -3,7 +3,9 @@ check passes on the stores, and each fails on a store that breaks one."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -26,6 +28,7 @@ from eifi1_server_kit.auth.ports import (
     PasswordHasher,
     SessionStore,
     TokenSigner,
+    TwoFactorState,
     UserStore,
 )
 from eifi1_server_kit.auth.testing import (
@@ -38,6 +41,7 @@ from eifi1_server_kit.auth.testing import (
     InMemoryOneTimeTokenStore,
     InMemoryPasskeyStore,
     InMemorySessionStore,
+    InMemoryTwoFactorStore,
     InMemoryUserStore,
     MemoryAccountRow,
     MemoryAdminActionRow,
@@ -54,7 +58,9 @@ from eifi1_server_kit.auth.testing import (
     check_one_time_token_store,
     check_passkey_store,
     check_session_store,
+    check_two_factor_store,
     check_user_store,
+    totp_code,
 )
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.clock import Clock
@@ -549,6 +555,35 @@ async def test_check_passkey_store_passes_on_the_memory_store_beside_other_passk
         await check_passkey_store(store, user_id=1, other_user_id=2)
         assert [row.credential_id for row in store.rows.values()] == [b"theirs"]
         assert len(store.spent) == 4
+
+
+# ── The second factor (0.32) ────────────────────────────────────────────────
+
+
+async def test_check_two_factor_store_passes_on_the_memory_store_and_puts_states_back() -> None:
+    store = InMemoryTwoFactorStore()
+    own = TwoFactorState(enabled=True, secret="enc:v1:own", last_step=7)
+    await store.save(1, own)
+    await check_two_factor_store(store, user_id=1, other_user_id=2)
+    assert store.states == {1: own, 2: TwoFactorState()}
+    assert store.locked == [1]
+
+
+async def test_check_two_factor_store_names_a_store_that_drops_a_field() -> None:
+    class Forgetful(InMemoryTwoFactorStore):
+        async def save(self, user_id: int, state: TwoFactorState) -> None:
+            await super().save(user_id, dataclasses.replace(state, pending_secret=None))
+
+    with pytest.raises(AssertionError, match="save: every field reads back"):
+        await check_two_factor_store(Forgetful(), user_id=1, other_user_id=2)
+
+
+def test_totp_code_is_what_an_authenticator_shows() -> None:
+    """RFC 6238 Appendix B's SHA-1 vectors, the last six digits of each."""
+    secret = base64.b32encode(b"12345678901234567890").decode()
+    assert totp_code(secret, now=59) == "287082"
+    assert totp_code(secret, now=1111111109) == "081804"
+    assert totp_code(secret, now=datetime(2033, 5, 18, 3, 33, 20, tzinfo=UTC)) == "279037"
 
 
 async def test_a_credential_id_is_registered_once() -> None:

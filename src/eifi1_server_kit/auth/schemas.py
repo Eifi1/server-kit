@@ -502,6 +502,63 @@ class SetPasswordRequest(BaseModel):
     new_password: NewPassword
 
 
+#: A second factor's code as typed: keksdose's six to eight characters (six digits, with room
+#: for "123 456"). The kit reads it with :func:`~eifi1_server_kit.auth.totp_matched_step`, and
+#: anything that is not six digits then is the route's ``two_factor_invalid``, not a 422.
+TwoFactorCodeText = Annotated[str, Field(min_length=6, max_length=8)]
+
+
+class TwoFactorLogin(BaseModel):
+    """``POST /auth/login/2fa {challenge_token, code}`` (§5.1, 0.32; keksdose
+    ``TwoFactorVerifyRequest``, whose field was ``totp_code``): the sign-in's second step."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: _ChallengeToken
+    code: TwoFactorCodeText
+
+
+class TwoFactorSetupRequest(BaseModel):
+    """``POST /auth/me/2fa/setup {password}`` (0.32; keksdose ``TwoFactorSetupRequest``): the
+    account's password on EVERY setup, a first one as much as a replacement. A bearer token
+    alone must not change how the account signs in: a factor added from a stolen session
+    pairs the thief's authenticator, and the owner's next sign-in asks a code they do not have
+    (keksdose's AU-3). The password is also the way back from a lost authenticator: a new
+    setup replaces the secret without the old one's code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: ExistingPassword
+
+
+class TwoFactorSetup(BaseModel):
+    """The setup's answer: the new secret (base32, for typing in) and its ``otpauth://`` URI,
+    which the page draws as a QR code (ui-kit's own encoder; keksdose's ``qr_svg`` is the
+    kit's front's). PENDING until a code from it confirms it: what signs in now keeps doing so."""
+
+    secret: str
+    otpauth_url: str
+
+
+class TwoFactorConfirm(BaseModel):
+    """``POST /auth/me/2fa/enable {code}`` (0.32; keksdose ``TwoFactorEnableRequest``): a code
+    from the pending secret makes it the factor that signs in."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: TwoFactorCodeText
+
+
+class TwoFactorDisableRequest(BaseModel):
+    """``POST /auth/me/2fa/disable {password, code}`` (0.32; keksdose's): the password and a
+    live code. A secret this server cannot open is switched off by the password alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: ExistingPassword
+    code: TwoFactorCodeText
+
+
 class PasswordChangeRequest(BaseModel):
     """``POST /auth/me/password {current_password, new_password}`` (§6.3; keksdose
     ``SignInPasswordChangeRequest``, which adds its key wrap in a subclass)."""

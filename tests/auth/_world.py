@@ -12,7 +12,9 @@ from fastapi import FastAPI, Request
 from eifi1_server_kit.auth import AuthLimiters
 from eifi1_server_kit.auth.passkeys import RelyingParty
 from eifi1_server_kit.auth.router import AuthDeps, auth_router, invitations_admin_router
+from eifi1_server_kit.auth.seal import SecretBox
 from eifi1_server_kit.auth.service import AccountLinks, AccountPolicy, AccountService, AuthHooks
+from eifi1_server_kit.auth.testing import InMemoryTwoFactorStore
 from eifi1_server_kit.errors import install_contract_error_handlers
 from tests.auth_fakes import (
     Clock,
@@ -44,13 +46,17 @@ RP = RelyingParty(rp_id="staunlabor.example", rp_name="Staunlabor", origins=(ORI
 class World:
     """One app: its stores, its objects, the app and a client."""
 
-    def __init__(self, *, cutoff: bool = False, passkeys: bool = True, **options: Any) -> None:
+    def __init__(
+        self, *, cutoff: bool = False, passkeys: bool = True, two_factor: bool = False, **options: Any
+    ) -> None:
         self.clock = Clock()
         self.users = MemoryUserStore(self.clock, cutoff=cutoff)
         self.sessions = MemorySessionStore()
         self.tokens = MemoryTokenStore(self.clock)
         self.invitations = MemoryInvitationStore(self.clock)
         self.passkey_store = MemoryPasskeyStore(self.clock)
+        self.two_factor_store = InMemoryTwoFactorStore()
+        self.seal = SecretBox("test-key")
         self.log = MemoryActionLog()
         self.after = RecordingAfterCommit()
         self.signer = FakeSigner(self.clock)
@@ -77,6 +83,8 @@ class World:
         }
         if passkeys:
             values.update(passkeys=lambda: self.passkey_store, relying_party=RP)
+        if two_factor:
+            values.update(two_factor=lambda: self.two_factor_store, secret_seal=self.seal)
         values.update(options)
         self.deps = AuthDeps(**values)
         self.app = FastAPI()

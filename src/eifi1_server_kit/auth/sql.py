@@ -19,6 +19,8 @@ app writes the same nine tables again, and the copies drift the way the routes d
   budget) and opaque to the kit.
 * :class:`PasskeyColumns` and :class:`SpentChallengeColumns`: WebAuthn credentials, and the
   challenges already answered, so that each is accepted once.
+* :class:`TwoFactorColumns` (0.32): the second factor's four columns on the account row,
+  keksdose's ``users.totp_*``, for an app with two-factor sign-in.
 * :class:`AdminActionColumns`: the activity log, the fields
   :func:`~eifi1_server_kit.user_admin.admin_action_record` returns, plus ``scope``.
 
@@ -30,8 +32,9 @@ of the invitations table as it is.
 **The stores** implement :mod:`~eifi1_server_kit.auth.ports` over models built from these
 mixins, on the request's ``AsyncSession``: :class:`SqlUserStore`, :class:`SqlSessionStore`,
 :class:`SqlOneTimeTokenStore`, :class:`SqlInvitationStore`, :class:`SqlPasskeyStore`,
-:class:`SqlAdminActionLog`, and :class:`SqlAfterCommit` for the work that waits for the
-commit; and since 0.30 :class:`SqlRosterStore`. Every write flushes and none commits, but :meth:`SqlAfterCommit.commit_now`, the one
+the second factor's :class:`SqlTwoFactorStore` (0.32), :class:`SqlAdminActionLog`, and
+:class:`SqlAfterCommit` for the work that waits for the commit; and since 0.30
+:class:`SqlRosterStore`. Every write flushes and none commits, but :meth:`SqlAfterCommit.commit_now`, the one
 place the port allows it. A store sets only mapped attributes: a value for a column the
 model lacks (a kastlan ``company_id`` on a log without one) is a :class:`ValueError`, never
 a plain attribute the flush silently leaves out.
@@ -97,7 +100,14 @@ except ImportError as exc:
         "eifi1_server_kit.auth.sql needs SQLAlchemy: install the kit with its sql extra, eifi1-server-kit[sql]."
     ) from exc
 
-from eifi1_server_kit.auth.ports import ACCOUNT_FIELDS, NewAccount, NewInvitation, NewPasskey, NewSession
+from eifi1_server_kit.auth.ports import (
+    ACCOUNT_FIELDS,
+    NewAccount,
+    NewInvitation,
+    NewPasskey,
+    NewSession,
+    TwoFactorState,
+)
 from eifi1_server_kit.auth.schemas import MAX_NAME_LENGTH, MAX_ZONE_LENGTH
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.clock import utc_now
@@ -125,7 +135,9 @@ __all__ = [
     "SqlPasskeyStore",
     "SqlRosterStore",
     "SqlSessionStore",
+    "SqlTwoFactorStore",
     "SqlUserStore",
+    "TwoFactorColumns",
     "UtcDateTime",
     "alembic_render_item",
     "prune_account_rows",
@@ -257,6 +269,21 @@ class SessionCutoffColumn:
     server-kit 0.27's session rows. A new app does without: it ends the rows."""
 
     sessions_invalid_before: Mapped[datetime | None] = mapped_column(_aware(), nullable=True)
+
+
+class TwoFactorColumns:
+    """The second factor on the account row (0.32, keksdose's KG-1 and its ``users.totp_*``):
+    on, the live secret, the pending one, the last accepted step
+    (:class:`~eifi1_server_kit.auth.ports.TwoFactorState`). The secrets hold what the app's
+    :class:`~eifi1_server_kit.auth.ports.SecretSeal` makes — never the plaintext — with room
+    for :class:`~eifi1_server_kit.auth.seal.SecretBox`'s 87 characters. The step is a
+    ``BIGINT``, as a count of 30-second steps since 1970. Placed beside :class:`AccountColumns`
+    on the app's account model; :class:`SqlTwoFactorStore` reads and writes them."""
+
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    totp_pending_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    totp_last_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class SessionColumns(_PointsAtAccounts):
@@ -516,6 +543,41 @@ class SqlUserStore[UserT: AccountColumns]:
 
     async def delete(self, row: UserT) -> None:
         await self._session.delete(row)
+        await self._session.flush()
+
+
+class SqlTwoFactorStore[UserT: TwoFactorColumns]:
+    """:class:`~eifi1_server_kit.auth.ports.TwoFactorStore` over the account model with
+    :class:`TwoFactorColumns` (0.32). ``lock`` reads the row ``FOR UPDATE`` and again from the
+    database (a no-op lock on SQLite, which locks the whole file on a write). An account that
+    does not exist has the empty state, and saving one is a :class:`LookupError`."""
+
+    def __init__(self, session: AsyncSession, model: type[UserT]) -> None:
+        self._session = session
+        self._model = model
+
+    async def state(self, user_id: int, *, lock: bool = False) -> TwoFactorState:
+        if lock:
+            row = await self._session.get(self._model, user_id, with_for_update=True, populate_existing=True)
+        else:
+            row = await self._session.get(self._model, user_id)
+        if row is None:
+            return TwoFactorState()
+        return TwoFactorState(
+            enabled=row.totp_enabled,
+            secret=row.totp_secret,
+            pending_secret=row.totp_pending_secret,
+            last_step=row.totp_last_step,
+        )
+
+    async def save(self, user_id: int, state: TwoFactorState) -> None:
+        row = await self._session.get(self._model, user_id)
+        if row is None:
+            raise LookupError(f"no account {user_id} to save a second factor on")
+        row.totp_enabled = state.enabled
+        row.totp_secret = state.secret
+        row.totp_pending_secret = state.pending_secret
+        row.totp_last_step = state.last_step
         await self._session.flush()
 
 

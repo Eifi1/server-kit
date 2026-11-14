@@ -16,7 +16,9 @@ the reference, cited ``file`` per rule.
 * :mod:`~eifi1_server_kit.auth.totp` — the second factor's code: the time step it matches
   (:func:`totp_matched_step`), the replay rule, a step accepted once
   (:func:`totp_step_accepted`), and one 2FA challenge for one sign-in
-  (:func:`two_factor_challenge_claims`, :func:`two_factor_challenge_is_spent`);
+  (:func:`two_factor_challenge_claims`, :func:`two_factor_challenge_is_spent`); since 0.32 a
+  new secret (:func:`new_totp_secret`), its ``otpauth://`` URI (:func:`totp_uri`) and the code
+  an authenticator shows (:func:`totp_code`, for tests);
 * :mod:`~eifi1_server_kit.auth.sessions` — a session's life on the server (0.27):
   :class:`SessionPolicy`, a shared computer's short session (:func:`session_expired`,
   :func:`refresh_lifetime`, :func:`access_lifetime`, :func:`session_expires_at`);
@@ -120,6 +122,12 @@ from eifi1_server_kit.auth.schemas import (
     TokenRequest,
     TokenResponse,
     TwoFactorChallenge,
+    TwoFactorCodeText,
+    TwoFactorConfirm,
+    TwoFactorDisableRequest,
+    TwoFactorLogin,
+    TwoFactorSetup,
+    TwoFactorSetupRequest,
     UserResponse,
     UtcDateTime,
     WebAuthnCredentialJson,
@@ -171,8 +179,11 @@ from eifi1_server_kit.auth.totp import (
     TOTP_STEP_CLAIM,
     TOTP_STEP_SECONDS,
     TOTP_WINDOW,
+    new_totp_secret,
+    totp_code,
     totp_matched_step,
     totp_step_accepted,
+    totp_uri,
     two_factor_challenge_claims,
     two_factor_challenge_is_spent,
 )
@@ -284,6 +295,12 @@ __all__ = [
     "TokenRequest",
     "TokenResponse",
     "TwoFactorChallenge",
+    "TwoFactorCodeText",
+    "TwoFactorConfirm",
+    "TwoFactorDisableRequest",
+    "TwoFactorLogin",
+    "TwoFactorSetup",
+    "TwoFactorSetupRequest",
     "UserResponse",
     "UtcDateTime",
     "WebAuthnCredentialJson",
@@ -304,6 +321,7 @@ __all__ = [
     "login_failure_delay",
     "mint",
     "name_incomplete",
+    "new_totp_secret",
     "normalise_email",
     "parse_env_list",
     "refresh_claims",
@@ -314,8 +332,10 @@ __all__ = [
     "shared_device_of",
     "tagged_variant",
     "token_is_revoked",
+    "totp_code",
     "totp_matched_step",
     "totp_step_accepted",
+    "totp_uri",
     "two_factor_challenge_claims",
     "two_factor_challenge_is_spent",
     "verified_by_invitation",

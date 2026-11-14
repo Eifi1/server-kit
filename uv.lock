@@ -655,6 +655,9 @@ passkeys = [
 s3 = [
     { name = "minio" },
 ]
+seal = [
+    { name = "cryptography" },
+]
 sql = [
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
@@ -689,6 +692,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bcrypt", marker = "extra == 'bcrypt'", specifier = ">=4.0.0" },
+    { name = "cryptography", marker = "extra == 'seal'", specifier = ">=42" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115.0" },
     { name = "google-cloud-storage", marker = "extra == 'gcs'", specifier = ">=3.0.0" },
     { name = "httpx", marker = "extra == 'billing'", specifier = ">=0.28.0" },
@@ -703,7 +707,7 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.40.0" },
     { name = "webauthn", marker = "extra == 'passkeys'", specifier = ">=2.0.0" },
 ]
-provides-extras = ["images", "mail", "billing", "fastapi", "sync", "sql", "gcs", "s3", "passkeys", "jwt", "bcrypt"]
+provides-extras = ["images", "mail", "billing", "fastapi", "sync", "sql", "gcs", "s3", "passkeys", "jwt", "bcrypt", "seal"]
 
 [package.metadata.requires-dev]
 dev = [

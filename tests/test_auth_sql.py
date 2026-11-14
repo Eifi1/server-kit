@@ -22,7 +22,7 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy.schema import CreateTable
 
 from eifi1_server_kit.auth import sql
-from eifi1_server_kit.auth.ports import NewAccount, NewInvitation, NewPasskey, NewSession
+from eifi1_server_kit.auth.ports import NewAccount, NewInvitation, NewPasskey, NewSession, TwoFactorState
 from eifi1_server_kit.auth.sql import (
     AccountColumns,
     AdminActionColumns,
@@ -40,7 +40,9 @@ from eifi1_server_kit.auth.sql import (
     SqlPasskeyStore,
     SqlRosterStore,
     SqlSessionStore,
+    SqlTwoFactorStore,
     SqlUserStore,
+    TwoFactorColumns,
 )
 from eifi1_server_kit.auth.testing import (
     check_admin_action_log,
@@ -49,6 +51,7 @@ from eifi1_server_kit.auth.testing import (
     check_one_time_token_store,
     check_passkey_store,
     check_session_store,
+    check_two_factor_store,
     check_user_store,
 )
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
@@ -67,7 +70,7 @@ class Base(DeclarativeBase):
     pass
 
 
-class User(AccountColumns, Base):
+class User(AccountColumns, TwoFactorColumns, Base):
     __tablename__ = "users"
 
 
@@ -702,6 +705,32 @@ async def test_the_invitation_store_keeps_the_contract(session: AsyncSession) ->
 async def test_the_passkey_store_keeps_the_contract(session: AsyncSession) -> None:
     one, two = await _ids(session, "p1@example.org", "p2@example.org")
     await check_passkey_store(SqlPasskeyStore(session, Passkey, SpentChallenge), user_id=one, other_user_id=two)
+
+
+async def test_the_two_factor_store_keeps_the_contract(session: AsyncSession) -> None:
+    one, two = await _ids(session, "f1@example.org", "f2@example.org")
+    await check_two_factor_store(SqlTwoFactorStore(session, User), user_id=one, other_user_id=two)
+
+
+async def test_the_two_factor_store_reads_an_unknown_account_as_none_and_will_not_save_on_it(
+    session: AsyncSession,
+) -> None:
+    store = SqlTwoFactorStore(session, User)
+    assert await store.state(999_999) == TwoFactorState()
+    assert await store.state(999_999, lock=True) == TwoFactorState()
+    with pytest.raises(LookupError, match="no account 999999"):
+        await store.save(999_999, TwoFactorState(enabled=True))
+
+
+def test_the_two_factor_columns_are_keksdose_s() -> None:
+    ddl = _ddl(User)
+    for column in (
+        "totp_enabled BOOLEAN NOT NULL",
+        "totp_secret VARCHAR(255)",
+        "totp_pending_secret VARCHAR(255)",
+        "totp_last_step BIGINT",
+    ):
+        assert column in ddl
 
 
 async def test_the_admin_log_keeps_the_contract(session: AsyncSession) -> None:

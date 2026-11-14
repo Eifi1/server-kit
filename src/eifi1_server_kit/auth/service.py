@@ -46,7 +46,7 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlencode
@@ -95,9 +95,12 @@ from eifi1_server_kit.auth.ports import (
     PasskeyRow,
     PasskeyStore,
     PasswordHasher,
+    SecretSeal,
     SessionRow,
     SessionStore,
     TokenSigner,
+    TwoFactorState,
+    TwoFactorStore,
     UserStore,
 )
 from eifi1_server_kit.auth.schemas import (
@@ -117,6 +120,17 @@ from eifi1_server_kit.auth.schemas import (
     RegisterRequest,
     SessionInfo,
     SetPasswordRequest,
+    TwoFactorConfirm,
+    TwoFactorDisableRequest,
+    TwoFactorLogin,
+    TwoFactorSetup,
+    TwoFactorSetupRequest,
+)
+from eifi1_server_kit.auth.seal import (
+    SecretSealError,
+    SecretUnreadableError,
+    totp_pending_secret_aad,
+    totp_secret_aad,
 )
 from eifi1_server_kit.auth.sessions import (
     SessionPolicy,
@@ -143,6 +157,14 @@ from eifi1_server_kit.auth.tokens import (
     refresh_claims,
     shared_device_of,
     token_is_revoked,
+)
+from eifi1_server_kit.auth.totp import (
+    new_totp_secret,
+    totp_matched_step,
+    totp_step_accepted,
+    totp_uri,
+    two_factor_challenge_claims,
+    two_factor_challenge_is_spent,
 )
 from eifi1_server_kit.clock import Clock, utc_now
 from eifi1_server_kit.demo import refuse_demo
@@ -186,6 +208,7 @@ __all__ = [
     "SessionsEndedReason",
     "SignedIn",
     "StartedSession",
+    "TwoFactorChallengeIssued",
 ]
 
 logger = logging.getLogger("eifi1_server_kit.auth")
@@ -458,6 +481,17 @@ class ChallengeIssued[UserT: AccountRow = Any]:
 
 
 @dataclass(frozen=True, slots=True)
+class TwoFactorChallengeIssued[UserT: AccountRow = Any]:
+    """The password was right and the account has two-factor sign-in on: its code is next
+    (§5.1, 0.32; keksdose ``TwoFactorChallengeResponse``) → ``POST /auth/login/2fa``. Its own
+    class, not a :class:`ChallengeIssued`: an app's code that reads that one as "a new
+    password first" stays right."""
+
+    user: UserT
+    challenge_token: str
+
+
+@dataclass(frozen=True, slots=True)
 class SignedIn[UserT: AccountRow = Any]:
     """A signed-in request: the account, its session row and the token's claims."""
 
@@ -525,6 +559,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         hooks: AuthHooks[UserT, InvT] | None = None,
         passkeys: PasskeyStore[Any] | None = None,
         relying_party: RelyingParty | None = None,
+        two_factor: TwoFactorStore | None = None,
+        secret_seal: SecretSeal | None = None,
         mail_texts: Mapping[AccountMailText, Any] = ACCOUNT_MAIL_TEXTS,
         absent_check: Callable[[str], bool] | None = None,
         now: Clock = utc_now,
@@ -545,6 +581,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         self._hooks: AuthHooks[UserT, InvT] = hooks or AuthHooks()
         self._passkeys = passkeys
         self._rp = relying_party
+        self._two_factor = two_factor
+        self._seal = secret_seal
         self._texts = mail_texts
         self._absent = absent_check or absent_account_check(hasher.hash, hasher.verify)
         self._now = now
@@ -555,11 +593,16 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     async def me(self, user: UserT, model: type[BaseModel]) -> BaseModel:
         """The account as ``/auth/me`` answers it: ``to_me``, else ``model`` from the row
-        with ``email_verified`` read off ``email_verified_at``."""
+        with ``email_verified`` read off ``email_verified_at`` and, with a
+        :class:`~eifi1_server_kit.auth.ports.TwoFactorStore` (0.32), ``totp_enabled`` off its
+        state."""
         if self._hooks.to_me is not None:
             return await self._hooks.to_me(user)
         answer = model.model_validate(user, from_attributes=True)
-        return answer.model_copy(update={"email_verified": user.email_verified_at is not None})
+        update: dict[str, Any] = {"email_verified": user.email_verified_at is not None}
+        if self._two_factor is not None:
+            update["totp_enabled"] = (await self._two_factor.state(user.id)).enabled
+        return answer.model_copy(update=update)
 
     async def _extras[T](self, hook: Callable[..., Awaitable[T]] | None, *args: Any, **kwargs: Any) -> dict[str, Any]:
         if hook is None:
@@ -689,10 +732,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
     ) -> IssuedSession[UserT] | ChallengeIssued[UserT]:
         """What a sign-in that passed answers, by password or by passkey: a session, or,
         while an admin requires a new password, the challenge to set one first
-        (user-admin §4.1). ``last_login_at`` waits for the session. The account is bound
-        first (``bind_anonymous``, keksdose's KG-2): a sign-in is signed out until it ends,
+        (user-admin §4.1). ``last_login_at`` waits for the session. The caller has bound the
+        account (``bind_anonymous``, keksdose's KG-2): a sign-in is signed out until it ends,
         and the challenge's hook reads under the binding."""
-        await self._bind_anonymous(user)
         now = self._now()
         if user.password_change_required_at is not None:
             claims = challenge_claims(user.id, ChallengeKind.PASSWORD_CHANGE, now=now, shared_device=shared)
@@ -806,11 +848,13 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     async def login(
         self, body: LoginRequest, *, ip: str, device: str | None = None
-    ) -> IssuedSession[UserT] | ChallengeIssued[UserT]:
+    ) -> IssuedSession[UserT] | ChallengeIssued[UserT] | TwoFactorChallengeIssued[UserT]:
         """``POST /auth/login`` (§5.1–§5.2): the per-IP limit before any hash, then the
         address's delay (failures only, never a lockout), then one refusal for an unknown
         address, a wrong password and a deactivated account, in the same time (a dummy
-        hash for the absent account)."""
+        hash for the absent account). An account with two-factor sign-in on gets the code's
+        challenge (0.32), before a forced password change: a 2FA account clears its second
+        factor before it may set a new password (keksdose's order)."""
         charge(self._limiters.login, ip, AUTH_THROTTLED["login"])
         failures = self._limiters.login_failures
         await self._sleep(failures.delay(body.email))
@@ -823,7 +867,150 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             failures.record_failure(body.email)
             raise AuthError(AuthErrorCode.INVALID_CREDENTIALS)
         failures.clear(body.email)
+        await self._bind_anonymous(user)
+        asked = await self._code_asked(user, shared=body.shared_device)
+        if asked is not None:
+            return asked
         return await self._sign_in(user, shared=body.shared_device, ip=ip, device=device)
+
+    # --- the second factor (0.32, keksdose's KG-1) -------------------------------------------
+
+    def _second_factor(self) -> tuple[TwoFactorStore, SecretSeal]:
+        if self._two_factor is None or self._seal is None:
+            raise RuntimeError("two-factor sign-in needs the two_factor and secret_seal of AuthDeps")
+        return self._two_factor, self._seal
+
+    def _unsealed(self, seal: SecretSeal, user_id: int, sealed: str | None, aad: bytes) -> str:
+        """The secret, or ``503 two_factor_unavailable``: a stored second factor this server
+        cannot open fails closed and says so where it can be understood (keksdose live #278) —
+        an account told "wrong code" would re-pair a phone that is fine."""
+        try:
+            if sealed is None:
+                raise SecretUnreadableError("two-factor sign-in is on with no secret stored")
+            return seal.unseal(sealed, aad=aad)
+        except SecretSealError as exc:
+            logger.critical(
+                "the second factor of account %s cannot be read (%s): its 2FA sign-in fails closed "
+                "until the key is restored",
+                user_id,
+                exc,
+            )
+            raise AuthError(AuthErrorCode.TWO_FACTOR_UNAVAILABLE) from exc
+
+    def _sealed(self, seal: SecretSeal, secret: str, aad: bytes) -> str:
+        try:
+            return seal.seal(secret, aad=aad)
+        except SecretSealError as exc:
+            logger.critical("a second factor cannot be stored (%s): no secret is kept in the clear", exc)
+            raise AuthError(AuthErrorCode.TWO_FACTOR_UNAVAILABLE) from exc
+
+    def _spent_step(self, secret: str, code: str, last_step: int | None) -> int:
+        """The step ``code`` matches and may spend (after ``last_step``), or
+        ``two_factor_invalid``: wrong, malformed and replayed are one answer (RFC 6238 §5.2)."""
+        matched = totp_matched_step(secret, code, now=self._now())
+        if matched is None or not totp_step_accepted(matched, last_step):
+            raise AuthError(AuthErrorCode.TWO_FACTOR_INVALID)
+        return matched
+
+    async def _code_asked(self, user: UserT, *, shared: bool) -> TwoFactorChallengeIssued[UserT] | None:
+        """The code's challenge for an account with two-factor sign-in on, or ``None``. The
+        secret is opened here, one step early, so an unreadable one is the sign-in's ``503``
+        rather than a correct code refused at the next step (keksdose). The challenge carries
+        the last accepted step (one challenge, one sign-in) and the shared-computer choice."""
+        if self._two_factor is None:
+            return None
+        store, seal = self._second_factor()
+        state = await store.state(user.id)
+        if not state.enabled:
+            return None
+        self._unsealed(seal, user.id, state.secret, totp_secret_aad(user.id))
+        claims = two_factor_challenge_claims(user.id, last_step=state.last_step, now=self._now(), shared_device=shared)
+        return TwoFactorChallengeIssued(user, self._signer.sign(claims))
+
+    async def login_two_factor(
+        self, body: TwoFactorLogin, *, ip: str, device: str | None = None
+    ) -> IssuedSession[UserT] | ChallengeIssued[UserT]:
+        """``POST /auth/login/2fa`` (§5.1; keksdose ``login_2fa``): the code's step. The per-IP
+        window, then the challenge, then the per-account window (a header cannot re-key it),
+        then keksdose's order: the account active, two-factor still on, its secret readable,
+        the challenge unspent, the code — whose step is spent — then a forced password change,
+        then the session, on a shared computer when the sign-in asked for one. A dead
+        challenge (expired, redeemed, its account gone or deactivated, 2FA off since) is
+        ``token_invalid``: signing in again is the way on. The account's row is locked, so
+        two redemptions of one code cannot both pass."""
+        store, seal = self._second_factor()
+        charge(self._limiters.challenge, ip, AUTH_THROTTLED["challenge"])
+        claims = self._signer.verify(body.challenge_token)
+        if claims is None or claims.get("type") != ChallengeKind.TWO_FACTOR:
+            raise AuthError(AuthErrorCode.TOKEN_INVALID)
+        charge(self._limiters.challenge_subject, str(claims.get("sub")), AUTH_THROTTLED["challenge"])
+        user = await self._account_of(claims)
+        if user is None or not user.is_active:
+            raise AuthError(AuthErrorCode.TOKEN_INVALID)
+        await self._bind_anonymous(user)
+        state = await store.state(user.id, lock=True)
+        if not state.enabled:
+            raise AuthError(AuthErrorCode.TOKEN_INVALID)
+        secret = self._unsealed(seal, user.id, state.secret, totp_secret_aad(user.id))
+        if two_factor_challenge_is_spent(claims, state.last_step):
+            raise AuthError(AuthErrorCode.TOKEN_INVALID)
+        step = self._spent_step(secret, body.code, state.last_step)
+        await store.save(user.id, replace(state, last_step=step))
+        return await self._sign_in(user, shared=shared_device_of(claims), ip=ip, device=device)
+
+    async def begin_two_factor(self, user: UserT, body: TwoFactorSetupRequest) -> TwoFactorSetup:
+        """``POST /auth/me/2fa/setup`` (keksdose ``setup_2fa``): the password every time, then
+        a new secret sealed as the PENDING one, beside the live one — what signs in now keeps
+        doing so until a code confirms it (keksdose's F-4). Neither this nor the confirmation
+        opens the old secret, so a new setup is the way back from a lost authenticator or a
+        key rotated out. ``503 two_factor_unavailable`` without a key."""
+        store, seal = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        await self._check_password(user, body.password)
+        secret = new_totp_secret()
+        sealed = self._sealed(seal, secret, totp_pending_secret_aad(user.id))
+        state = await store.state(user.id, lock=True)
+        await store.save(user.id, replace(state, pending_secret=sealed))
+        return TwoFactorSetup(
+            secret=secret, otpauth_url=totp_uri(secret, account=user.email, issuer=self._policy.app_name)
+        )
+
+    async def enable_two_factor(self, user: UserT, body: TwoFactorConfirm) -> None:
+        """``POST /auth/me/2fa/enable`` (keksdose ``enable_2fa``): a code from the pending
+        secret makes it the factor that signs in, replacing the old one, and spends its step —
+        the first sign-in after it waits for the next code. Charged to the account's
+        password-check window: a code is a guess like a password. A wrong code changes nothing;
+        no setup is ``404 two_factor_not_pending``."""
+        store, seal = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        state = await store.state(user.id, lock=True)
+        if state.pending_secret is None:
+            raise AuthError(AuthErrorCode.TWO_FACTOR_NOT_PENDING)
+        charge(self._limiters.password_check, str(user.id), AUTH_THROTTLED["password_check"])
+        secret = self._unsealed(seal, user.id, state.pending_secret, totp_pending_secret_aad(user.id))
+        # The pending secret has accepted nothing: the old one's last step is not its own.
+        step = self._spent_step(secret, body.code, None)
+        sealed = self._sealed(seal, secret, totp_secret_aad(user.id))
+        await store.save(user.id, TwoFactorState(enabled=True, secret=sealed, last_step=step))
+
+    async def disable_two_factor(self, user: UserT, body: TwoFactorDisableRequest) -> None:
+        """``POST /auth/me/2fa/disable`` (keksdose ``disable_2fa``): the password and a live
+        code, then everything goes — the live secret, a pending one, the last step. A secret
+        this server cannot open is switched off by the password alone: a code it cannot check
+        would leave it on for good, and the password already replaces the secret through a new
+        setup. Switching off what is off drops a pending setup."""
+        store, seal = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        await self._check_password(user, body.password)
+        state = await store.state(user.id, lock=True)
+        if state.enabled and state.secret is not None:
+            try:
+                secret = seal.unseal(state.secret, aad=totp_secret_aad(user.id))
+            except SecretSealError as exc:
+                logger.warning("the second factor of account %s cannot be read (%s): off by the password", user.id, exc)
+            else:
+                self._spent_step(secret, body.code, state.last_step)
+        await store.save(user.id, TwoFactorState())
 
     async def set_password(
         self, body: SetPasswordRequest, *, ip: str, device: str | None = None
@@ -1799,6 +1986,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             logger.info(_REFUSED, exc)
             raise AuthError(AuthErrorCode.PASSKEY_REFUSED) from exc
         await store.used(stored, sign_count=count, at=self._now())
+        # A passkey with user verification counts as both factors (§12.5 item 8): no code.
+        await self._bind_anonymous(user)
         return await self._sign_in(user, shared=body.shared_device, ip=ip, device=device)
 
     async def passkeys_of(self, user: UserT) -> Sequence[PasskeyRow]:

@@ -8,16 +8,19 @@ no FastAPI and no JWT library.
 
 * the stores: :class:`InMemoryUserStore`, :class:`InMemorySessionStore`,
   :class:`InMemoryOneTimeTokenStore`, :class:`InMemoryInvitationStore`,
-  :class:`InMemoryPasskeyStore` and :class:`InMemoryAdminActionLog`, each over a slotted row
+  :class:`InMemoryPasskeyStore`, :class:`InMemoryTwoFactorStore` (0.32) and
+  :class:`InMemoryAdminActionLog`, each over a slotted row
   (:class:`MemoryAccountRow` and its siblings) that satisfies its port's row protocol, with
   ids counted up and ``created_at`` from an injectable clock; and :class:`InMemoryAfterCommit`,
   whose :meth:`~InMemoryAfterCommit.run` and :meth:`~InMemoryAfterCommit.drop` stand for the
   app's commit and rollback. The kit's own service tests run on these;
 * the fakes: :class:`FakePasswordHasher`, a deterministic hasher that costs nothing, and
-  :class:`HmacTokenSigner`, a signer over HMAC-SHA256 with an injectable clock;
+  :class:`HmacTokenSigner`, a signer over HMAC-SHA256 with an injectable clock; and
+  :func:`totp_code` (0.32), the code an authenticator shows for a secret at a moment;
 * the checks: :func:`check_user_store`, :func:`check_session_store`,
   :func:`check_one_time_token_store`, :func:`check_invitation_store`,
-  :func:`check_passkey_store`, :func:`check_admin_action_log` and :func:`check_after_commit`.
+  :func:`check_passkey_store`, :func:`check_two_factor_store` (0.32),
+  :func:`check_admin_action_log` and :func:`check_after_commit`.
   An app runs them once against its own adapters (or the ``sql`` extra's), on a fresh
   session over its test database as it is. Each calls every method of its port, raises
   :class:`AssertionError` naming the first promise that fails, writes under fresh addresses,
@@ -65,9 +68,12 @@ from eifi1_server_kit.auth.ports import (
     OneTimeTokenStore,
     PasskeyStore,
     SessionStore,
+    TwoFactorState,
+    TwoFactorStore,
     UserStore,
 )
 from eifi1_server_kit.auth.tokens import INVITE_TTL, OneTimeTokenKind, hash_token
+from eifi1_server_kit.auth.totp import TOTP_STEP_SECONDS, totp_code
 from eifi1_server_kit.clock import Clock, utc_now
 from eifi1_server_kit.user_admin.actions import AdminAction
 from eifi1_server_kit.user_admin.audit import admin_action_record
@@ -84,6 +90,7 @@ __all__ = [
     "InMemoryOneTimeTokenStore",
     "InMemoryPasskeyStore",
     "InMemorySessionStore",
+    "InMemoryTwoFactorStore",
     "InMemoryUserStore",
     "MemoryAccountRow",
     "MemoryAdminActionRow",
@@ -100,7 +107,9 @@ __all__ = [
     "check_one_time_token_store",
     "check_passkey_store",
     "check_session_store",
+    "check_two_factor_store",
     "check_user_store",
+    "totp_code",
 ]
 
 _log = logging.getLogger(__name__)
@@ -500,6 +509,27 @@ class InMemoryPasskeyStore:
             return False
         self.spent[challenge_hash] = expires_at
         return True
+
+
+class InMemoryTwoFactorStore:
+    """A :class:`~eifi1_server_kit.auth.ports.TwoFactorStore` (0.32): each account's
+    :class:`~eifi1_server_kit.auth.ports.TwoFactorState` in :attr:`states`, by id, and the ids
+    read with ``lock`` in :attr:`locked`, in order, so a test sees that a step is spent under
+    the lock."""
+
+    def __init__(self) -> None:
+        #: Every account's state, by id; an account missing here has none.
+        self.states: dict[int, TwoFactorState] = {}
+        #: The ids read with ``lock=True``, in order.
+        self.locked: list[int] = []
+
+    async def state(self, user_id: int, *, lock: bool = False) -> TwoFactorState:
+        if lock:
+            self.locked.append(user_id)
+        return self.states.get(user_id, TwoFactorState())
+
+    async def save(self, user_id: int, state: TwoFactorState) -> None:
+        self.states[user_id] = state
 
 
 class InMemoryAdminActionLog:
@@ -1339,6 +1369,38 @@ async def check_passkey_store(store: PasskeyStore[Any], *, user_id: int, other_u
     )
     await store.remove(first)
     await store.remove(others)
+
+
+async def check_two_factor_store(store: TwoFactorStore, *, user_id: int, other_user_id: int) -> None:
+    """Does the app's second-factor store keep the port's promises (0.32, keksdose's KG-1)?
+    Raises :class:`AssertionError` naming the first that fails.
+
+    ``user_id`` and ``other_user_id`` are two existing accounts. It writes a whole state to
+    each — a sealed secret as long as :class:`~eifi1_server_kit.auth.seal.SecretBox` makes
+    one, a pending one, and a time step of today's size — reads them back with and without
+    the lock, clears one, and puts both accounts' states back as it found them.
+    """
+    _two_accounts(user_id, other_user_id)
+    mine, theirs = await store.state(user_id), await store.state(other_user_id)
+    _check(isinstance(mine, TwoFactorState), "state: a TwoFactorState, also for an account with none")
+    token = secrets.token_urlsafe(60)[:80]
+    step = int(utc_now().timestamp()) // TOTP_STEP_SECONDS
+    written = TwoFactorState(
+        enabled=True, secret=f"enc:v1:{token}", pending_secret=f"enc:v1:{token[::-1]}", last_step=step
+    )
+    other = TwoFactorState(enabled=False, pending_secret=f"enc:v1:{token.upper()}")
+    await store.save(user_id, written)
+    await store.save(other_user_id, other)
+    _check(await store.state(user_id) == written, "save: every field reads back")
+    _check(await store.state(user_id, lock=True) == written, "state: the same with the row locked")
+    _check(await store.state(other_user_id) == other, "save: each account's state is its own")
+    await store.save(user_id, dataclasses.replace(written, last_step=step + 1))
+    _check((await store.state(user_id)).last_step == step + 1, "save: a new step reads back")
+    await store.save(user_id, TwoFactorState())
+    _check(await store.state(user_id) == TwoFactorState(), "save: the empty state clears every field")
+    _check(await store.state(other_user_id) == other, "save: clearing one account leaves another's")
+    await store.save(user_id, mine)
+    await store.save(other_user_id, theirs)
 
 
 async def check_admin_action_log(log: AdminActionLog[Any], *, actor_id: int, target_user_id: int) -> None:

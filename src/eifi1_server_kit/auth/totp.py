@@ -64,10 +64,12 @@ import binascii
 import hashlib
 import hmac
 import re
+import secrets
 import unicodedata
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote, urlencode
 
 from eifi1_server_kit.auth.tokens import ChallengeKind, challenge_claims
 
@@ -76,8 +78,11 @@ __all__ = [
     "TOTP_STEP_CLAIM",
     "TOTP_STEP_SECONDS",
     "TOTP_WINDOW",
+    "new_totp_secret",
+    "totp_code",
     "totp_matched_step",
     "totp_step_accepted",
+    "totp_uri",
     "two_factor_challenge_claims",
     "two_factor_challenge_is_spent",
 ]
@@ -122,6 +127,33 @@ def _timestamp(now: datetime | float) -> float:
     if isinstance(now, datetime):
         return (now if now.tzinfo is not None else now.replace(tzinfo=UTC)).timestamp()
     return float(now)
+
+
+#: A new secret's bytes: 160 bits, RFC 4226 §4's recommended length and pyotp's
+#: ``random_base32()`` (32 base32 characters, no padding).
+_SECRET_BYTES = 20
+
+
+def new_totp_secret() -> str:
+    """A fresh TOTP secret, base32 without padding (0.32, keksdose ``begin_totp_setup``'s
+    ``pyotp.random_base32()``): 32 characters from :mod:`secrets`."""
+    return base64.b32encode(secrets.token_bytes(_SECRET_BYTES)).decode("ascii")
+
+
+def totp_uri(secret: str, *, account: str, issuer: str) -> str:
+    """The ``otpauth://totp/…`` URI an authenticator app reads from a QR code (0.32; pyotp's
+    ``provisioning_uri(name=account, issuer_name=issuer)``, byte for byte): the label
+    ``issuer:account``, the secret and the issuer, nothing else — SHA-1, six digits and thirty
+    seconds are every app's defaults."""
+    label = f"{quote(issuer)}:{quote(account)}"
+    query = urlencode({"secret": secret, "issuer": issuer}).replace("+", "%20")
+    return f"otpauth://totp/{label}?{query}"
+
+
+def totp_code(secret: str, *, now: datetime | float) -> str:
+    """The code ``secret`` shows at ``now`` (0.32): what an authenticator app displays, for a
+    test or a tool. A server never needs it — it checks with :func:`totp_matched_step`."""
+    return _code(_key(secret), int(_timestamp(now) // TOTP_STEP_SECONDS))
 
 
 def totp_matched_step(secret: str, code: str, *, now: datetime | float, window: int = TOTP_WINDOW) -> int | None:

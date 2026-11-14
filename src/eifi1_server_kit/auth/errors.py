@@ -81,6 +81,17 @@ class AuthErrorCode(enum.StrEnum):
     INVITATION_CLOSED = "invitation_closed"
     #: An invitation names a scope this app does not take, or one the admin may not invite into.
     INVITATION_SCOPE_INVALID = "invitation_scope_invalid"
+    #: The second factor's code was refused (0.32, keksdose's KG-1): wrong, not six digits,
+    #: or of a step already spent — one answer, so a replay says nothing. At the sign-in's
+    #: code step, its setup's confirmation and switching it off. ``400``, never ``401``: the
+    #: last two are signed in, and a client reads a 401 as an ended session.
+    TWO_FACTOR_INVALID = "two_factor_invalid"
+    #: The stored second factor cannot be read, or set up, on this server: its key is missing
+    #: or no longer opens the secret. The operator's to mend, never a wrong code — a ``401``
+    #: would send the person off to re-pair a phone that is fine (keksdose live #278).
+    TWO_FACTOR_UNAVAILABLE = "two_factor_unavailable"
+    #: A code to confirm a setup that was never started (or was dropped by switching off).
+    TWO_FACTOR_NOT_PENDING = "two_factor_not_pending"
 
 
 #: Each code's status. The token codes are ``400`` as keksdose answers a bad reset or
@@ -110,6 +121,9 @@ AUTH_ERROR_STATUS: Mapping[AuthErrorCode, int] = {
     AuthErrorCode.INVITATION_NOT_FOUND: 404,
     AuthErrorCode.INVITATION_CLOSED: 409,
     AuthErrorCode.INVITATION_SCOPE_INVALID: 400,
+    AuthErrorCode.TWO_FACTOR_INVALID: 400,
+    AuthErrorCode.TWO_FACTOR_UNAVAILABLE: 503,
+    AuthErrorCode.TWO_FACTOR_NOT_PENDING: 404,
 }
 
 #: The English ``detail`` of each code, keksdose's words where it had them. The pages
@@ -138,6 +152,12 @@ AUTH_ERROR_DETAIL: Mapping[AuthErrorCode, str] = {
     AuthErrorCode.INVITATION_NOT_FOUND: "Invitation not found",
     AuthErrorCode.INVITATION_CLOSED: "This invitation was accepted or revoked",
     AuthErrorCode.INVITATION_SCOPE_INVALID: "This invitation's scope is not allowed",
+    AuthErrorCode.TWO_FACTOR_INVALID: "Invalid 2FA code",
+    AuthErrorCode.TWO_FACTOR_UNAVAILABLE: (
+        "Two-factor authentication is unavailable on this server right now: the stored second factor "
+        "cannot be read or stored. This is a server-side key problem, not a wrong code."
+    ),
+    AuthErrorCode.TWO_FACTOR_NOT_PENDING: "No two-factor setup is waiting for its code",
 }
 
 
