@@ -49,6 +49,7 @@ async def test_the_daily_job_erases_what_is_due_then_prunes_what_is_30_days_done
     assert timedelta(days=30) == ACCOUNT_ROWS_RETENTION
     assert jobs.calls == ["erase", ("prune", NOW - timedelta(days=30))]
     assert answer.json() == {
+        "uploads": None,
         "erasure": {"erased": [7], "skipped": [8], "failed": []},
         "prune": {
             "before": "2026-10-15T03:30:00Z",
@@ -88,3 +89,29 @@ def test_a_retention_of_nothing_or_less_is_refused() -> None:
     for retention in (timedelta(0), timedelta(days=-1)):
         with pytest.raises(ValueError, match="retention"):
             AccountJobsDeps(token=lambda: "s3cret", prune=jobs.prune, retention=retention)
+    with pytest.raises(ValueError, match="upload wait"):
+        AccountJobsDeps(token=lambda: "s3cret", prune=jobs.prune, upload_wait=timedelta(0))
+
+
+async def test_the_daily_job_sweeps_the_uploads_nothing_names_after_a_day() -> None:
+    """0.31: the orphan sweep (``SqlAttachmentStorage.prune``) in the same daily call, so a
+    file the purge spared does not stay: an upload waits a day for what names it."""
+    from eifi1_server_kit.auth.jobs import UPLOAD_WAIT
+
+    jobs = Jobs()
+    swept: list[datetime] = []
+
+    async def sweep_uploads(before: datetime) -> int:
+        swept.append(before)
+        return 4
+
+    deps = AccountJobsDeps(token=lambda: "s3cret", prune=jobs.prune, sweep_uploads=sweep_uploads, now=lambda: NOW)
+    async with _client(deps) as client:
+        daily = (await client.post("/api/v1/ops/accounts/daily", headers=TOKEN)).json()
+        alone = (await client.post("/api/v1/ops/accounts/sweep-uploads", headers=TOKEN)).json()
+    assert timedelta(days=1) == UPLOAD_WAIT
+    assert daily["uploads"] == 4 and alone == {"before": "2026-11-13T03:30:00Z", "uploads": 4}
+    assert swept == [NOW - timedelta(days=1)] * 2
+    async with _client(AccountJobsDeps(token=lambda: "s3cret", prune=jobs.prune, now=lambda: NOW)) as client:
+        assert (await client.post("/api/v1/ops/accounts/daily", headers=TOKEN)).json()["uploads"] is None
+        assert (await client.post("/api/v1/ops/accounts/sweep-uploads", headers=TOKEN)).status_code == 404

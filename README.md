@@ -2483,11 +2483,29 @@ async def erase_due() -> ErasureRun:  # after_days only; leave it out in operato
     return await erase_due_accounts(ids, erase_one)  # erase_one: see erase_due_accounts
 
 
+async def sweep_uploads(before: datetime) -> int:  # with feedback.sql's uploads
+    async with sessions() as session, session.begin():
+        storage = SqlAttachmentStorage(
+            session, Upload, objects=store, reports=Feedback, replies=Reply, comments=Comment
+        )
+        swept = await storage.prune(before=before)
+    await purge_objects(store, [storage.object_key(key) for key in swept.keys], reason="upload_sweep")
+    return swept.uploads
+
+
 app.include_router(
-    account_jobs_router(AccountJobsDeps(token=lambda: get_settings().jobs_token, prune=prune, erase_due=erase_due)),
+    account_jobs_router(
+        AccountJobsDeps(
+            token=lambda: get_settings().jobs_token, prune=prune, erase_due=erase_due, sweep_uploads=sweep_uploads
+        )
+    ),
     prefix="/api/v1",
 )
 ```
+
+The daily call runs the due erasures, the prune, then the upload sweep (uploads nothing named
+for a day, `UPLOAD_WAIT`): a file `purge_objects` spared because it was written in the last
+minutes (0.31, on by default) ends there.
 
 Then one Cloud Scheduler HTTP job, once a day (03:30 Europe/Zurich, say), `POST
 https://<host>/api/v1/ops/accounts/daily` with the header `X-Jobs-Token` from Secret Manager —

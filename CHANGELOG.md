@@ -67,7 +67,9 @@ entry in the Conventional Commit; this file is assembled from them at release.
   erasures, then the prune of rows done with for 30 days — an ended session's IP address and
   browser among them), `/prune` and `/erase-due`. The app hands it its two jobs (its own
   transactions); the kit fixes the retention, the order and the answer. One Cloud Scheduler
-  job a day runs it.
+  job a day runs it. With `sweep_uploads` the same call sweeps the feedback's uploads nothing
+  named for a day (`UPLOAD_WAIT`; `SqlAttachmentStorage.prune`), also `/sweep-uploads`: a file
+  the purge spared ends there.
 * **auth (Staunlabor's pilot):** `AuthLimiters(requests=REQUESTS_PER_IP)`, one window per IP
   over every route of `auth_router`, `invitations_admin_router` and `user_admin_router`
   (600 a minute; `account_request_window(deps)`, the dependency they carry): `/me`, the

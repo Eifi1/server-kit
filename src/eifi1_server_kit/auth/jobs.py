@@ -16,9 +16,11 @@ jobs already run::
 
 * ``POST /ops/accounts/daily`` — the scheduler's one call: the due erasures first (an erased
   account's rows go with it), then the prune; answers both counts.
-* ``POST /ops/accounts/prune`` and ``POST /ops/accounts/erase-due`` — each alone (a manual
-  run, a second schedule). ``erase-due`` is mounted only with ``erase_due``: an app whose
-  operator erases (``DeletionMode.OPERATOR``) has nothing due.
+* ``POST /ops/accounts/prune``, ``POST /ops/accounts/erase-due`` and
+  ``POST /ops/accounts/sweep-uploads`` — each alone (a manual run, a second schedule).
+  ``erase-due`` is mounted only with ``erase_due`` (an app whose operator erases,
+  ``DeletionMode.OPERATOR``, has nothing due), ``sweep-uploads`` only with ``sweep_uploads``
+  (the feedback's orphan uploads, after :data:`UPLOAD_WAIT`).
 
 ``prune`` and ``erase_due`` are the app's, because the transaction is: ``prune(before)``
 opens a session, calls ``prune_account_rows(before=before, sessions=…, passkeys=…, links=…,
@@ -51,11 +53,13 @@ except ImportError as exc:
 
 __all__ = [
     "ACCOUNT_ROWS_RETENTION",
+    "UPLOAD_WAIT",
     "AccountJobsDeps",
     "DailyAccountJobs",
     "ErasureAnswer",
     "PruneAnswer",
     "PruneCounts",
+    "UploadSweepAnswer",
     "account_jobs_router",
 ]
 
@@ -65,6 +69,10 @@ logger = logging.getLogger("eifi1_server_kit.auth.jobs")
 #: address and browser, a spent challenge, an expired link or invitation — before the daily
 #: prune deletes it. The number an app's privacy policy names for them.
 ACCOUNT_ROWS_RETENTION = timedelta(days=30)
+#: How long an upload waits for the report, entry or comment that names it before the daily
+#: sweep takes it (Kurvenschmiede's day): a dialog closed, a tab that crashed, a file the
+#: purge spared (``objects.purge_objects``' recent window) end there.
+UPLOAD_WAIT = timedelta(days=1)
 
 
 class PruneCounts(Protocol):
@@ -100,11 +108,20 @@ class ErasureAnswer(BaseModel):
     failed: list[int]
 
 
+class UploadSweepAnswer(BaseModel):
+    """``POST /ops/accounts/sweep-uploads``: the cut-off and how many uploads went."""
+
+    before: datetime
+    uploads: int
+
+
 class DailyAccountJobs(BaseModel):
-    """``POST /ops/accounts/daily``: both; ``erasure`` is ``None`` without ``erase_due``."""
+    """``POST /ops/accounts/daily``: all three; ``erasure`` is ``None`` without
+    ``erase_due``, ``uploads`` without ``sweep_uploads``."""
 
     erasure: ErasureAnswer | None
     prune: PruneAnswer
+    uploads: int | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -117,12 +134,18 @@ class AccountJobsDeps:
     prune: Callable[[datetime], Awaitable[PruneCounts]]
     #: The ``after_days`` erasures that are due; ``None`` in operator mode.
     erase_due: Callable[[], Awaitable[ErasureRun]] | None = None
+    #: The orphan sweep (``feedback.sql.SqlAttachmentStorage.prune`` and the purge of the keys
+    #: it answers after the commit), handed the cut-off; answers how many uploads went.
+    sweep_uploads: Callable[[datetime], Awaitable[int]] | None = None
     retention: timedelta = ACCOUNT_ROWS_RETENTION
+    upload_wait: timedelta = UPLOAD_WAIT
     now: Clock = utc_now
 
     def __post_init__(self) -> None:
         if self.retention <= timedelta(0):
             raise ValueError("the retention is more than nothing: a row still in use would go")
+        if self.upload_wait <= timedelta(0):
+            raise ValueError("the upload wait is more than nothing: an upload on its way would go")
 
 
 def account_jobs_router(
@@ -131,6 +154,7 @@ def account_jobs_router(
     """The scheduler's routes for the account layer's daily jobs (module docstring)."""
     router = APIRouter(prefix=prefix, tags=list(tags), dependencies=[Depends(require_jobs_token(deps.token))])
     erase_due = deps.erase_due
+    sweep_uploads = deps.sweep_uploads
 
     async def prune() -> PruneAnswer:
         before = deps.now() - deps.retention
@@ -153,11 +177,19 @@ def account_jobs_router(
         )
         return ErasureAnswer(erased=list(run.erased), skipped=list(run.skipped), failed=list(run.failed))
 
+    async def sweep(job: Callable[[datetime], Awaitable[int]]) -> UploadSweepAnswer:
+        before = deps.now() - deps.upload_wait
+        uploads = await job(before)
+        logger.info("upload sweep: %s upload(s) nothing named since before %s", uploads, before.isoformat())
+        return UploadSweepAnswer(before=before, uploads=uploads)
+
     @router.post("/daily", response_model=DailyAccountJobs)
     async def daily() -> DailyAccountJobs:
-        """The scheduler's daily call: the due erasures, then the prune."""
+        """The scheduler's daily call: the due erasures, the prune, then the upload sweep."""
         erased = None if erase_due is None else await erasure(erase_due)
-        return DailyAccountJobs(erasure=erased, prune=await prune())
+        pruned = await prune()
+        swept = None if sweep_uploads is None else (await sweep(sweep_uploads)).uploads
+        return DailyAccountJobs(erasure=erased, prune=pruned, uploads=swept)
 
     @router.post("/prune", response_model=PruneAnswer)
     async def prune_route() -> PruneAnswer:
@@ -171,5 +203,13 @@ def account_jobs_router(
         async def erase_due_route() -> ErasureAnswer:
             """Erase the accounts whose deletion is due (``after_days``)."""
             return await erasure(job)
+
+    if sweep_uploads is not None:
+        sweeper = sweep_uploads
+
+        @router.post("/sweep-uploads", response_model=UploadSweepAnswer)
+        async def sweep_uploads_route() -> UploadSweepAnswer:
+            """Delete the uploads nothing names after the upload wait."""
+            return await sweep(sweeper)
 
     return router
