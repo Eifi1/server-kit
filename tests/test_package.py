@@ -60,6 +60,7 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.sync",
         "eifi1_server_kit.sync.scopes",
         "eifi1_server_kit.sync.testing",
+        "eifi1_server_kit.teams",
         "eifi1_server_kit.tours",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.tours.testing",

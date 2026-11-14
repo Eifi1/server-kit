@@ -15,7 +15,8 @@ user administration's :class:`~eifi1_server_kit.user_admin.AccountError` 409 and
 :class:`~eifi1_server_kit.notifications.NotificationError` 400 / 409 / 422, and tour
 progress's :class:`~eifi1_server_kit.tours.TourProgressError` 422, a legal change's
 :class:`~eifi1_server_kit.legal.LegalNoticeError` 409, and a full window's
-:class:`~eifi1_server_kit.limiter.ThrottledError` 429, uncoded, with its ``Retry-After``).
+:class:`~eifi1_server_kit.limiter.ThrottledError` 429, uncoded, with its ``Retry-After``, and
+a team's :class:`~eifi1_server_kit.teams.TeamError` 404 / 409).
 Most of them are :class:`ValueError` subclasses — on purpose, so one
 raised inside a Pydantic validator is still a 422 there — and that is the trap this module
 closes: keksdose (``main.py:166``) and Kurvenschmiede (``main.py:193``) each answer every
@@ -73,6 +74,7 @@ from eifi1_server_kit.legal import LegalNoticeError
 from eifi1_server_kit.limiter import ThrottledError
 from eifi1_server_kit.notifications.errors import NotificationError
 from eifi1_server_kit.settings import PatchNullError
+from eifi1_server_kit.teams.errors import TeamError
 from eifi1_server_kit.tours.errors import TourProgressError
 from eifi1_server_kit.translation_review.scope import (
     TranslationAccessError,
@@ -113,6 +115,7 @@ CONTRACT_ERRORS: tuple[type[Exception], ...] = (
     TourProgressError,
     LegalNoticeError,
     ThrottledError,
+    TeamError,
 )
 
 
