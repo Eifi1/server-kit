@@ -711,6 +711,8 @@ rides on the route's answer, which the app's answer model declares.
 | `on_deletion_requested(user)` → extras | after the deactivation, before the mail | 5 |
 | `on_deletion_withdrawn(user)` | `withdraw_deletion` (0.30's admin) | 5 |
 | `export_data(user)` → `data` | the export's `data` | 5 |
+| `erase(user, *, actor_id)` → extras | the erasure (0.30; the actor since 0.31: the admin, `None` for the job) | 5 |
+| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30) | 5 |
 | `to_me(user)` → the app's `me_model` | `/auth/me` and every token answer's user | 6 |
 
 **The work after the commit** (`AfterCommit`, §12.5 item 2): the kit never commits but where
@@ -884,8 +886,9 @@ the admin mail's answer.
   and its `extra` tiles; a demo admin sees no count.
 
 **The erasure** (user-admin §6.4), `AccountService.erase(user, *, actor_id, feedback=None)`,
-for the operator's route and the job alike: the `AuthHooks.erase` hook (the app's own rows: what
-an erasure deletes or hands over stays the app's; its counts ride on the answer and the row),
+for the operator's route and the job alike: the `AuthHooks.erase(user, *, actor_id)` hook (0.31:
+the admin who erased, `None` for the job; the app's own rows: what an erasure deletes or hands
+over stays the app's; its counts ride on the answer and the row),
 the feedback through `FeedbackService.erase_author` with `erasure_identifiers` (its files to
 `AuthHooks.purge_files` after the commit), the invitations the account accepted deleted where
 the store has `forget_accepted`, the log scrubbed of the account's address and those

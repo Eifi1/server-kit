@@ -552,6 +552,7 @@ async def test_an_operator_counts_the_deletion_requests_and_a_demo_admin_sees_no
 async def test_an_operator_erases_an_account_that_asked(operator_world: AdminWorld) -> None:
     class Erased(ErasureResult):
         handed_over: int = 0
+        by_admin: int = 0
 
     world = AdminWorld(policy=operator_world.deps.policy, admin={"erasure_result_model": Erased})
     async with world.client:
@@ -559,8 +560,8 @@ async def test_an_operator_erases_an_account_that_asked(operator_world: AdminWor
         user = world.account(is_active=False, deletion_requested_at=world.clock())
         purged: list[Any] = []
 
-        async def erase(account: MemoryUser) -> dict[str, Any]:
-            return {"handed_over": 2}
+        async def erase(account: MemoryUser, *, actor_id: int | None) -> dict[str, Any]:
+            return {"handed_over": 2, "by_admin": int(actor_id == admin.id)}
 
         async def purge_files(keys: Any) -> None:
             purged.append(list(keys))
@@ -574,7 +575,7 @@ async def test_an_operator_erases_an_account_that_asked(operator_world: AdminWor
         assert code(await world.call("POST", path, token=token)) == "confirmation_required"
         response = await world.call("POST", path, token=token, json=TYPED)
         assert response.status_code == 200, response.text
-        assert response.json() == {"feedback_anonymised": 1, "handed_over": 2}
+        assert response.json() == {"feedback_anonymised": 1, "handed_over": 2, "by_admin": 1}
         assert await world.users.get(user.id) is None and purged == [["feedback/x.png"]]
         levels = (await world.call("GET", "/admin/users", token=token)).json()["levels"]
         assert levels["erase"] == "type_email"

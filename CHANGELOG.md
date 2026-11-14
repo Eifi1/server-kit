@@ -10,6 +10,12 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### ⚠ BREAKING CHANGES
+
+* **auth:** `AuthHooks.erase` is called as `erase(user, *, actor_id)` (G1): the admin who erased,
+  `None` for the `after_days` job. A 0.30 hook taking the account alone fails with a
+  `TypeError` at the first erasure; add the keyword. No app had written the hook yet.
+
 ### Added
 
 * **auth (security):** `AccountPolicy.answer_floor` (`timedelta`, default 3 s): how long

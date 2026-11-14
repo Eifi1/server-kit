@@ -48,7 +48,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlencode
 
 from pydantic import BaseModel
@@ -243,6 +243,13 @@ class SessionsEndedReason(enum.StrEnum):
 type _Extras = Mapping[str, Any]
 
 
+class _EraseHook[UserT](Protocol):
+    """``AuthHooks.erase``'s shape (0.31): the account, and the admin who erased it, ``None``
+    for the job."""
+
+    def __call__(self, user: UserT, /, *, actor_id: int | None) -> Awaitable[_Extras | None]: ...
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     """What differs between the apps (§12.3), as optional coroutines the app's hook
@@ -299,8 +306,9 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: Seam 5 (0.30): the account is being erased (:meth:`AccountService.erase`): delete or hand
     #: over the app's own rows (keksdose's budgets, Kurvenschmiede's shared work). The mapping
     #: it answers — counts and ids, never content — rides on the admin's answer and in the
-    #: ``erase`` row's detail.
-    erase: Callable[[UserT], Awaitable[_Extras | None]] | None = None
+    #: ``erase`` row's detail. ``erase(user, *, actor_id)`` (0.31): the admin who erased, ``None``
+    #: for the ``after_days`` job (Kurvenschmiede logs the hand-over in its own rows by it).
+    erase: _EraseHook[UserT] | None = None
     #: Seam 5 (0.30): the stored files an erasure left nobody naming (the feedback's), deleted
     #: after the commit (keksdose's object purge). Without it they are left to the app.
     purge_files: Callable[[Sequence[str]], Awaitable[None]] | None = None
@@ -507,10 +515,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         answer = model.model_validate(user, from_attributes=True)
         return answer.model_copy(update={"email_verified": user.email_verified_at is not None})
 
-    async def _extras[T](self, hook: Callable[..., Awaitable[T]] | None, *args: Any) -> dict[str, Any]:
+    async def _extras[T](self, hook: Callable[..., Awaitable[T]] | None, *args: Any, **kwargs: Any) -> dict[str, Any]:
         if hook is None:
             return {}
-        return dict(cast(Mapping[str, Any], await hook(*args) or {}))
+        return dict(cast(Mapping[str, Any], await hook(*args, **kwargs) or {}))
 
     # --- sessions and tokens -------------------------------------------------------------
 
@@ -1347,8 +1355,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         ``after_days`` job (:meth:`erase_if_due`, no actor). The caller has checked that the
         account asked for it. In order:
 
-        1. the ``erase`` hook: the app's own rows (what an erasure deletes or hands over is
-           the app's);
+        1. the ``erase`` hook, with the actor (0.31): the app's own rows (what an erasure
+           deletes or hands over is the app's);
         2. with ``feedback`` (the app's ``FeedbackService``), the person leaves their reports,
            comments, votes and replies (``erase_author`` with ``erasure_identifiers``); the
            files no other row names go to ``purge_files`` after the commit;
@@ -1363,7 +1371,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
         Answers the row's detail."""
         email = user.email
-        extras = await self._extras(self._hooks.erase, user)
+        extras = await self._extras(self._hooks.erase, user, actor_id=actor_id)
         anonymised = 0
         if feedback is not None:
             erased = await feedback.erase_author(user.id, erasure_identifiers(email, user.first_name, user.last_name))

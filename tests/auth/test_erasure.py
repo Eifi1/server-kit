@@ -128,8 +128,8 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
     events: list[str] = []
     purged: list[tuple[str, ...]] = []
 
-    async def erase(account: MemoryUser) -> dict[str, Any]:
-        events.append(f"erase:{account.id}")
+    async def erase(account: MemoryUser, *, actor_id: int | None) -> dict[str, Any]:
+        events.append(f"erase:{account.id} by {actor_id}")
         return {"handed_over": {"projects": 3}}
 
     async def purge_files(keys: Any) -> None:
@@ -142,7 +142,7 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
         feedback=feedback,  # type: ignore[arg-type]
     )
     assert detail == {"feedback_anonymised": 2, "handed_over": {"projects": 3}}
-    assert events == [f"erase:{user.id}"]
+    assert events == [f"erase:{user.id} by {admin.id}"], "the hook knows the admin who erased"
     (asked_id, identifiers) = feedback.asked[0]
     assert asked_id == user.id and "ada@example.com" in identifiers and "Ada Lovelace" in identifiers
     assert purged == [], "the files go after the commit"
@@ -171,6 +171,17 @@ async def test_an_erasure_without_feedback_files_or_hooks_still_erases(world: Wo
     await world.service().erase(world.account(email="b@example.com"), actor_id=None, feedback=FakeFeedback())  # type: ignore[arg-type]
     assert world.after.queue == [], "files with nowhere to go are not queued"
     await world.service().erase(world.account(email="c@example.com"), actor_id=None, feedback=FakeFeedback(keys=()))  # type: ignore[arg-type]
+
+
+async def test_the_job_s_erasure_tells_the_hook_it_has_no_actor(world: World) -> None:
+    actors: list[int | None] = []
+
+    async def erase(account: MemoryUser, *, actor_id: int | None) -> None:
+        actors.append(actor_id)
+
+    user = world.account(is_active=False, deletion_requested_at=world.clock() - timedelta(days=31))
+    assert await world.service(AuthHooks(erase=erase)).erase_if_due(user.id) is True
+    assert actors == [None]
 
 
 async def test_the_job_erases_only_an_account_whose_deletion_is_due(world: World) -> None:
