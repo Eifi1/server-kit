@@ -663,7 +663,7 @@ review's reviewer: a mapping from that user, never a second bearer check), and
 | Area | Names |
 |---|---|
 | Ports (`auth.ports`) | `AccountRow` (read-only; `is_demo` and the `iat` cut-off `sessions_invalid_before` optional), `UserStore[UserT]` (`get`, `by_email`, `by_emails`, `count_people`, `count_active(role=)` (0.29), `add(NewAccount)`, `apply(row, changes)` with `ACCOUNT_FIELDS` keys only, `delete`); `SessionRow`, `SessionStore` (`start(NewSession)`, `get`, `touch`, `end`, `end_all(user_id, keep=)`, `live`); `OneTimeTokenRow`, `OneTimeTokenStore` (`put`, `take`, `pending`, `drop`); `InvitationRow`, `InvitationStore` (`get`, `by_token_hash`, `open_for`, `listing`, `add(NewInvitation)`, `remint`, `accept`, `revoke`); `PasskeyRow`, `PasskeyStore` (`for_user`, `by_credential_id`, `add(NewPasskey)`, `used`, `rename`, `remove`, `spend_challenge`); `AdminActionLog`; `AfterCommit` (`later`, `commit_now`); `TokenSigner` (`sign`, `verify`); `PasswordHasher` (`hash`, `verify`) |
-| Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…)`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
+| Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep, timer=time.monotonic)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", invitable_roles=None, bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…, answer_floor=timedelta(seconds=3))`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
 | Routes (`auth.router`) | `AuthDeps` (below), `auth_router(deps, *, prefix="/auth", tags=("auth",))`, `invitations_admin_router(deps, *, prefix="/admin/invitations", tags=("admin",), guard=None)`, `current_user(deps)`, `admin_guard(deps)`, `account_service(deps)`, `app_state_limiters`, `peer_address`, `no_hooks` |
 | Mails (`auth.mails`) | `AccountMailText` (`password_reset`, `verification`, `email_change`, `email_change_notice`, `invitation`, `account_deletion`, `account_deletion_operator`, `passkey_added_notice`), `ACCOUNT_MAIL_TEXTS` (seven languages each, `de-CH` formal with "ss"), `ACCOUNT_MAIL_KINDS` (the `kind` each is sent under), `ACCOUNT_MAIL_VALUES` (the placeholders each fills), `account_mail_texts(overrides)`, `mail_date(when, locale)` |
 | Passkeys (`auth.passkeys`) | `RelyingParty(rp_id, rp_name, origins)` (0.30: an origin that does not fit the RP id is logged once as a WARNING naming it; the construction stands), `rp_id_fits(rp_id, origin)` (0.30: the origin's host or a suffix of it at a dot, the browser's rule), `registration_options`, `authentication_options`, `verify_registration` → `VerifiedPasskey`, `verify_authentication`, `credential_id_of`, `user_handle_of`, `PasskeyCheckError`, `DEFAULT_PASSKEY_NAME`, `base64url_encode` / `_decode`; py_webauthn imported only here, lazily |
@@ -684,7 +684,9 @@ never-list routes, as `FeedbackDeps` takes it); the app's bodies `register_model
 `reset_state_model`, `invitation_check_model`, `invitation_accepted_model`,
 `invitation_row_model`, `invitation_issued_model`, `deletion_terms_model`,
 `deletion_result_model`; and `mail_texts` (the app's table in place of a kind; checked when
-the router is built), `client_address`, `limiters`, `now`, `sleep`.
+the router is built), `client_address`, `limiters`, `now`, `sleep` and `timer` (0.31: the
+monotonic clock the reset request's floor is measured on; a test passes a fake one with a fake
+`sleep`).
 
 **`AuthHooks`** — what differs between the apps (§12.2's six seams), every member an optional
 coroutine; the `hooks` dependency answers them per request, on the request's own session, so a
@@ -715,10 +717,28 @@ rides on the route's answer, which the app's answer model declares.
 a route's answer says whether its mail went out (an address change and its re-send, the
 verification's re-send, an invitation and its re-send, a deletion request): there it calls
 `commit_now()` and then sends, so a rollback never mails a dead link and the answer is true.
-Every other mail (the sign-up's verification, the reset, the passkey notice) goes to
-`later()`. The app's adapter commits the request's session in `commit_now` and runs the
-`later` queue from its session's commit event, each item on its own, dropping it on a
-rollback (Kurvenschmiede's `send_after_commit`).
+The reset request does the same inside its floor (below). Every other mail (the sign-up's
+verification, the passkey notice) goes to `later()`. The app's adapter commits the request's
+session in `commit_now` and runs the `later` queue from its session's commit event, each item
+on its own, dropping it on a rollback (Kurvenschmiede's `send_after_commit`).
+
+**The reset request answers in the same time, account or not** (0.31, security;
+Kurvenschmiede's audit F29). Its answer is `204` either way, and its time must not tell either:
+with the unit of work function-scoped (below), a mail queued with `later()` went out inside the
+request, so an address with an account answered a provider's round trip later than one
+without. Since 0.31 the route charges its windows (a `429` answers at once: they key on the IP
+and the typed address, never on the account), then commits its link (`commit_now`) and mails it
+inline, and every path, the absent account's, a deactivated one's and a demo's included, commits
+too and answers when `AccountPolicy.answer_floor` (default 3 s) has passed since the charge. The
+send stays before the answer, so Cloud Run's request-based CPU allocation does not starve it, as
+it would a background task after the response. It gets the time left to the floor: a send still
+running there (a provider that has stopped answering; Resend times out after 10 s, then retries)
+is cut and logged at ERROR, and the person asks again, rather than the answer coming late and
+telling. Raise `answer_floor` if the app's provider is slower than about 2.5 s at its slowest.
+The kit's other routes need no floor: the sign-up answers `email_taken` by design (after the
+invitation and the gate), the invitation's check answers `account_exists` to the link's holder,
+the sign-in's absent account is hashed like a present one, and every other anonymous route needs
+a link's secret.
 
 | Route | Answer | Codes | Limit |
 |---|---|---|---|
@@ -742,7 +762,7 @@ rollback (Kurvenschmiede's `send_after_commit`).
 | `GET /auth/me/export` | the JSON download | `demo_refused` | `export` |
 | `POST /auth/verify-email` | `EmailVerificationStatus` | `token_invalid`, `token_expired` | `redeem` |
 | `POST /auth/resend-verification` | `EmailVerificationStatus` | `mail_not_sent` (503) | `verification_resend` |
-| `POST /auth/password-reset/request` | 204, always | — | `reset_ip`, `reset_address` |
+| `POST /auth/password-reset/request` | 204, always, at `answer_floor` (0.31) | — | `reset_ip`, `reset_address` |
 | `POST /auth/password-reset/check` / `confirm` | `reset_state_model`, no tokens | `token_invalid`, `token_expired` | `redeem` |
 | `POST /auth/invitations/check` | `invitation_check_model` | `invitation_invalid`, `invitation_expired` | `redeem` |
 | `POST /auth/invitations/accept` | `invitation_accepted_model` | `invitation_invalid`, `invitation_expired`, `demo_refused` | `redeem` |
@@ -2377,6 +2397,22 @@ install_contract_error_handlers(app)
 
 Run `auth.testing`'s contract suites (`check_user_store`, `check_session_store`, …) once
 against the stores on the test database.
+
+**The test app** waits on nothing real. Since 0.31 every reset request holds its answer to
+`answer_floor` (3 s on the real clock), so the app's test `AuthDeps` pass a `sleep` that returns
+at once, as the kit's own test world does (it records the waits), or the test policy sets
+`answer_floor=timedelta(0)`:
+
+```python
+async def no_wait(seconds: float) -> None:
+    waits.append(seconds)
+
+
+deps = replace(production_deps, sleep=no_wait)  # or AccountPolicy(..., answer_floor=timedelta(0))
+```
+
+A test of the floor itself passes a fake `timer` too, which its fake `sleep` moves on (the
+kit's `tests/auth/test_reset_timing.py`).
 
 **The budget in front.** The kit limits what it must (sign-in, sign-up, every anonymous
 redemption, the refresh, every password check) and nothing else: `GET /auth/me`, the

@@ -41,6 +41,7 @@ annotation that names a local.
 
 import asyncio
 import json
+import time
 import types
 import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -226,8 +227,12 @@ class AuthDeps:
     client_address: Callable[[Request], str] = peer_address
     limiters: Callable[[Request], AuthLimiters] = app_state_limiters
     now: Clock = utc_now
-    #: The per-address delay's wait (a test passes one that records).
+    #: The per-address delay's wait, and the reset request's wait for its floor (a test passes
+    #: one that records, or that moves its ``timer``).
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    #: The monotonic clock the reset request's floor is measured on (0.31,
+    #: ``AccountPolicy.answer_floor``); a test passes a fake one with a fake ``sleep``.
+    timer: Callable[[], float] = time.monotonic
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +289,7 @@ def _build(deps: AuthDeps) -> _Built:
             absent_check=check_absent,
             now=deps.now,
             sleep=deps.sleep,
+            timer=deps.timer,
         )
 
     async def signed_in(

@@ -10,6 +10,31 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### Added
+
+* **auth (security):** `AccountPolicy.answer_floor` (`timedelta`, default 3 s): how long
+  `POST /auth/password-reset/request` takes at least, account or not; `AuthDeps.timer` and
+  `AccountService(timer=)` (`time.monotonic` by default), the clock it is measured on, which a
+  test fakes with `sleep`.
+
+### Changed
+
+* **auth (security, Kurvenschmiede's audit F29):** the reset request no longer tells by its time
+  whether an account exists. Its mail moved from `later()` (which a function-scoped unit of
+  work ran inside the request, so an existing account answered a provider's round trip later)
+  to `commit_now()` and an inline send bounded by the time left to `answer_floor`; every path,
+  the absent, deactivated and demo accounts' too, commits and answers when the floor has passed
+  since the windows were charged. A `429` still answers at once (the windows key on the IP and
+  the typed address). The send stays before the answer, so Cloud Run's request-based CPU does
+  not starve it; one still running at the floor is cut and logged at ERROR. An app's tests that
+  call the route on the real clock now wait 3 s each: pass a fake `AuthDeps.sleep`, or
+  `answer_floor=timedelta(0)`.
+
+### Documentation
+
+* **README:** the reset request's floor beside "The work after the commit", and the test app's
+  fake `sleep` in "Adopting the account layer".
+
 ## [0.30.0] (2026-11-13)
 
 server-kit 0.30.0: the admin half of the account layer (docs/auth-harmonization.md §12.3–§12.6,

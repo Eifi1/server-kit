@@ -44,6 +44,7 @@ import asyncio
 import enum
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -364,6 +365,12 @@ class AccountPolicy:
     deletion_days: int = DEFAULT_DELETION_DAYS
     #: What the deletion mail says may outlive the erasure.
     retention: RetentionNote = field(default_factory=deletion_mail_retention_note)
+    #: How long an answer that must not tell whether an account exists takes, at least
+    #: (0.31, security: Kurvenschmiede's audit F29): ``POST /auth/password-reset/request``
+    #: commits and sends its mail inside this time, and every path answers when it has passed.
+    #: Above the mail provider's slow answers (Resend's are well under a second); a send still
+    #: running at the floor is cut and logged, so the answer is never late.
+    answer_floor: timedelta = timedelta(seconds=3)
 
     def __post_init__(self) -> None:
         if not _APP_NAME.match(self.app):
@@ -372,6 +379,8 @@ class AccountPolicy:
             raise ValueError("deletion_days is zero or more")
         if self.invitable_roles is not None and self.default_role not in self.invitable_roles:
             raise ValueError(f"default_role {self.default_role!r} is one of invitable_roles: {self.invitable_roles}")
+        if self.answer_floor < timedelta(0):
+            raise ValueError("answer_floor is zero or more")
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +475,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         absent_check: Callable[[str], bool] | None = None,
         now: Clock = utc_now,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        timer: Callable[[], float] = time.monotonic,
     ) -> None:
         self._users = users
         self._sessions = sessions
@@ -485,6 +495,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         self._absent = absent_check or absent_account_check(hasher.hash, hasher.verify)
         self._now = now
         self._sleep = sleep
+        self._timer = timer
 
     # --- the answers' pieces -------------------------------------------------------------
 
@@ -1060,26 +1071,54 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
     async def request_password_reset(self, body: PasswordResetRequest, *, ip: str) -> None:
         """``POST /auth/password-reset/request``: always ``204``, account or not (§4.5). The
         caller's window first, then the address's (a request the first refused spends
-        nothing of the second). The address's tagged variant is tried too; the mail goes
-        to the account's own address, after the commit. A deactivated account or a demo
-        gets none."""
+        nothing of the second): a refusal answers at once, account or not, since both windows
+        key on what the caller sent. The address's tagged variant is tried too; the mail goes
+        to the account's own address. A deactivated account or a demo gets none.
+
+        **In the same time, account or not** (0.31, security; Kurvenschmiede's audit F29).
+        The link is committed (``commit_now``) and mailed here, before the answer — after
+        it, Cloud Run's request-based CPU would starve the send — and every path, its commit
+        included, answers when ``AccountPolicy.answer_floor`` has passed since the windows
+        were charged (``timer``, ``sleep``). The send gets the time left: one still running at
+        the floor is cut and logged, and the person asks again. Only a write that has already
+        overrun the floor, when the answer is late anyway, sends unbounded."""
         charge(self._limiters.reset_ip, ip, AUTH_THROTTLED["reset"])
         charge(self._limiters.reset_address, body.email, AUTH_THROTTLED["reset"])
+        floor = self._policy.answer_floor.total_seconds()
+        start = self._timer()
         addresses = addresses_for_reset(body.email, self._policy.app)
         found = {row.email: row for row in await self._users.by_emails(addresses)}
         user = next((found[address] for address in addresses if address in found), None)
-        if user is None or not user.is_active or getattr(user, "is_demo", False):
-            return
-        raw, digest = mint()
-        await self._tokens.put(
-            OneTimeTokenKind.PASSWORD_RESET,
-            user_id=user.id,
-            token_hash=digest,
-            email=user.email,
-            expires_at=self._now() + RESET_TTL,
-        )
-        link = self._policy.links.url(self._policy.links.reset_password, token=raw)
-        self._send_later(user.email, AccountMailText.PASSWORD_RESET, user.locale, link=link, name=self._name(user))
+        if user is not None and user.is_active and not getattr(user, "is_demo", False):
+            raw, digest = mint()
+            await self._tokens.put(
+                OneTimeTokenKind.PASSWORD_RESET,
+                user_id=user.id,
+                token_hash=digest,
+                email=user.email,
+                expires_at=self._now() + RESET_TTL,
+            )
+            await self._after.commit_now()
+            link = self._policy.links.url(self._policy.links.reset_password, token=raw)
+            left = floor - (self._timer() - start)
+            try:
+                async with asyncio.timeout(left if left > 0 else None):
+                    await self._send(
+                        user.email, AccountMailText.PASSWORD_RESET, user.locale, link=link, name=self._name(user)
+                    )
+            except TimeoutError:
+                logger.error(
+                    "The %s mail was still sending at the answer's floor (%.1f s) and was cut, so the "
+                    "answer does not tell that the account exists",
+                    ACCOUNT_MAIL_KINDS[AccountMailText.PASSWORD_RESET],
+                    floor,
+                )
+        else:
+            # The same commit as the account's path, so nothing after the floor differs.
+            await self._after.commit_now()
+        left = floor - (self._timer() - start)
+        if left > 0:
+            await self._sleep(left)
 
     async def _reset_account(self, token: str, ip: str) -> UserT:
         row, user = await self._redeem(OneTimeTokenKind.PASSWORD_RESET, token, ip)
