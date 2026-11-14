@@ -186,3 +186,20 @@ async def test_the_invitation_check_fails_on_a_store_that_forgets_too_much() -> 
 
 def _new(email: str, role: str) -> NewAccount:
     return NewAccount(email=email, password_hash="h", first_name="A", last_name="B", locale="en", role=role)
+
+
+async def test_the_scrub_suite_reads_a_log_longer_than_one_page() -> None:
+    """``_every_row`` pages through ``page`` 200 rows at a time: a log with more is read whole."""
+    from datetime import UTC, datetime
+
+    from eifi1_server_kit.user_admin import AdminAction
+    from eifi1_server_kit.user_admin.audit import admin_action_record
+    from eifi1_server_kit.user_admin.testing import _every_row
+
+    log = InMemoryAdminActionLog()
+    now = datetime(2026, 11, 14, tzinfo=UTC)
+    for _ in range(201):
+        await log.add(
+            admin_action_record(AdminAction.DEACTIVATE, actor_id=1, target_user_id=2, target_email=None, now=now)
+        )
+    assert len(await _every_row(log, 2)) == 201
