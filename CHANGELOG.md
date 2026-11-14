@@ -10,6 +10,12 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### Changed
+
+* **auth (Kurvenschmiede):** an admin's invitation whose body names no `locale` is written in
+  the inviting admin's language, not the schema's `de-CH`; a body that names one wins, and an
+  admin with no language of their own still gets the default.
+
 ## [0.31.0] (2026-11-14)
 
 server-kit 0.31.0: what the first two apps on the account layer found (Kurvenschmiede's move

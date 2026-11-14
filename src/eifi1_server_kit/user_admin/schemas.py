@@ -406,7 +406,8 @@ class InvitationCreate(BaseModel):
     The address is normalised like every entry; the kit's form suggests no ``+tag`` — it
     is someone else's address. ``scope`` is the app's: a Kurvenschmiede team, ``None``
     for registration; kastlan's company comes from the admin's own, never from the body.
-    ``locale`` is the invitee's language, which the mail is written in.
+    ``locale`` is the invitee's language, which the mail is written in; left out, the
+    inviting admin's (0.32), and the schema's default only for an admin with none.
     """
 
     model_config = ConfigDict(extra="forbid")

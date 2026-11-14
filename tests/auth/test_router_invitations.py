@@ -347,3 +347,23 @@ async def test_an_invitation_names_its_group_in_the_mail_and_the_log() -> None:
         )
         assert plain.status_code == 201 and world.log.rows[-1].target_group_id is None
         assert world.mailer.of("invitation")[-1].message.subject == "Join  on Staunlabor"
+
+
+async def test_an_invitation_without_a_language_is_written_in_the_admin_s() -> None:
+    """Kurvenschmiede (0.32): the inviting admin's language, not the kit's de-CH, when the
+    body names none; a language the body names wins."""
+    world = World()
+    async with world.client:
+        admin = world.account(email="root@example.com", role="ADMIN", locale="fr")
+        token = await world.token_of(admin)
+        await world.call("POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER"})
+        await world.call(
+            "POST",
+            "/admin/invitations",
+            token=token,
+            json={"email": "cy@example.com", "role": "MEMBER", "locale": "it"},
+        )
+        assert [row.locale for row in world.invitations.rows.values()] == ["fr", "it"]
+        admin.locale = ""  # an admin with no language of their own: the schema's default
+        await world.call("POST", "/admin/invitations", token=token, json={"email": "dee@example.com", "role": "MEMBER"})
+        assert list(world.invitations.rows.values())[-1].locale == "de-CH"

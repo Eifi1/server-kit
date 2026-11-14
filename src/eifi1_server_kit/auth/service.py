@@ -1300,12 +1300,15 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                     return await self._send_again(admin, open_one, show_link=show_link)
         now = self._now()
         raw, digest = mint()
+        # A body that names no language is written in the inviting admin's (0.32,
+        # Kurvenschmiede's), not the schema's default; one that names it wins.
+        locale = body.locale if "locale" in body.model_fields_set or not admin.locale else admin.locale
         invitation = await self._invitations.add(
             NewInvitation(
                 email=body.email,
                 token_hash=digest,
                 expires_at=now + INVITE_TTL,
-                locale=body.locale,
+                locale=locale,
                 invited_by_user_id=admin.id,
                 role=body.role,
                 scope=scope,
