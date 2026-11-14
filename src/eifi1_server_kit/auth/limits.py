@@ -88,6 +88,11 @@ EXPORT_PER_ACCOUNT = Budget(1, 60)
 #: The admin's "send a test mail to me", per admin (0.30, ``POST /admin/mail/test``; admin
 #: §9.2): the mail module's ``MAIL_TEST_LIMIT``, 3 in 10 minutes.
 MAIL_TEST_PER_ACCOUNT = Budget(3, 600)
+#: Every route of ``auth_router``, ``invitations_admin_router`` and ``user_admin_router``
+#: together, per IP (0.31, Staunlabor's pilot): ``/me``, the sessions, the passkey sign-in's
+#: begin and the admin's lists had no window of their own. A flood guard, generous enough for
+#: a class behind one address; the routes' own windows still apply.
+REQUESTS_PER_IP = Budget(600, 60)
 
 #: Failures per address that cost nothing: a person mistyping a password a few times.
 LOGIN_FAILURES_FREE = 5
@@ -203,7 +208,7 @@ class AuthLimiters:
     IP), ``reset_ip`` and ``reset_address`` for the reset request, and
     ``verification_resend`` (per recipient; the account layer charges every account mail to an
     address there). Since 0.29 also ``redeem`` and ``refresh`` (per IP), ``password_check``,
-    ``email_change`` and ``export`` (per account); since 0.30 ``mail_test`` (per admin). Charge an IP window with ``hit`` and answer a
+    ``email_change`` and ``export`` (per account); since 0.30 ``mail_test`` (per admin); since 0.31 ``requests`` (per IP, every account and admin route, ``None`` for none). Charge an IP window with ``hit`` and answer a
     non-``None`` result with ``429`` and ``Retry-After``
     (:func:`~eifi1_server_kit.limiter.retry_after_header`); charge it BEFORE any hashing,
     so a shed request costs no bcrypt. Key every address window by
@@ -228,6 +233,7 @@ class AuthLimiters:
         email_change: Budget = EMAIL_CHANGE_PER_ACCOUNT,
         export: Budget = EXPORT_PER_ACCOUNT,
         mail_test: Budget = MAIL_TEST_PER_ACCOUNT,
+        requests: Budget | None = REQUESTS_PER_IP,
     ) -> None:
         self.login = login.limiter(clock)
         self.login_failures = login_failures or LoginFailureThrottle(clock=clock)
@@ -243,6 +249,8 @@ class AuthLimiters:
         self.email_change = email_change.limiter(clock)
         self.export = export.limiter(clock)
         self.mail_test = mail_test.limiter(clock)
+        #: ``None``: no shared window (an app that budgets the routes itself).
+        self.requests = None if requests is None else requests.limiter(clock)
 
     def reset(self) -> None:
         """Empty every window — the test seam."""
@@ -262,4 +270,6 @@ class AuthLimiters:
             self.mail_test,
         ):
             limiter.reset()
+        if self.requests is not None:
+            self.requests.reset()
         self.login_failures.reset()

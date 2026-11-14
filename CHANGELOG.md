@@ -67,6 +67,12 @@ entry in the Conventional Commit; this file is assembled from them at release.
   browser among them), `/prune` and `/erase-due`. The app hands it its two jobs (its own
   transactions); the kit fixes the retention, the order and the answer. One Cloud Scheduler
   job a day runs it.
+* **auth (Staunlabor's pilot):** `AuthLimiters(requests=REQUESTS_PER_IP)`, one window per IP
+  over every route of `auth_router`, `invitations_admin_router` and `user_admin_router`
+  (600 a minute; `account_request_window(deps)`, the dependency they carry): `/me`, the
+  sessions, the passkey sign-in's begin and the admin's lists had none of their own. A flood
+  guard beside the routes' own windows; `requests=None` leaves it out for an app that budgets
+  the routes itself (Staunlabor's `include_router(dependencies=...)`).
 
 ### Changed
 

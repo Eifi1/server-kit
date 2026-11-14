@@ -203,6 +203,7 @@ AUTH_THROTTLED: Mapping[str, str] = {
     "email_change": "Too many address changes requested — please try again later.",
     "mail": "Too many mails to this address — please try again later.",
     "export": "You exported your data a moment ago — please try again in a minute.",
+    "requests": "Too many requests — please try again in a moment.",
 }
 
 #: How much later than a cut-off stamped in the same flow its fresh tokens are minted, so

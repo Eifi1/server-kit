@@ -748,3 +748,12 @@ def test_the_router_names_its_extra_without_fastapi(monkeypatch: pytest.MonkeyPa
     monkeypatch.setitem(sys.modules, "fastapi", None)
     with pytest.raises(ImportError, match=r"eifi1-server-kit\[fastapi\]"):
         importlib.import_module("eifi1_server_kit.user_admin.router")
+
+
+async def test_the_admin_routes_share_the_account_routes_window(world: AdminWorld) -> None:
+    from eifi1_server_kit.auth import AuthLimiters, Budget
+
+    _, token = await world.admin_token()
+    world.app.state.auth_limiters = AuthLimiters(requests=Budget(1, 60))
+    assert (await world.call("GET", "/admin/users", token=token)).status_code == 200
+    assert (await world.call("GET", "/admin/actions", token=token)).status_code == 429

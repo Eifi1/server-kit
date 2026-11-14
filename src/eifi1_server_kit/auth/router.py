@@ -86,6 +86,7 @@ from eifi1_server_kit.auth.schemas import (
     UserResponse,
 )
 from eifi1_server_kit.auth.service import (
+    AUTH_THROTTLED,
     AccountPolicy,
     AccountService,
     AuthHooks,
@@ -94,7 +95,7 @@ from eifi1_server_kit.auth.service import (
     SignedIn,
 )
 from eifi1_server_kit.clock import Clock, utc_now
-from eifi1_server_kit.limiter import UNKNOWN_CLIENT
+from eifi1_server_kit.limiter import UNKNOWN_CLIENT, charge
 from eifi1_server_kit.mail import Mailer, MailText
 from eifi1_server_kit.user_admin.export import export_filename
 from eifi1_server_kit.user_admin.schemas import (
@@ -118,6 +119,7 @@ except ImportError as exc:
 
 __all__ = [
     "AuthDeps",
+    "account_request_window",
     "account_service",
     "admin_guard",
     "app_state_limiters",
@@ -131,6 +133,19 @@ __all__ = [
 #: The longest ``User-Agent`` a session row keeps as its device.
 _DEVICE_LENGTH = 255
 _bearer = HTTPBearer(auto_error=False, description="The access token of a session (§6.2).")
+
+
+def account_request_window(deps: AuthDeps) -> Callable[[Request], None]:
+    """The dependency that charges every account and admin route to one window per address
+    (``AuthLimiters.requests``, 0.31): ``auth_router``, ``invitations_admin_router`` and
+    ``user_admin_router`` put it on their routers. ``requests=None``: nothing charged."""
+
+    def request_window(request: Request) -> None:
+        window = deps.limiters(request).requests
+        if window is not None:
+            charge(window, deps.client_address(request), AUTH_THROTTLED["requests"])
+
+    return request_window
 
 
 def app_state_limiters(request: Request) -> AuthLimiters:
@@ -391,7 +406,7 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
     Accounts = Annotated[AccountService[Any, Any, Any], Depends(built.service)]  # noqa: N806
     Signed = Annotated[SignedIn[Any], Depends(built.signed_in)]  # noqa: N806
     User = Annotated[Any, Depends(built.current_user)]  # noqa: N806
-    router = APIRouter(prefix=prefix, tags=list(tags))
+    router = APIRouter(prefix=prefix, tags=list(tags), dependencies=[Depends(account_request_window(deps))])
 
     async def session_answer(accounts: AccountService[Any, Any, Any], issued: IssuedSession[Any]) -> BaseModel:
         me = await accounts.me(issued.user, me_model)
@@ -698,7 +713,7 @@ def invitations_admin_router(
     issued_model = deps.invitation_issued_model
     create_model = built.invitation_create_model
     show_link = deps.mail_backend == MAIL_BACKEND_CONSOLE
-    router = APIRouter(prefix=prefix, tags=list(tags))
+    router = APIRouter(prefix=prefix, tags=list(tags), dependencies=[Depends(account_request_window(deps))])
 
     def issued(fields: Mapping[str, Any]) -> BaseModel:
         return issued_model.model_validate({**fields, "mail_backend": deps.mail_backend})

@@ -35,7 +35,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel
 
-from eifi1_server_kit.auth.router import AuthDeps, account_service, admin_guard, current_user
+from eifi1_server_kit.auth.router import AuthDeps, account_request_window, account_service, admin_guard, current_user
 from eifi1_server_kit.auth.service import AccountService
 from eifi1_server_kit.mail import MailTestResult
 from eifi1_server_kit.user_admin.attention import AdminAttention
@@ -201,7 +201,11 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
     deps.policy.check(auth.policy)
     Service = Annotated[UserAdminService[Any], Depends(_service(deps))]  # noqa: N806
     Admin = Annotated[Any, Depends(current_user(auth))]  # noqa: N806
-    router = APIRouter(prefix=prefix, tags=list(tags), dependencies=[Depends(deps.guard or admin_guard(auth))])
+    router = APIRouter(
+        prefix=prefix,
+        tags=list(tags),
+        dependencies=[Depends(account_request_window(auth)), Depends(deps.guard or admin_guard(auth))],
+    )
     row_model = deps.row_model
     list_model = UserListResponse[row_model]  # type: ignore[valid-type]
 

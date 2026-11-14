@@ -244,3 +244,23 @@ async def test_the_never_list_takes_the_app_s_demo_guard_and_the_service_s_own()
         token = await plain.token_of(demo)
         response = await plain.call("POST", "/auth/me/password", token=token, json=body)
         assert response.status_code == 403 and code(response) == "demo_refused"
+
+
+async def test_every_account_and_admin_route_shares_one_window_per_address() -> None:
+    """0.31 (Staunlabor's pilot): /me, the sessions, the passkey sign-in's begin and the
+    admin's lists had no window of their own; one per address now bounds them all."""
+    from eifi1_server_kit.auth import AuthLimiters, Budget
+    from tests.auth._world import World
+
+    world = World()
+    async with world.client:
+        admin = world.account(email="root@example.com", role="ADMIN")
+        token = await world.token_of(admin)
+        world.app.state.auth_limiters = AuthLimiters(requests=Budget(3, 60))
+        for path in ("/auth/me", "/auth/sessions", "/admin/invitations"):
+            assert (await world.call("GET", path, token=token)).status_code == 200, path
+        refused = await world.call("GET", "/auth/me", token=token)
+        assert refused.status_code == 429 and refused.headers["Retry-After"]
+        world.app.state.auth_limiters = AuthLimiters(requests=None)
+        for _ in range(5):
+            assert (await world.call("GET", "/auth/me", token=token)).status_code == 200
