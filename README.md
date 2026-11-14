@@ -2453,24 +2453,46 @@ anyway. So on a laptop whose page does not fit (the dev server opened over the L
 does better to ask `rp_id_fits` first and pass neither `passkeys` nor `relying_party`: the
 passkey routes stay unmounted rather than fail in the browser, and the password works.
 
-**7. Pruning.** Nothing in the kit deletes an ended session, an expired link, an invitation
-never taken up or a spent challenge. Left alone, an ended session keeps its IP address and
-User-Agent for ever, which the privacy policy has to answer for. A scheduled job deletes them
-at the retention the policy names (0.30), behind the scheduler's token
-([`jobs`](#eifi1_server_kitjobs)) and on the request's unit of work, which commits it:
+**7. The daily jobs: pruning and the due erasures.** Nothing in a request deletes an ended
+session, an expired link, an invitation never taken up or a spent challenge. Left alone, an
+ended session keeps its IP address and User-Agent for ever, which the privacy policy has to
+answer for; and an `after_days` deletion's mail promises a day. **Schedule both before the
+first deploy of the account routes, and name the retention (30 days) in the privacy policy.**
+
+`account_jobs_router` (`auth.jobs`, 0.31) is the scheduler's side: `POST /ops/accounts/daily`
+runs the due erasures, then the prune, behind the app's jobs token
+([`jobs`](#eifi1_server_kitjobs), `X-Jobs-Token`); `/prune` and `/erase-due` run one each. The
+kit fixes the retention (`ACCOUNT_ROWS_RETENTION`, 30 days; `retention=` for another), the
+order and the answer; the app hands it the two jobs, because the transactions are its own:
 
 ```python
-@ops.post("/ops/prune-accounts", dependencies=[Depends(require_jobs_token(lambda: get_settings().jobs_token))])
-async def prune_accounts(session: RequestSession) -> dict[str, int]:
-    pruned = await prune_account_rows(
-        before=utc_now() - timedelta(days=30),
-        sessions=SqlSessionStore(session, UserSession),
-        passkeys=SqlPasskeyStore(session, Passkey, SpentChallenge),
-        links=SqlOneTimeTokenStore(session, OneTimeToken),
-        invitations=SqlInvitationStore(session, Invitation),
-    )
-    return {"pruned": pruned.total}
+async def prune(before: datetime) -> AccountPrune:
+    async with sessions() as session, session.begin():
+        return await prune_account_rows(
+            before=before,
+            sessions=SqlSessionStore(session, UserSession),
+            passkeys=SqlPasskeyStore(session, Passkey, SpentChallenge),
+            links=SqlOneTimeTokenStore(session, OneTimeToken),
+            invitations=SqlInvitationStore(session, Invitation),
+        )
+
+
+async def erase_due() -> ErasureRun:  # after_days only; leave it out in operator mode
+    async with sessions() as session:
+        ids = await SqlRosterStore(session, User).deletion_requested()
+    return await erase_due_accounts(ids, erase_one)  # erase_one: see erase_due_accounts
+
+
+app.include_router(
+    account_jobs_router(AccountJobsDeps(token=lambda: get_settings().jobs_token, prune=prune, erase_due=erase_due)),
+    prefix="/api/v1",
+)
 ```
+
+Then one Cloud Scheduler HTTP job, once a day (03:30 Europe/Zurich, say), `POST
+https://<host>/api/v1/ops/accounts/daily` with the header `X-Jobs-Token` from Secret Manager —
+as kastlan's and Kurvenschmiede's daily jobs already run. A one-off run clears the backlog of
+the day it runs and no more: the rows keep coming with every sign-in.
 
 A table kept longer than the others gets its own call to its store's `prune(before=…)`. A
 `before` that has not passed is refused: a row that expires later is still in use. "Passed"

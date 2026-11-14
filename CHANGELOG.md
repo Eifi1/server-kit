@@ -60,6 +60,13 @@ entry in the Conventional Commit; this file is assembled from them at release.
   between lost its file. Such an upload writes the object again, so a purge that spares files
   written within the span keeps it, logs it, and leaves it to the app's orphan sweep. Opt-in
   (one listing per key); an app's `purge_files` and its comment store's purge pass it.
+* **auth.jobs** (`fastapi` extra): `account_jobs_router(AccountJobsDeps(token, prune,
+  erase_due=None, retention=ACCOUNT_ROWS_RETENTION))`, the account layer's daily jobs as the
+  scheduler's routes behind the jobs token: `POST /ops/accounts/daily` (the due `after_days`
+  erasures, then the prune of rows done with for 30 days — an ended session's IP address and
+  browser among them), `/prune` and `/erase-due`. The app hands it its two jobs (its own
+  transactions); the kit fixes the retention, the order and the answer. One Cloud Scheduler
+  job a day runs it.
 
 ### Changed
 
