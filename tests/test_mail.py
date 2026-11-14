@@ -207,6 +207,14 @@ def test_the_account_notices_have_their_words() -> None:
     assert not {str(kind) for kind in AccountNoticeKind} & {str(kind) for kind in OneTimeTokenKind}
 
 
+async def test_the_console_mailer_logs_at_warning_by_default(caplog: pytest.LogCaptureFixture) -> None:
+    """0.31 (Staunlabor): uvicorn's logging leaves an app logger's INFO out, so the line was
+    there and nobody saw it; since 0.30 it carries nothing sensitive without show_content."""
+    with caplog.at_level(logging.WARNING, logger="eifi1_server_kit.mail"):
+        assert await ConsoleMailer().send("ada@example.com", MESSAGE, kind="verification")
+    assert [record.levelno for record in caplog.records] == [logging.WARNING]
+
+
 async def test_a_notice_is_sent_and_logged_under_its_word(caplog: pytest.LogCaptureFixture) -> None:
     """The kind is what an operator greps the logs and Resend's ``Idempotency-Key`` for."""
     with caplog.at_level(logging.INFO, logger="eifi1_server_kit.mail"):

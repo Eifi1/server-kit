@@ -603,10 +603,12 @@ class ConsoleMailer:
     recipient, the subject, the headers and the text, link included, as before 0.30: local
     development's, where a fresh checkout verifies an account by reading the backend log
     (keksdose's default) — pass it only there (``show_content=settings.database_is_local``).
-    kastlan logs at ``WARNING`` so the line shows under its default level; pass ``level``.
+    It logs at ``WARNING`` by default (0.31; ``INFO`` before): uvicorn's logging configuration
+    leaves an app logger's ``INFO`` out, so the line was there and nobody saw it (Staunlabor,
+    kastlan's choice all along). Pass ``level`` for another.
     """
 
-    def __init__(self, *, level: int = logging.INFO, log: logging.Logger = logger, show_content: bool = False) -> None:
+    def __init__(self, *, level: int = logging.WARNING, log: logging.Logger = logger, show_content: bool = False) -> None:
         self._level = level
         self._log = log
         self._show = show_content

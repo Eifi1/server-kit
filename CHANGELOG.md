@@ -54,6 +54,18 @@ entry in the Conventional Commit; this file is assembled from them at release.
   rule (ids, counts, flags, short tokens): a sentence there is an `AuditDetailError`, as
   everywhere in the log.
 
+* **user_admin (G8, Staunlabor):** `AccountPolicy.invitable_roles` no longer limits the role
+  change: `AdminPolicy.grantable_roles` is `grantable`, else every role but the reviewer role, and
+  an invitable role need only be grantable or the reviewer role (a subset, checked when the
+  router is built; 0.30 wanted the same list). "Invite members, promote an admin later" needs no
+  `grantable` of its own; an app that set `invitable_roles` to narrow the role change sets
+  `grantable` too.
+* **user_admin.testing:** `check_roster_store`'s roles default to `"ADMIN"`, `"MEMBER"` and
+  `"REVIEWER"`, as `auth.testing`'s since 0.30 (a role column with a CHECK refused the old
+  lower-case ones).
+* **mail:** `ConsoleMailer` logs at `WARNING` by default (was `INFO`, which uvicorn's logging
+  leaves out); `level=` sets another.
+
 ### Documentation
 
 * **README:** the reset request's floor beside "The work after the commit", and the test app's
