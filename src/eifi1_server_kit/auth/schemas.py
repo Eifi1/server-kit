@@ -185,6 +185,20 @@ class SharedDeviceChoice(BaseModel):
     shared_device: bool = False
 
 
+def _offered_locale(value: object, offered: Sequence[str] | None) -> object:
+    """The locale check every body with an ``offered_locales`` knob shares (settings §6.2; the
+    sign-up and the invitation since 0.30): canonical BEFORE the tag's pattern runs, so
+    ``de_ch`` is read as ``de-CH`` rather than refused for its underscore, and a language the
+    app doesn't offer is one refusal — the field's ``value_error``, a 422 — wherever it is
+    sent."""
+    if offered is None or not isinstance(value, str):
+        return value
+    locale = canonical_locale(value, offered)
+    if locale is None:
+        raise ValueError(f"locale must be one of {', '.join(offered)}")
+    return locale
+
+
 class RegisterRequest(SharedDeviceChoice):
     """``POST /auth/register`` (§4.2; keksdose ``UserCreate``).
 
@@ -197,6 +211,10 @@ class RegisterRequest(SharedDeviceChoice):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    #: The app's languages (0.30, ``AuthDeps.offered_locales`` sets it on the router's body);
+    #: ``None`` checks the tag's shape only, as before. :class:`ProfileUpdate`'s knob.
+    offered_locales: ClassVar[Sequence[str] | None] = None
 
     email: Email
     password: NewPassword
@@ -211,6 +229,11 @@ class RegisterRequest(SharedDeviceChoice):
     device_timezone: Annotated[str | None, BeforeValidator(_known_zone_or_none)] = Field(
         default=None, max_length=MAX_ZONE_LENGTH
     )
+
+    @field_validator("locale", mode="before")
+    @classmethod
+    def _offered_locale(cls, value: object) -> object:
+        return _offered_locale(value, cls.offered_locales)
 
 
 class LoginRequest(SharedDeviceChoice):
@@ -416,12 +439,7 @@ class ProfileUpdate(BaseModel):
     def _offered_locale(cls, value: object) -> object:
         """Canonical BEFORE the pattern runs, so ``de_ch`` is read as ``de-CH`` rather than
         refused for its underscore."""
-        if cls.offered_locales is None or not isinstance(value, str):
-            return value
-        locale = canonical_locale(value, cls.offered_locales)
-        if locale is None:
-            raise ValueError(f"locale must be one of {', '.join(cls.offered_locales)}")
-        return locale
+        return _offered_locale(value, cls.offered_locales)
 
     @model_validator(mode="before")
     @classmethod

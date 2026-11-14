@@ -11,6 +11,7 @@ from eifi1_server_kit.auth import (
     EXPORT_PER_ACCOUNT,
     LOGIN_FAILURE_MAX_DELAY,
     LOGIN_PER_IP,
+    MAIL_TEST_PER_ACCOUNT,
     PASSWORD_CHECK_PER_ACCOUNT,
     REDEEM_PER_IP,
     REFRESH_PER_IP,
@@ -23,6 +24,7 @@ from eifi1_server_kit.auth import (
     LoginFailureThrottle,
     login_failure_delay,
 )
+from eifi1_server_kit.mail import MAIL_TEST_LIMIT
 from eifi1_server_kit.user_admin import EXPORT_PER_USER
 
 
@@ -113,6 +115,7 @@ def test_auth_limiters_are_per_instance_with_the_budgets() -> None:
         "password_check": PASSWORD_CHECK_PER_ACCOUNT,
         "email_change": EMAIL_CHANGE_PER_ACCOUNT,
         "export": EXPORT_PER_ACCOUNT,
+        "mail_test": MAIL_TEST_PER_ACCOUNT,
     }
     for name, budget in budgets.items():
         limiter = getattr(first, name)
@@ -134,6 +137,11 @@ def test_the_account_layer_s_windows_are_the_apps_numbers() -> None:
     assert (Budget(20, 300), Budget(120, 60)) == (REDEEM_PER_IP, REFRESH_PER_IP)
     assert (Budget(10, 900), Budget(5, 3600)) == (PASSWORD_CHECK_PER_ACCOUNT, EMAIL_CHANGE_PER_ACCOUNT)
     assert EXPORT_PER_ACCOUNT == EXPORT_PER_USER
+
+
+def test_the_admin_s_test_mail_window_is_the_mail_module_s_budget() -> None:
+    """0.30: ``POST /admin/mail/test``, 3 in 10 minutes per admin (admin §9.2)."""
+    assert MAIL_TEST_PER_ACCOUNT == MAIL_TEST_LIMIT == Budget(3, 600)
 
 
 def test_an_app_keeps_its_own_numbers() -> None:

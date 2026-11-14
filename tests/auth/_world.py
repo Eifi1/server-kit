@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from eifi1_server_kit.auth import AuthLimiters
 from eifi1_server_kit.auth.passkeys import RelyingParty
 from eifi1_server_kit.auth.router import AuthDeps, auth_router, invitations_admin_router
-from eifi1_server_kit.auth.service import AccountLinks, AccountPolicy, AuthHooks
+from eifi1_server_kit.auth.service import AccountLinks, AccountPolicy, AccountService, AuthHooks
 from eifi1_server_kit.errors import install_contract_error_handlers
 from tests.auth_fakes import (
     Clock,
@@ -104,6 +104,26 @@ class World:
         else:
             self.after.drop()
         return response
+
+    def service(self, hooks: AuthHooks[Any, Any] | None = None, **options: Any) -> AccountService[Any, Any, Any]:
+        """The request's account service over this world's stores, without a router."""
+        values: dict[str, Any] = {
+            "users": self.users,
+            "sessions": self.sessions,
+            "tokens": self.tokens,
+            "invitations": self.invitations,
+            "log": self.log,
+            "after_commit": self.after,
+            "signer": self.signer,
+            "hasher": self.hasher,
+            "mailer": self.mailer,
+            "policy": self.deps.policy,
+            "limiters": AuthLimiters(),
+            "hooks": hooks,
+            "now": self.clock,
+        }
+        values.update(options)
+        return AccountService(**values)
 
     def account(self, **values: Any) -> MemoryUser:
         values.setdefault("email", "ada@example.com")

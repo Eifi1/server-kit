@@ -41,6 +41,7 @@ annotation that names a local.
 
 import asyncio
 import json
+import types
 import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -214,6 +215,11 @@ class AuthDeps:
     deletion_terms_model: type[DeletionTerms] = DeletionTerms
     deletion_result_model: type[DeletionResult] = DeletionResult
     # The app's choices.
+    #: The app's languages (0.30): the sign-up's, the invitation's and the profile's locale is
+    #: one of them, one refusal for the three (the field's 422, as ``ProfileUpdate`` answers
+    #: it), ``de_ch`` stored as ``de-CH``. ``None``: the tag's shape only, as in 0.29. A body
+    #: model whose own ``offered_locales`` disagrees is refused when the router is built.
+    offered_locales: tuple[str, ...] | None = None
     #: The app's words for a kind of mail, in place of the kit's (:mod:`~eifi1_server_kit.auth.mails`).
     mail_texts: Mapping[AccountMailText | str, Mapping[str, MailText]] = field(default_factory=dict)
     #: The caller's address for the per-IP windows.
@@ -233,6 +239,10 @@ class _Built:
     current_user: Callable[..., Awaitable[Any]]
     admin_guard: Callable[..., Awaitable[Any]]
     token_model: type[TokenResponse[Any]]
+    #: The bodies that carry a locale, with ``AuthDeps.offered_locales`` set on them (0.30).
+    register_model: type[RegisterRequest]
+    profile_model: type[ProfileUpdate]
+    invitation_create_model: type[InvitationCreate]
 
 
 _BUILT: weakref.WeakKeyDictionary[AuthDeps, _Built] = weakref.WeakKeyDictionary()
@@ -291,7 +301,39 @@ def _build(deps: AuthDeps) -> _Built:
         return user
 
     token_model = deps.token_model or TokenResponse[deps.me_model]  # type: ignore[name-defined]
-    return _Built(service, signed_in, current, guard, token_model)
+    offered = deps.offered_locales
+    return _Built(
+        service,
+        signed_in,
+        current,
+        guard,
+        token_model,
+        _offering(deps.register_model, offered),
+        _offering(deps.profile_model, offered),
+        _offering(deps.invitation_create_model, offered),
+    )
+
+
+def _offering[ModelT: BaseModel](model: type[ModelT], offered: tuple[str, ...] | None) -> type[ModelT]:
+    """``model`` checking its locale against ``offered`` (0.30): the app's own subclass as it
+    is when it already says the same, a subclass with the knob set when it says nothing."""
+    if offered is None:
+        return model
+    own = getattr(model, "offered_locales", None)
+    if own is not None:
+        if tuple(own) != offered:
+            raise ValueError(
+                f"{model.__name__}.offered_locales {tuple(own)} disagrees with AuthDeps.offered_locales {offered}"
+            )
+        return model
+    namespace = {
+        "__module__": model.__module__,
+        "__qualname__": model.__qualname__,
+        "__doc__": model.__doc__,
+        "offered_locales": offered,
+    }
+    # new_class, not type(): the class goes through Pydantic's metaclass like a written one.
+    return cast("type[ModelT]", types.new_class(model.__name__, (model,), exec_body=lambda ns: ns.update(namespace)))
 
 
 def _built(deps: AuthDeps) -> _Built:
@@ -358,7 +400,7 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
             return challenge_model.model_validate({"challenge_token": outcome.challenge_token, **outcome.extras})
         return await session_answer(accounts, outcome)
 
-    register_model = deps.register_model
+    register_model = built.register_model
 
     @router.post("/register", response_model=token_model, status_code=status.HTTP_201_CREATED)
     async def register(payload: register_model, request: Request, accounts: Accounts) -> BaseModel:  # type: ignore[valid-type]
@@ -415,7 +457,7 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
         """The account (§6.1): the shell reads it here, never from the token."""
         return await accounts.me(user, me_model)
 
-    profile_model = deps.profile_model
+    profile_model = built.profile_model
 
     @router.patch("/me", response_model=me_model)
     async def update_me(payload: profile_model, user: User, accounts: Accounts) -> BaseModel:  # type: ignore[valid-type]
@@ -648,7 +690,7 @@ def invitations_admin_router(
     guards = [Depends(guard or built.admin_guard)]
     row_model = deps.invitation_row_model
     issued_model = deps.invitation_issued_model
-    create_model = deps.invitation_create_model
+    create_model = built.invitation_create_model
     show_link = deps.mail_backend == MAIL_BACKEND_CONSOLE
     router = APIRouter(prefix=prefix, tags=list(tags))
 

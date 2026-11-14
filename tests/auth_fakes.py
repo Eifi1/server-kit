@@ -288,6 +288,12 @@ class MemoryInvitationStore:
     async def revoke(self, invitation: MemoryInvitation, *, at: datetime) -> None:
         invitation.revoked_at = at
 
+    async def forget_accepted(self, user_id: int) -> Sequence[str]:
+        gone = [row for row in self.rows.values() if row.accepted_by_user_id == user_id]
+        for row in gone:
+            del self.rows[row.id]
+        return [row.email for row in gone]
+
 
 # --- passkeys ---------------------------------------------------------------------------------
 

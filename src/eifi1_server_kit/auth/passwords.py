@@ -14,7 +14,9 @@ the canon), kastlan (``domain/services/auth_service.py:80-82``) and Kurvenschmie
 that two paths cost the same (KS S3). :func:`absent_account_check` holds it once.
 
 The kit hashes no password and depends on no hasher: each app keeps its own (bcrypt in
-keksdose and Kurvenschmiede, passlib in kastlan) and hands its two functions in.
+keksdose and Kurvenschmiede, passlib in kastlan) and hands its two functions in. Since 0.30
+the ``bcrypt`` extra has one ready, :class:`~eifi1_server_kit.auth.bcrypt_hasher.BcryptHasher`,
+whose ``hash`` and ``verify`` are those two functions.
 """
 
 from __future__ import annotations

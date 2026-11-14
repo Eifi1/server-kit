@@ -30,9 +30,11 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 __all__ = [
     "DEFAULT_PASSKEY_NAME",
@@ -45,10 +47,13 @@ __all__ = [
     "base64url_encode",
     "credential_id_of",
     "registration_options",
+    "rp_id_fits",
     "user_handle_of",
     "verify_authentication",
     "verify_registration",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: What a passkey added with a blank name is called (Kurvenschmiede ``DEFAULT_NAME``): the
 #: same word in every language the apps speak.
@@ -58,11 +63,39 @@ DEFAULT_PASSKEY_NAME = "Passkey"
 type PasskeyCeremony = Literal["registration", "authentication"]
 
 
+def rp_id_fits(rp_id: str, origin: str) -> bool:
+    """Is ``rp_id`` the host of ``origin``, or a suffix of it at a dot? The browser's rule for
+    a ceremony on that page (``staunlabor.app`` fits ``https://staunlabor.app`` and
+    ``https://www.staunlabor.app``; ``localhost`` fits ``http://localhost:5176`` and not
+    ``http://192.168.1.20:5176``), held once for :class:`RelyingParty` and an app's boot
+    check, which may only warn on a developer's machine (Staunlabor's and Kurvenschmiede's
+    ``webauthn_rp_id_fits``, 0.29). An app that only mounts passkeys where they can work asks
+    it before it builds a :class:`RelyingParty`.
+
+    It does not know the public suffix list (``app`` alone fits ``https://staunlabor.app``
+    here and is refused by every browser): that refusal is the browser's, and a second copy
+    of the list would be a second, wrong one. An unreadable origin fits nothing."""
+    rp_id = rp_id.strip().lower()
+    try:
+        host = (urlsplit(origin).hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    return bool(rp_id) and (host == rp_id or host.endswith("." + rp_id))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RelyingParty:
     """The app as WebAuthn knows it: ``rp_id`` its registrable domain (``staunlabor.app``;
     ``localhost`` in development), ``rp_name`` what the authenticator shows, and ``origins``
-    the exact page origins an answer may come from (``https://staunlabor.app``)."""
+    the exact page origins an answer may come from (``https://staunlabor.app``).
+
+    Every origin should fit the RP id (:func:`rp_id_fits`): a browser refuses every ceremony
+    on a page that does not, in the person's browser and in no log. Since 0.30 construction
+    says so, once, as a WARNING naming the RP id and each origin that does not fit, and
+    builds all the same, as 0.29 did: a dev server opened over the LAN still starts and its
+    passwords work, and a wrong RP id opens nothing, since the browser refuses the ceremony.
+    An app that would rather not offer passkeys where they cannot work asks
+    :func:`rp_id_fits` first and builds no relying party there."""
 
     rp_id: str
     rp_name: str
@@ -73,6 +106,14 @@ class RelyingParty:
             raise ValueError(f"rp_id is a lower-case domain: {self.rp_id!r}")
         if not self.origins or not all(origin.startswith(("https://", "http://")) for origin in self.origins):
             raise ValueError("origins are one or more http(s) origins")
+        misfits = [origin for origin in self.origins if not rp_id_fits(self.rp_id, origin)]
+        if misfits:
+            logger.warning(
+                "The passkeys' rp_id %r does not fit %s: it is neither the origin's host nor a suffix of it"
+                " at a dot, so no browser runs a passkey ceremony there",
+                self.rp_id,
+                ", ".join(map(repr, misfits)),
+            )
 
 
 class PasskeyCheckError(ValueError):

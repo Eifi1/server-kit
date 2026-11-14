@@ -38,6 +38,7 @@ from eifi1_server_kit.auth.sql import (
     SqlInvitationStore,
     SqlOneTimeTokenStore,
     SqlPasskeyStore,
+    SqlRosterStore,
     SqlSessionStore,
     SqlUserStore,
 )
@@ -51,7 +52,9 @@ from eifi1_server_kit.auth.testing import (
     check_user_store,
 )
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
-from eifi1_server_kit.user_admin import AdminAction, admin_action_record
+from eifi1_server_kit.user_admin import AdminAction, admin_action_record, parse_roster_query
+from eifi1_server_kit.user_admin.ports import AcceptedInvitations
+from eifi1_server_kit.user_admin.testing import check_accepted_invitations, check_roster_store
 
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
 
@@ -704,3 +707,48 @@ async def test_the_admin_log_keeps_the_contract(session: AsyncSession) -> None:
 
 async def test_the_after_commit_queue_keeps_the_contract(session: AsyncSession) -> None:
     await check_after_commit(SqlAfterCommit(session), commit=session.commit, rollback=session.rollback)
+
+
+# ── 0.30: the roster and the invitations an erasure forgets ─────────────────
+
+
+async def test_the_roster_keeps_the_contract_with_and_without_a_demo(session: AsyncSession) -> None:
+    await _user(session, "own@example.org")
+    await check_roster_store(SqlRosterStore(session, User), SqlUserStore(session, User))
+
+    async def add_demo(new: NewAccount) -> Account:
+        row = await SqlUserStore(session, Account).add(new)
+        row.is_demo = True
+        await session.flush()
+        return row
+
+    await check_roster_store(SqlRosterStore(session, Account), SqlUserStore(session, Account), add_demo=add_demo)
+
+
+async def test_without_a_reviewer_role_a_reviewer_is_an_account_with_review_locales(session: AsyncSession) -> None:
+    users = SqlUserStore(session, User)
+    plain = await users.add(_account("plain@example.org"))
+    cleared = await users.add(_account("cleared@example.org"))
+    reviewer = await users.add(_account("rev@example.org"))
+    await users.apply(reviewer, {"translation_review_locales": ["fr"]})
+    # A scope set and taken away again: JSON null on the column, not SQL NULL.
+    await users.apply(cleared, {"translation_review_locales": ["it"]})
+    await users.apply(cleared, {"translation_review_locales": None})
+    rows, total = await SqlRosterStore(session, User).page(
+        parse_roster_query(state="reviewer"), admin_role="admin", reviewer_role=None
+    )
+    assert [row.id for row in rows] == [reviewer.id] and total == 1
+    assert plain.id != reviewer.id
+
+
+async def test_the_roster_refuses_a_sort_key_it_has_no_column_for(session: AsyncSession) -> None:
+    query = parse_roster_query(sort="plan", sort_keys=("plan",))
+    with pytest.raises(ValueError, match="sorts by no plan"):
+        await SqlRosterStore(session, User).page(query, admin_role="admin", reviewer_role="reviewer")
+
+
+async def test_the_invitation_store_forgets_what_an_erased_account_accepted(session: AsyncSession) -> None:
+    store = SqlInvitationStore(session, Invitation)
+    assert isinstance(store, AcceptedInvitations)
+    one, two, three = await _ids(session, "f1@example.org", "f2@example.org", "f3@example.org")
+    await check_accepted_invitations(store, inviter_id=one, user_id=two, other_user_id=three)

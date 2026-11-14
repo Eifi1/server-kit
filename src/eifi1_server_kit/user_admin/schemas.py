@@ -26,10 +26,20 @@ leaves them out is refused.
 from __future__ import annotations
 
 import enum
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, ClassVar, Self
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from eifi1_server_kit.auth.schemas import (
@@ -39,6 +49,7 @@ from eifi1_server_kit.auth.schemas import (
     ExistingPassword,
     LocaleTag,
     UserResponse,
+    _offered_locale,
 )
 from eifi1_server_kit.auth.tokens import _aware
 from eifi1_server_kit.user_admin.actions import AdminAction, ConfirmationLevel
@@ -50,20 +61,24 @@ __all__ = [
     "MAX_ROLE_LENGTH",
     "ActionConfirmation",
     "ActiveChange",
+    "AdminActionPage",
     "AdminActionRow",
     "AdminUserRow",
     "DeletionRequest",
     "EmailChangeConfirm",
     "EmailChangeRequest",
+    "ErasureResult",
     "GroupRef",
     "InvitationCreate",
     "InvitationIssued",
     "InvitationRow",
     "InvitationStatus",
+    "MailBackendInfo",
     "MailKind",
     "MailRequest",
     "MailResult",
     "PersonRef",
+    "ReviewerResult",
     "ReviewerUpdate",
     "RoleChange",
     "RolesChange",
@@ -242,6 +257,14 @@ class MailResult(BaseModel):
         return self
 
 
+class MailBackendInfo(BaseModel):
+    """``GET /admin/mail`` (0.30): the transport the mail actions go through, the value
+    :class:`MailResult` carries — so the admin page knows before its first mail whether a
+    link will be shown instead of sent (:data:`MAIL_BACKEND_CONSOLE`)."""
+
+    mail_backend: str
+
+
 class ReviewerUpdate(BaseModel):
     """``PUT /admin/users/{id}/reviewer {locales, areas}`` (§4.1; keksdose
     ``AdminReviewerRequest``): the reviewer role and its scope in one write. ``[]``
@@ -254,6 +277,17 @@ class ReviewerUpdate(BaseModel):
 
     locales: list[str] = Field(max_length=MAX_REVIEWER_ENTRIES)
     areas: list[str] | None = Field(default=None, max_length=MAX_REVIEWER_ENTRIES)
+
+
+class ReviewerResult(BaseModel):
+    """The answer to ``PUT /admin/users/{id}/reviewer`` (0.30; keksdose's, Kurvenschmiede's
+    and kastlan's ``{user_id, role, locales, areas}``): the grant as stored, the locales in
+    the app's order, ``areas`` ``None`` for every area."""
+
+    user_id: int
+    role: str | None
+    locales: list[str]
+    areas: list[str] | None = None
 
 
 class PersonRef(BaseModel):
@@ -311,7 +345,19 @@ class AdminActionRow(BaseModel):
     company_id: int | None = None
     target_group_id: int | None = None
     actor: PersonRef | None = None
+    #: The target as a person (0.30, joined by the admin router as ``actor`` is; keksdose's
+    #: and Kurvenschmiede's ``target``); ``None`` for an invitation and after an erasure.
+    target: PersonRef | None = None
     target_group: GroupRef | None = None
+
+
+class AdminActionPage[RowT = AdminActionRow](BaseModel):
+    """``GET /admin/actions`` (0.30): one page, newest first, and how many rows the filter
+    matches in all — keksdose's and Kurvenschmiede's ``{actions, total}``, what the kit's
+    ``AdminActionLog`` pages over."""
+
+    actions: list[RowT]
+    total: int = Field(ge=0)
 
 
 # --- §5: invitations -------------------------------------------------------------------
@@ -365,11 +411,20 @@ class InvitationCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: The app's languages (0.30, ``AuthDeps.offered_locales`` sets it on the router's body):
+    #: the invitee's language is one the app speaks; ``None`` checks the tag's shape only.
+    offered_locales: ClassVar[Sequence[str] | None] = None
+
     email: Email
     role: _Role
     scope: int | str | None = None
     note: Annotated[_Note | None, BeforeValidator(_blank_is_none)] = None
     locale: LocaleTag = DEFAULT_LOCALE
+
+    @field_validator("locale", mode="before")
+    @classmethod
+    def _offered_locale(cls, value: object) -> object:
+        return _offered_locale(value, cls.offered_locales)
 
 
 class InvitationRow(BaseModel):
@@ -434,6 +489,14 @@ class EmailChangeConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     token: str = Field(min_length=1, max_length=256)
+
+
+class ErasureResult(BaseModel):
+    """The answer to ``POST /admin/users/{id}/erase`` (0.30, §6.4's ``operator`` mode): how
+    many feedback reports were anonymised. The app's ``erase`` hook adds its own counts
+    (Kurvenschmiede's ``handed_over``) in a subclass."""
+
+    feedback_anonymised: int = Field(default=0, ge=0)
 
 
 class DeletionRequest(BaseModel):

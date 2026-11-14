@@ -48,6 +48,8 @@ services set ``KEKSDOSE_DB_SOCKET_DIR``; KS ``deployment is Deployment.PRODUCTIO
 **The database half of that proof** is :func:`database_is_local` (0.21): a loopback host on a
 port the app's own Postgres listens on, or one of the local socket directories — never the
 host alone, because a tunnel to a deployment's database listens on the loopback too.
+:func:`origin_is_local` (0.30) asks the other question an app's boot asks: is the site
+served where the internet cannot reach it, so the boot checks may warn instead of refuse?
 
 **The recipe** (the kit ships no router for it, as for billing's routes; ``<APP>``,
 ``is_local_run`` and ``is_production`` are the app's own, as above)::
@@ -163,6 +165,7 @@ __all__ = [
     "database_is_local",
     "dev_switch_enabled",
     "effective_today",
+    "origin_is_local",
     "require_dev_switch",
     "validate_dev_switch",
 ]
@@ -350,6 +353,54 @@ def database_is_local(
         elif not (_loopback(host.lower()) and port in ports):
             return False
     return True
+
+
+#: Host names that are this machine whatever the network: ``0.0.0.0`` too, the address a dev
+#: server bound to every interface prints, which a browser on the same machine opens.
+_LOCAL_ORIGIN_NAMES = frozenset({"localhost", "0.0.0.0"})
+#: Suffixes no public DNS answers for (RFC 6761's ``localhost`` and ``test``, RFC 6762's
+#: ``local``, RFC 8375's ``home.arpa``, ICANN's ``internal``): a name under one is a desk
+#: or a LAN, never the internet.
+_LOCAL_ORIGIN_SUFFIXES = (".localhost", ".local", ".test", ".home.arpa", ".internal")
+
+
+def origin_is_local(url: str) -> bool:
+    """Is the site at ``url`` served from this machine or a private network, where the
+    internet cannot reach it? The question an app's boot asks before it refuses a
+    deployment's mistakes (a placeholder signing key, an open first sign-up) or only warns
+    about them on a developer's machine (Staunlabor's ``origin_is_local``, 0.29)::
+
+        deployed = bool(settings.cloud_run_service) or not origin_is_local(settings.app_base_url)
+
+    Local is the URL's host being one of:
+
+    * ``localhost``, ``0.0.0.0``, or a name under ``.localhost``, ``.local``, ``.test``,
+      ``.home.arpa`` or ``.internal`` (a trailing root dot ignored);
+    * a loopback, private or link-local address (``127.0.0.1``, ``::1``, ``192.168.1.20``,
+      ``10.0.0.5``, ``fe80::1``, ``fd00::1``): a phone on the desk opens the dev server
+      over the LAN.
+
+    **Fail-closed**: anything else is not local, and so is anything unreadable (no scheme, no
+    host, an unparsable address): the doubt counts as a deployment. A shared or carrier
+    address (``100.64.0.0/10``) is not local either.
+
+    **Not the dev switch's proof**: a private address is local here, because the question
+    is who can reach the SITE. Whether the process may let a user make themselves ADMIN is
+    stricter, :func:`database_is_local` and the app's production signal.
+    """
+    try:
+        host = (urlsplit(url.strip()).hostname or "").rstrip(".")
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host in _LOCAL_ORIGIN_NAMES or host.endswith(_LOCAL_ORIGIN_SUFFIXES):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
 
 
 # --- the refusals ------------------------------------------------------------------------
