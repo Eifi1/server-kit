@@ -285,3 +285,35 @@ async def test_every_account_and_admin_route_shares_one_window_per_address() -> 
         world.app.state.auth_limiters = AuthLimiters(requests=None)
         for _ in range(5):
             assert (await world.call("GET", "/auth/me", token=token)).status_code == 200
+
+
+async def test_password_changing_may_refuse_with_the_app_s_own_code() -> None:
+    """keksdose's KG-6 (0.32): its private mode refuses a change with its own 409s
+    (``wrap_required``, ``wrap_unchanged``, ``no_wrap``), through its own error and handler;
+    the kit lets the hook's exception pass, and the extras ride on both answers (0.29)."""
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    class PrivateModeError(Exception):
+        def __init__(self, code: str) -> None:
+            self.code = code
+
+    world = World()
+
+    async def handler(request: Request, exc: Exception) -> JSONResponse:
+        assert isinstance(exc, PrivateModeError)
+        return JSONResponse({"detail": "Re-seal your key", "code": exc.code}, status_code=409)
+
+    world.app.add_exception_handler(PrivateModeError, handler)
+    async with world.client:
+        user = world.account()
+        token = await world.token_of(user)
+
+        async def password_changing(account: MemoryUser, body: Any) -> dict[str, Any]:
+            raise PrivateModeError("wrap_required")
+
+        world.hooks = AuthHooks(password_changing=password_changing)
+        body = {"current_password": PASSWORD, "new_password": "a new password"}
+        refused = await world.call("POST", "/auth/me/password", token=token, json=body)
+        assert (refused.status_code, refused.json()["code"]) == (409, "wrap_required")
+        assert user.password_hash == f"hashed:{PASSWORD}"

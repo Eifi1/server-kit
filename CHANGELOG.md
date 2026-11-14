@@ -57,6 +57,12 @@ entry in the Conventional Commit; this file is assembled from them at release.
   the inviting admin's language, not the schema's `de-CH`; a body that names one wins, and an
   admin with no language of their own still gets the default.
 
+### Documentation
+
+* **README (keksdose's KG-6):** `password_changing`'s extras ride on both the voluntary and the forced
+  change's answer, and the hook may refuse with the app's own exception, which the app's handler
+  answers (keksdose's `wrap_required`); a test pins it.
+
 ## [0.31.0] (2026-11-14)
 
 server-kit 0.31.0: what the first two apps on the account layer found (Kurvenschmiede's move

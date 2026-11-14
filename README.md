@@ -703,7 +703,7 @@ rides on the route's answer, which the app's answer model declares.
 | `invitation_scope(admin, scope)` → stored mapping | an admin's `scope`; without it a scope is `invitation_scope_invalid` | 1 |
 | `claims(user, session)` → extra claims | every access token minted; may refuse a refresh | 2 |
 | `bind(user, claims)` | every signed-in request, after the kit's checks; may refuse | 2 |
-| `password_changing(user, body)` → extras | before a voluntary or forced change (keksdose's key wrap) | 3 |
+| `password_changing(user, body)` → extras | before a voluntary or forced change (keksdose's key wrap); the extras ride on both answers, and the hook may refuse with a kit refusal or the app's own exception, which its own handler answers (keksdose's `wrap_required` 409) | 3 |
 | `challenge_extras(user)` → extras | the forced change's challenge (keksdose's `encrypted`) | 3 |
 | `reset_extras(user, confirmed)` → extras | the reset's check (`False`) and confirm (`True`) | 3 |
 | `passkey_extensions(user \| None, ceremony)` → extensions | both ceremonies' options (keksdose's `prf`) | 3 |
