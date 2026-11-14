@@ -204,7 +204,8 @@ class UserAdminHooks[UserT: AccountRow = Any]:
     role_changing: Callable[[UserT, UserT, frozenset[str], frozenset[str]], Awaitable[None]] | None = None
     #: A reactivation, before it is written: ``(admin, target)``; refuse to refuse it
     #: (kastlan's seats again).
-    activating: Callable[[UserT, UserT], Awaitable[None]] | None = None
+    #: It may answer a mapping (0.32, keksdose's KG-7): the reactivate row's detail.
+    activating: Callable[[UserT, UserT], Awaitable[_Extras | None]] | None = None
     #: The log's groups: their names by id (Kurvenschmiede's teams, kastlan's companies), a
     #: deleted one's from its ``group_delete`` row.
     group_names: Callable[[Sequence[int]], Awaitable[Mapping[int, str | None]]] | None = None
@@ -393,20 +394,21 @@ class UserAdminService[UserT: AccountRow]:
         await self.scope.refuse_last_admin(target)
         await self._confirm(AdminAction.DEACTIVATE, target, body)
         target = await self._users.apply(target, {"is_active": False})
-        await self.accounts.end_sessions(target, SessionsEndedReason.DEACTIVATED)
-        await self._record(AdminAction.DEACTIVATE, admin, target, {"sessions_ended": True})
+        _, extras = await self.accounts.end_sessions_noting(target, SessionsEndedReason.DEACTIVATED)
+        await self._record(AdminAction.DEACTIVATE, admin, target, {"sessions_ended": True, **extras})
         return target
 
     async def _reactivate(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:
         await self.scope.refuse_account_wide(target, AdminAction.REACTIVATE)
         await self._confirm(AdminAction.REACTIVATE, target, body)
+        extras: _Extras = {}
         if self._hooks.activating is not None:
-            await self._hooks.activating(admin, target)
+            extras = await self._hooks.activating(admin, target) or {}
         if target.deletion_requested_at is not None:
             target = await self.accounts.withdraw_deletion(target, actor_id=admin.id)
         else:
             target = await self._users.apply(target, {"is_active": True})
-        await self._record(AdminAction.REACTIVATE, admin, target)
+        await self._record(AdminAction.REACTIVATE, admin, target, dict(extras) or None)
         return target
 
     # --- the role --------------------------------------------------------------------------
@@ -451,8 +453,8 @@ class UserAdminService[UserT: AccountRow]:
         await self.scope.refuse_account_wide(target, AdminAction.PASSWORD_CHANGE_REQUIRE)
         await self._confirm(AdminAction.PASSWORD_CHANGE_REQUIRE, target, body)
         target = await self._users.apply(target, {"password_change_required_at": self._now()})
-        await self.accounts.end_sessions(target, SessionsEndedReason.PASSWORD_CHANGE_REQUIRED)
-        await self._record(AdminAction.PASSWORD_CHANGE_REQUIRE, admin, target, {"sessions_ended": True})
+        _, extras = await self.accounts.end_sessions_noting(target, SessionsEndedReason.PASSWORD_CHANGE_REQUIRED)
+        await self._record(AdminAction.PASSWORD_CHANGE_REQUIRE, admin, target, {"sessions_ended": True, **extras})
         return target
 
     async def withdraw_password_change(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:

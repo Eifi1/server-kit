@@ -791,3 +791,30 @@ async def test_a_batch_that_answers_another_number_of_rows_is_refused(world: Adm
     _, token = await world.admin_token()
     with pytest.raises(ValueError, match="to_rows"):
         await world.call("GET", "/admin/users", token=token)
+
+
+async def test_the_hooks_add_their_counts_to_the_rows_of_the_session_ends(world: AdminWorld) -> None:
+    """keksdose's KG-7 (0.32): what ``sessions_ended`` and ``activating`` answer joins the
+    deactivate, password-change and reactivate rows' detail (its API-token counts)."""
+    from eifi1_server_kit.user_admin.service import UserAdminHooks
+
+    _, token = await world.admin_token()
+    user = world.account(email="ada@example.com")
+
+    async def sessions_ended(account: MemoryUser, reason: SessionsEndedReason) -> dict[str, int]:
+        return {"revoked_api_token_count": 2} if reason == "deactivated" else {"live_api_token_count": 1}
+
+    async def activating(admin: MemoryUser, target: MemoryUser) -> dict[str, int]:
+        return {"resumed_subscriptions": 1}
+
+    world.hooks = AuthHooks(sessions_ended=sessions_ended)
+    world.admin_hooks = UserAdminHooks(activating=activating)
+    path = f"/admin/users/{user.id}/active"
+    await world.call("POST", path, token=token, json={"active": False, "confirm_email": "ada@example.com"})
+    await world.call("POST", path, token=token, json={"active": True, "acknowledged": True})
+    await world.call("POST", f"/admin/users/{user.id}/password-change", token=token, json={"acknowledged": True})
+    assert [(row.action, dict(row.detail)) for row in world.log.rows] == [
+        ("deactivate", {"sessions_ended": True, "revoked_api_token_count": 2}),
+        ("reactivate", {"resumed_subscriptions": 1}),
+        ("password_change_require", {"sessions_ended": True, "live_api_token_count": 1}),
+    ]

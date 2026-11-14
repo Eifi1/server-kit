@@ -296,7 +296,9 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: RLS variables), or refuse (its 401 for a lost membership, 403 for a closed company).
     bind: Callable[[UserT, Mapping[str, Any]], Awaitable[None]] | None = None
     #: Seam 4: every session of the account ended, and why: what else ends with them.
-    sessions_ended: Callable[[UserT, SessionsEndedReason], Awaitable[None]] | None = None
+    #: It may answer a mapping (0.32, keksdose's KG-7): its counts join the detail of the
+    #: admin's row that ended the sessions (deactivate, password_change_require).
+    sessions_ended: Callable[[UserT, SessionsEndedReason], Awaitable[_Extras | None]] | None = None
     #: Seam 3: a password is about to change (the voluntary change and the forced one),
     #: with the app's body: refuse, or answer extras (keksdose's key wrap,
     #: ``key_wrap_unchanged``).
@@ -644,23 +646,27 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         sessions through the rows only, and its store refuses a column it lacks."""
         return {"sessions_invalid_before": now} if hasattr(user, "sessions_invalid_before") else {}
 
-    async def _sessions_ended(self, user: UserT, reason: SessionsEndedReason) -> None:
+    async def _sessions_ended(self, user: UserT, reason: SessionsEndedReason) -> dict[str, Any]:
         """What every "every session ends" does beside the rows: the pending address change
-        goes too (keksdose: its notice names a new password as the remedy), then the hook."""
+        goes too (keksdose: its notice names a new password as the remedy), then the hook,
+        whose answer (0.32) is handed back for the row that ended them."""
         await self._tokens.drop(OneTimeTokenKind.EMAIL_CHANGE, user.id)
-        if self._hooks.sessions_ended is not None:
-            await self._hooks.sessions_ended(user, reason)
+        return await self._extras(self._hooks.sessions_ended, user, reason)
 
     async def end_sessions(self, user: UserT, reason: SessionsEndedReason) -> int:
         """Every session of the account ends, for ``reason`` (0.30, the admin's deactivation
         and forced password change): every row, the ``iat`` cut-off where the row has one, the
         pending address change, and the ``sessions_ended`` hook (keksdose's API tokens and push
         devices). Nothing else is cleared. Answers how many rows ended."""
+        return (await self.end_sessions_noting(user, reason))[0]
+
+    async def end_sessions_noting(self, user: UserT, reason: SessionsEndedReason) -> tuple[int, dict[str, Any]]:
+        """:meth:`end_sessions`, answering the ``sessions_ended`` hook's mapping beside the
+        count (0.32): the admin router puts it on its row."""
         ended = await self._sessions.end_all(user.id)
         if cutoff := self._cutoff(user, self._now()):
             await self._users.apply(user, cutoff)
-        await self._sessions_ended(user, reason)
-        return ended
+        return ended, await self._sessions_ended(user, reason)
 
     async def _sign_in(
         self, user: UserT, *, shared: bool, ip: str | None, device: str | None

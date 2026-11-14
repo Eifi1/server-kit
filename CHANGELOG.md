@@ -37,6 +37,11 @@ entry in the Conventional Commit; this file is assembled from them at release.
 * **auth (Kurvenschmiede's ui-kit dev.2 run):** `InvitationAccepted.group` (`InvitationGroup`:
   `id`, `name`), what `invitation_group` names, in `POST /auth/invitations/accept`'s answer, so
   ui-kit 0.64's page says what the account joined; `None` without the hook or a group.
+* **auth, user_admin (keksdose's KG-7):** `AuthHooks.sessions_ended` and
+  `UserAdminHooks.activating` may answer a mapping: its counts join the detail of the admin's
+  `deactivate`, `password_change_require` and `reactivate` rows (keksdose's
+  `revoked_api_token_count`, `live_api_token_count`). `AccountService.end_sessions_noting(user,
+  reason)` answers the count and the hook's mapping; `end_sessions` still answers the count.
 
 ### Changed
 
