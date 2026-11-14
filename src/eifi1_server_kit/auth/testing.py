@@ -1377,7 +1377,7 @@ async def check_two_factor_store(store: TwoFactorStore, *, user_id: int, other_u
 
     ``user_id`` and ``other_user_id`` are two existing accounts. It writes a whole state to
     each — a sealed secret as long as :class:`~eifi1_server_kit.auth.seal.SecretBox` makes
-    one, a pending one, and a time step of today's size — reads them back with and without
+    one, a pending one, a time step of today's size and ten backup-code digests — reads them back with and without
     the lock, clears one, and puts both accounts' states back as it found them.
     """
     _two_accounts(user_id, other_user_id)
@@ -1386,7 +1386,11 @@ async def check_two_factor_store(store: TwoFactorStore, *, user_id: int, other_u
     token = secrets.token_urlsafe(60)[:80]
     step = int(utc_now().timestamp()) // TOTP_STEP_SECONDS
     written = TwoFactorState(
-        enabled=True, secret=f"enc:v1:{token}", pending_secret=f"enc:v1:{token[::-1]}", last_step=step
+        enabled=True,
+        secret=f"enc:v1:{token}",
+        pending_secret=f"enc:v1:{token[::-1]}",
+        last_step=step,
+        backup_codes=tuple(hash_token(f"{token}-{number}") for number in range(10)),
     )
     other = TwoFactorState(enabled=False, pending_secret=f"enc:v1:{token.upper()}")
     await store.save(user_id, written)

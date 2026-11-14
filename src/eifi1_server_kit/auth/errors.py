@@ -92,6 +92,8 @@ class AuthErrorCode(enum.StrEnum):
     TWO_FACTOR_UNAVAILABLE = "two_factor_unavailable"
     #: A code to confirm a setup that was never started (or was dropped by switching off).
     TWO_FACTOR_NOT_PENDING = "two_factor_not_pending"
+    #: New backup codes for an account whose two-factor sign-in is off (0.32).
+    TWO_FACTOR_NOT_ENABLED = "two_factor_not_enabled"
 
 
 #: Each code's status. The token codes are ``400`` as keksdose answers a bad reset or
@@ -124,6 +126,7 @@ AUTH_ERROR_STATUS: Mapping[AuthErrorCode, int] = {
     AuthErrorCode.TWO_FACTOR_INVALID: 400,
     AuthErrorCode.TWO_FACTOR_UNAVAILABLE: 503,
     AuthErrorCode.TWO_FACTOR_NOT_PENDING: 404,
+    AuthErrorCode.TWO_FACTOR_NOT_ENABLED: 409,
 }
 
 #: The English ``detail`` of each code, keksdose's words where it had them. The pages
@@ -158,6 +161,7 @@ AUTH_ERROR_DETAIL: Mapping[AuthErrorCode, str] = {
         "cannot be read or stored. This is a server-side key problem, not a wrong code."
     ),
     AuthErrorCode.TWO_FACTOR_NOT_PENDING: "No two-factor setup is waiting for its code",
+    AuthErrorCode.TWO_FACTOR_NOT_ENABLED: "Two-factor sign-in is off for this account",
 }
 
 

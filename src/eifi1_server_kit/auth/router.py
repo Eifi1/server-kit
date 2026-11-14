@@ -85,12 +85,15 @@ from eifi1_server_kit.auth.schemas import (
     SetPasswordRequest,
     TokenRequest,
     TokenResponse,
+    TwoFactorBackupCodesRequest,
     TwoFactorChallenge,
     TwoFactorConfirm,
     TwoFactorDisableRequest,
+    TwoFactorEnabled,
     TwoFactorLogin,
     TwoFactorSetup,
     TwoFactorSetupRequest,
+    TwoFactorStatus,
     UserResponse,
 )
 from eifi1_server_kit.auth.service import (
@@ -762,11 +765,25 @@ def _two_factor_routes(
         result: TwoFactorSetup = await accounts.begin_two_factor(user, payload)
         return result
 
-    @router.post("/me/2fa/enable", status_code=status.HTTP_204_NO_CONTENT, dependencies=guards)
-    async def enable_two_factor(payload: TwoFactorConfirm, user: User, accounts: Accounts) -> Response:
-        """A code from the pending secret: it signs in from now on."""
-        await accounts.enable_two_factor(user, payload)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    @router.get("/me/2fa", response_model=TwoFactorStatus)
+    async def two_factor_status(user: User, accounts: Accounts) -> TwoFactorStatus:
+        """On or off, and the backup codes left (0.32)."""
+        result: TwoFactorStatus = await accounts.two_factor_status(user)
+        return result
+
+    @router.post("/me/2fa/enable", response_model=TwoFactorEnabled, dependencies=guards)
+    async def enable_two_factor(payload: TwoFactorConfirm, user: User, accounts: Accounts) -> TwoFactorEnabled:
+        """A code from the pending secret: it signs in from now on; the backup codes, once."""
+        result: TwoFactorEnabled = await accounts.enable_two_factor(user, payload)
+        return result
+
+    @router.post("/me/2fa/backup-codes", response_model=TwoFactorEnabled, dependencies=guards)
+    async def renew_backup_codes(
+        payload: TwoFactorBackupCodesRequest, user: User, accounts: Accounts
+    ) -> TwoFactorEnabled:
+        """A new set of backup codes behind the password; the old ones end (0.32)."""
+        result: TwoFactorEnabled = await accounts.renew_backup_codes(user, payload)
+        return result
 
     @router.post("/me/2fa/disable", status_code=status.HTTP_204_NO_CONTENT, dependencies=guards)
     async def disable_two_factor(payload: TwoFactorDisableRequest, user: User, accounts: Accounts) -> Response:

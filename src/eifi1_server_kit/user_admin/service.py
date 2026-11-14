@@ -317,7 +317,12 @@ class UserAdminService[UserT: AccountRow]:
         if self._hooks.to_row is not None:
             return await self._hooks.to_row(user)
         row = self._row_model.model_validate(user, from_attributes=True)
-        return row.model_copy(update={"email_verified": user.email_verified_at is not None})
+        return row.model_copy(
+            update={
+                "email_verified": user.email_verified_at is not None,
+                "totp_enabled": await self.accounts.two_factor_enabled(user),
+            }
+        )
 
     async def rows(self, users: Sequence[UserT]) -> list[BaseModel]:
         """A page's rows: the ``to_rows`` hook at once (:class:`ValueError` unless it answers
@@ -330,8 +335,10 @@ class UserAdminService[UserT: AccountRow]:
         return answered
 
     def levels(self) -> dict[str, ConfirmationLevel]:
-        """The level of each action the router takes (§3.1, §4.2), the contract's floor."""
-        actions = (*ADMIN_ACTIONS, *self._erase_actions(), *self._policy.app_actions)
+        """The level of each action the router takes (§3.1, §4.2), the contract's floor — the
+        second factor's reset where the account layer has a second factor (0.32)."""
+        reset = (AdminAction.TWO_FACTOR_RESET,) if self.accounts.has_two_factor else ()
+        actions = (*ADMIN_ACTIONS, *self._erase_actions(), *reset, *self._policy.app_actions)
         return {str(action): confirmation_level(action) for action in actions}
 
     def _erase_actions(self) -> tuple[AdminAction, ...]:
@@ -466,6 +473,20 @@ class UserAdminService[UserT: AccountRow]:
         await self._confirm(AdminAction.PASSWORD_CHANGE_WITHDRAW, target, body)
         target = await self._users.apply(target, {"password_change_required_at": None})
         await self._record(AdminAction.PASSWORD_CHANGE_WITHDRAW, admin, target)
+        return target
+
+    async def reset_two_factor(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:
+        """``POST /admin/users/{id}/two-factor-reset`` (0.32, Marcel 2026-11-14): another
+        account's second factor off — never one's own (``self_action``: one's own goes through
+        the settings or a backup code) — the scope's account-wide refusal, acknowledged; every
+        field cleared, its row logged, the account told by mail. Off already: nothing."""
+        refuse_self(admin.id, target.id)
+        await self.scope.refuse_account_wide(target, AdminAction.TWO_FACTOR_RESET)
+        if not await self.accounts.two_factor_enabled(target):
+            return target
+        await self._confirm(AdminAction.TWO_FACTOR_RESET, target, body)
+        await self.accounts.reset_two_factor(target)
+        await self._record(AdminAction.TWO_FACTOR_RESET, admin, target)
         return target
 
     # --- the mails -------------------------------------------------------------------------

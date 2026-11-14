@@ -455,6 +455,9 @@ class AccountNoticeKind(enum.StrEnum):
     #: unsubscribe link. The words are the kit's (:mod:`eifi1_server_kit.legal`), as the
     #: legal pages' shared sections are ui-kit's.
     LEGAL_CHANGE = "legal_change"
+    #: To an account whose two-factor sign-in an administrator switched off (0.32, Marcel
+    #: 2026-11-14): a way in got weaker without the owner's hand, so the owner is told.
+    TWO_FACTOR_RESET_NOTICE = "two_factor_reset_notice"
 
 
 # --- the test mail (admin-harmonization §9.2, 0.15) --------------------------------------

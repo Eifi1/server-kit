@@ -81,6 +81,8 @@ def test_the_levels_are_the_contracts_table() -> None:
         AdminAction.ROLE,
         AdminAction.PLAN,
         AdminAction.GROUP_DELETE,
+        # 0.32: an administrator's reset of another account's second factor.
+        AdminAction.TWO_FACTOR_RESET,
     }
     # §11.3: the other four group words are none; no group's action is type_email.
     for word in ("group_create", "group_rename", "membership_add", "membership_role", "membership_remove"):

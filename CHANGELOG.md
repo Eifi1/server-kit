@@ -30,6 +30,17 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `TwoFactorDisableRequest` and the answer `TwoFactorSetup {secret, otpauth_url}`; the codes
   `two_factor_invalid` (400: wrong, malformed and replayed alike), `two_factor_unavailable`
   (503: a key missing or no longer opening the secret) and `two_factor_not_pending` (404).
+* **auth, user_admin (Marcel 2026-11-14): backup codes and an admin reset** for the second
+  factor. Switching it on answers ten backup codes once (`TwoFactorEnabled {backup_codes}`), kept
+  as digests in `TwoFactorState.backup_codes` (`TwoFactorColumns.totp_backup_codes`, JSON); each
+  signs in once at `/auth/login/2fa` in the same `code` field (up to 32 characters now), spending
+  its challenge too. `GET /auth/me/2fa` answers `{enabled, backup_codes_left}`; `POST
+  /auth/me/2fa/backup-codes {password}` makes a new set (`409 two_factor_not_enabled` while off).
+  `POST /admin/users/{id}/two-factor-reset` (with the store): another account's second factor
+  off, acknowledged, never one's own (`self_action`), logged as `AdminAction.TWO_FACTOR_RESET`,
+  the account told by `AccountMailText.TWO_FACTOR_RESET_NOTICE` (`two_factor_reset_notice`, seven
+  languages); the roster's `totp_enabled` reads the store. Helpers `new_backup_codes`,
+  `backup_code_digest`, `backup_code_spent`, `BACKUP_CODE_COUNT`, `BACKUP_CODE_ALPHABET`.
 * **auth.seal (the `seal` extra, `cryptography>=42`):** `SecretBox(keys, *, label=…)`, keksdose's
   `secret_box` lifted: AES-256-GCM, `enc:v1:` values bound to their row by the AAD
   (`totp_secret_aad`, `totp_pending_secret_aad`, keksdose's bytes), several keys newest first,

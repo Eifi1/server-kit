@@ -502,10 +502,11 @@ class SetPasswordRequest(BaseModel):
     new_password: NewPassword
 
 
-#: A second factor's code as typed: keksdose's six to eight characters (six digits, with room
-#: for "123 456"). The kit reads it with :func:`~eifi1_server_kit.auth.totp_matched_step`, and
-#: anything that is not six digits then is the route's ``two_factor_invalid``, not a 422.
-TwoFactorCodeText = Annotated[str, Field(min_length=6, max_length=8)]
+#: A second factor's code as typed: six digits from the authenticator (with room for
+#: "123 456"), or a backup code (0.32: ``ABCD-EFGH-JKLM-NPQR``, spaces or dashes as typed). The
+#: kit tells them apart by shape; anything that is neither is the route's ``two_factor_invalid``,
+#: not a 422.
+TwoFactorCodeText = Annotated[str, Field(min_length=6, max_length=32)]
 
 
 class TwoFactorLogin(BaseModel):
@@ -547,6 +548,29 @@ class TwoFactorConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     code: TwoFactorCodeText
+
+
+class TwoFactorEnabled(BaseModel):
+    """Two-factor sign-in is on (0.32): the backup codes, shown once — the server keeps their
+    digests only. ``POST /auth/me/2fa/enable`` and ``POST /auth/me/2fa/backup-codes`` answer it."""
+
+    backup_codes: list[str]
+
+
+class TwoFactorStatus(BaseModel):
+    """``GET /auth/me/2fa`` (0.32): whether two-factor sign-in is on, and how many backup codes
+    are left (``0`` while it is off)."""
+
+    enabled: bool
+    backup_codes_left: int
+
+
+class TwoFactorBackupCodesRequest(BaseModel):
+    """``POST /auth/me/2fa/backup-codes {password}`` (0.32): a new set, the old one gone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: ExistingPassword
 
 
 class TwoFactorDisableRequest(BaseModel):

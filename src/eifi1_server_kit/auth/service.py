@@ -120,11 +120,14 @@ from eifi1_server_kit.auth.schemas import (
     RegisterRequest,
     SessionInfo,
     SetPasswordRequest,
+    TwoFactorBackupCodesRequest,
     TwoFactorConfirm,
     TwoFactorDisableRequest,
+    TwoFactorEnabled,
     TwoFactorLogin,
     TwoFactorSetup,
     TwoFactorSetupRequest,
+    TwoFactorStatus,
 )
 from eifi1_server_kit.auth.seal import (
     SecretSealError,
@@ -159,6 +162,10 @@ from eifi1_server_kit.auth.tokens import (
     token_is_revoked,
 )
 from eifi1_server_kit.auth.totp import (
+    TOTP_STEP_SECONDS,
+    backup_code_digest,
+    backup_code_spent,
+    new_backup_codes,
     new_totp_secret,
     totp_matched_step,
     totp_step_accepted,
@@ -954,8 +961,18 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         secret = self._unsealed(seal, user.id, state.secret, totp_secret_aad(user.id))
         if two_factor_challenge_is_spent(claims, state.last_step):
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
-        step = self._spent_step(secret, body.code, state.last_step)
-        await store.save(user.id, replace(state, last_step=step))
+        if backup_code_digest(body.code) is None:
+            step = self._spent_step(secret, body.code, state.last_step)
+            await store.save(user.id, replace(state, last_step=step))
+        else:
+            # A backup code (0.32) is spent, and moves the step to now: its challenge is spent
+            # with it, as an accepted code spends the one it answered.
+            left = backup_code_spent(body.code, state.backup_codes)
+            if left is None:
+                raise AuthError(AuthErrorCode.TWO_FACTOR_INVALID)
+            now_step = int(self._now().timestamp()) // TOTP_STEP_SECONDS
+            last = now_step if state.last_step is None else max(now_step, state.last_step + 1)
+            await store.save(user.id, replace(state, backup_codes=left, last_step=last))
         return await self._sign_in(user, shared=shared_device_of(claims), ip=ip, device=device)
 
     async def begin_two_factor(self, user: UserT, body: TwoFactorSetupRequest) -> TwoFactorSetup:
@@ -975,12 +992,13 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             secret=secret, otpauth_url=totp_uri(secret, account=user.email, issuer=self._policy.app_name)
         )
 
-    async def enable_two_factor(self, user: UserT, body: TwoFactorConfirm) -> None:
+    async def enable_two_factor(self, user: UserT, body: TwoFactorConfirm) -> TwoFactorEnabled:
         """``POST /auth/me/2fa/enable`` (keksdose ``enable_2fa``): a code from the pending
         secret makes it the factor that signs in, replacing the old one, and spends its step —
         the first sign-in after it waits for the next code. Charged to the account's
         password-check window: a code is a guess like a password. A wrong code changes nothing;
-        no setup is ``404 two_factor_not_pending``."""
+        no setup is ``404 two_factor_not_pending``. Answers a fresh set of backup codes, once
+        (0.32): the server keeps their digests."""
         store, seal = self._second_factor()
         refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
         state = await store.state(user.id, lock=True)
@@ -991,7 +1009,61 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         # The pending secret has accepted nothing: the old one's last step is not its own.
         step = self._spent_step(secret, body.code, None)
         sealed = self._sealed(seal, secret, totp_secret_aad(user.id))
-        await store.save(user.id, TwoFactorState(enabled=True, secret=sealed, last_step=step))
+        codes = new_backup_codes()
+        await store.save(
+            user.id, TwoFactorState(enabled=True, secret=sealed, last_step=step, backup_codes=_digests(codes))
+        )
+        return TwoFactorEnabled(backup_codes=codes)
+
+    async def two_factor_status(self, user: UserT) -> TwoFactorStatus:
+        """``GET /auth/me/2fa`` (0.32): on or off, and the backup codes left."""
+        store, _ = self._second_factor()
+        state = await store.state(user.id)
+        return TwoFactorStatus(enabled=state.enabled, backup_codes_left=len(state.backup_codes) if state.enabled else 0)
+
+    async def renew_backup_codes(self, user: UserT, body: TwoFactorBackupCodesRequest) -> TwoFactorEnabled:
+        """``POST /auth/me/2fa/backup-codes`` (0.32): the password, then a new set — the old
+        codes no longer work. ``409 two_factor_not_enabled`` while two-factor sign-in is off."""
+        store, _ = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        await self._check_password(user, body.password)
+        state = await store.state(user.id, lock=True)
+        if not state.enabled:
+            raise AuthError(AuthErrorCode.TWO_FACTOR_NOT_ENABLED)
+        codes = new_backup_codes()
+        await store.save(user.id, replace(state, backup_codes=_digests(codes)))
+        return TwoFactorEnabled(backup_codes=codes)
+
+    @property
+    def has_two_factor(self) -> bool:
+        """Whether the account layer was given a second factor's store (0.32)."""
+        return self._two_factor is not None
+
+    async def two_factor_enabled(self, user: UserT) -> bool:
+        """Whether the account signs in with a second factor: its store's word, or the row's
+        own ``totp_enabled`` where the app gives the kit no store."""
+        if self._two_factor is None:
+            return bool(getattr(user, "totp_enabled", False))
+        return (await self._two_factor.state(user.id)).enabled
+
+    async def reset_two_factor(self, user: UserT) -> bool:
+        """An administrator's reset (0.32, ``user_admin``'s ``two-factor-reset``): every field
+        cleared, and the account told by mail after the commit. ``False``, with nothing
+        changed and nobody told, when it was off. The caller checks who may."""
+        store, _ = self._second_factor()
+        state = await store.state(user.id, lock=True)
+        if not state.enabled:
+            return False
+        await store.save(user.id, TwoFactorState())
+        self._send_later(
+            user.email,
+            AccountMailText.TWO_FACTOR_RESET_NOTICE,
+            user.locale,
+            link=self._policy.links.url(self._policy.links.settings),
+            name=self._name(user),
+            contact=self._policy.contact,
+        )
+        return True
 
     async def disable_two_factor(self, user: UserT, body: TwoFactorDisableRequest) -> None:
         """``POST /auth/me/2fa/disable`` (keksdose ``disable_2fa``): the password and a live
@@ -2042,3 +2114,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             await mailer.send(to, message, kind=sent_as)
 
         self._after.later(send)
+
+
+def _digests(codes: Sequence[str]) -> tuple[str, ...]:
+    """The stored form of a fresh set of backup codes (:func:`new_backup_codes`' upper-case
+    groups): each one's digest, as :func:`~eifi1_server_kit.auth.backup_code_digest` reads a
+    typed one."""
+    return tuple(hash_token(code.replace("-", "")) for code in codes)

@@ -262,6 +262,16 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
         changed = await service.require_password_change(admin, user, payload or ActionConfirmation())
         return await service.row(changed)
 
+    if auth.two_factor is not None:
+
+        @router.post("/users/{user_id}/two-factor-reset", response_model=row_model)
+        async def reset_two_factor(
+            admin: Admin, user: Target, service: Service, payload: ActionConfirmation | None = None
+        ) -> BaseModel:
+            """Another account's second factor off, acknowledged, the account told (0.32)."""
+            changed = await service.reset_two_factor(admin, user, payload or ActionConfirmation())
+            return await service.row(changed)
+
     @router.delete("/users/{user_id}/password-change", response_model=row_model)
     async def withdraw_password_change(
         admin: Admin, user: Target, service: Service, payload: ActionConfirmation | None = None

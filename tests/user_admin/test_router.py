@@ -12,6 +12,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
 from eifi1_server_kit.auth import OneTimeTokenKind
+from eifi1_server_kit.auth.ports import TwoFactorState
 from eifi1_server_kit.auth.router import invitations_admin_router
 from eifi1_server_kit.auth.service import AuthHooks, SessionsEndedReason
 from eifi1_server_kit.user_admin import (
@@ -818,3 +819,47 @@ async def test_the_hooks_add_their_counts_to_the_rows_of_the_session_ends(world:
         ("reactivate", {"resumed_subscriptions": 1}),
         ("password_change_require", {"sessions_ended": True, "live_api_token_count": 1}),
     ]
+
+
+# --- the second factor's reset (0.32, Marcel 2026-11-14) ------------------------------------------
+
+
+async def test_an_admin_switches_off_another_account_s_second_factor_and_it_is_told() -> None:
+    world = AdminWorld(two_factor=True)
+    async with world.client:
+        admin, token = await world.admin_token()
+        user = world.account()
+        world.two_factor_store.states[user.id] = TwoFactorState(
+            enabled=True, secret="enc:v1:x", last_step=1, backup_codes=("digest",)
+        )
+        rows = (await world.call("GET", "/admin/users", token=token)).json()["users"]
+        assert {row["id"]: row["totp_enabled"] for row in rows} == {admin.id: False, user.id: True}
+        path = f"/admin/users/{user.id}/two-factor-reset"
+        dropped = await world.call("POST", path, token=token)
+        assert (dropped.status_code, code(dropped)) == (409, "confirmation_required")
+        before = world.after.commits
+        response = await world.call("POST", path, token=token, json={"acknowledged": True})
+        assert response.status_code == 200 and response.json()["totp_enabled"] is False
+        assert world.two_factor_store.states[user.id] == TwoFactorState()
+        assert world.log.actions() == ["two_factor_reset"]
+        (mail,) = world.mailer.of("two_factor_reset_notice")
+        assert mail.to == user.email and mail.after_commits > before, "told after the commit"
+        # Off already: nothing changes, no row, no mail.
+        await world.call("POST", path, token=token, json={"acknowledged": True})
+        assert world.log.actions() == ["two_factor_reset"] and len(world.mailer.of("two_factor_reset_notice")) == 1
+        # Never one's own: settings or a backup code.
+        world.two_factor_store.states[admin.id] = TwoFactorState(enabled=True, secret="enc:v1:y")
+        own = await world.call(
+            "POST", f"/admin/users/{admin.id}/two-factor-reset", token=token, json={"acknowledged": True}
+        )
+        assert (own.status_code, code(own)) == (409, "self_action")
+        assert (await world.call("GET", "/admin/users", token=token)).json()["levels"][
+            "two_factor_reset"
+        ] == "acknowledge"
+
+
+async def test_without_the_second_factor_there_is_no_reset_route(world: AdminWorld) -> None:
+    _, token = await world.admin_token()
+    user = world.account()
+    path = f"/admin/users/{user.id}/two-factor-reset"
+    assert (await world.call("POST", path, token=token, json={"acknowledged": True})).status_code == 404

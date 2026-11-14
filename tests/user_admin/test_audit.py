@@ -61,6 +61,7 @@ def test_the_actions_are_the_contracts() -> None:
         "membership_role",
         "group_deactivate",
         "group_reactivate",
+        "two_factor_reset",
     ]
 
 

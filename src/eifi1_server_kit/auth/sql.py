@@ -273,8 +273,8 @@ class SessionCutoffColumn:
 
 class TwoFactorColumns:
     """The second factor on the account row (0.32, keksdose's KG-1 and its ``users.totp_*``):
-    on, the live secret, the pending one, the last accepted step
-    (:class:`~eifi1_server_kit.auth.ports.TwoFactorState`). The secrets hold what the app's
+    on, the live secret, the pending one, the last accepted step and (0.32) the backup codes'
+    digests (:class:`~eifi1_server_kit.auth.ports.TwoFactorState`). The secrets hold what the app's
     :class:`~eifi1_server_kit.auth.ports.SecretSeal` makes — never the plaintext — with room
     for :class:`~eifi1_server_kit.auth.seal.SecretBox`'s 87 characters. The step is a
     ``BIGINT``, as a count of 30-second steps since 1970. Placed beside :class:`AccountColumns`
@@ -284,6 +284,8 @@ class TwoFactorColumns:
     totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
     totp_pending_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
     totp_last_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: The backup codes left, each a digest (0.32): a JSON list, ``None`` read as none.
+    totp_backup_codes: Mapped[list[str] | None] = mapped_column(_JSON, nullable=True)
 
 
 class SessionColumns(_PointsAtAccounts):
@@ -568,6 +570,7 @@ class SqlTwoFactorStore[UserT: TwoFactorColumns]:
             secret=row.totp_secret,
             pending_secret=row.totp_pending_secret,
             last_step=row.totp_last_step,
+            backup_codes=tuple(row.totp_backup_codes or ()),
         )
 
     async def save(self, user_id: int, state: TwoFactorState) -> None:
@@ -578,6 +581,7 @@ class SqlTwoFactorStore[UserT: TwoFactorColumns]:
         row.totp_secret = state.secret
         row.totp_pending_secret = state.pending_secret
         row.totp_last_step = state.last_step
+        row.totp_backup_codes = list(state.backup_codes) or None
         await self._session.flush()
 
 

@@ -75,6 +75,8 @@ class AccountMailText(enum.StrEnum):
     ACCOUNT_DELETION_OPERATOR = "account_deletion_operator"
     #: A passkey was added (keksdose's audit AU-1): a way in no sign-out reaches.
     PASSKEY_ADDED_NOTICE = "passkey_added_notice"
+    #: An administrator switched the account's two-factor sign-in off (0.32).
+    TWO_FACTOR_RESET_NOTICE = "two_factor_reset_notice"
 
 
 #: The ``kind`` each mail is sent and logged under (:meth:`~eifi1_server_kit.mail.Mailer.send`):
@@ -91,6 +93,7 @@ ACCOUNT_MAIL_KINDS: Mapping[AccountMailText, str] = {
     AccountMailText.ACCOUNT_DELETION: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.PASSKEY_ADDED_NOTICE: AccountNoticeKind.PASSKEY_ADDED_NOTICE,
+    AccountMailText.TWO_FACTOR_RESET_NOTICE: AccountNoticeKind.TWO_FACTOR_RESET_NOTICE,
 }
 
 #: The placeholders the account layer fills for each mail; a table may use any of them.
@@ -110,6 +113,7 @@ ACCOUNT_MAIL_VALUES: Mapping[AccountMailText, frozenset[str]] = {
         {"app", "name", "contact", "backup_days", "log_days", "privacy"}
     ),
     AccountMailText.PASSKEY_ADDED_NOTICE: frozenset({"app", "name", "passkey", "contact"}),
+    AccountMailText.TWO_FACTOR_RESET_NOTICE: frozenset({"app", "name", "contact"}),
 }
 
 _RESET: Mapping[str, MailText] = {
@@ -737,6 +741,77 @@ _PASSKEY_ADDED: Mapping[str, MailText] = {
     ),
 }
 
+#: 0.32: an administrator switched the account's two-factor sign-in off.
+_TWO_FACTOR_RESET: Mapping[str, MailText] = {
+    "de-CH": MailText(
+        subject="Die Zwei-Faktor-Anmeldung Ihres {app}-Kontos wurde ausgeschaltet",
+        intro="Hallo {name},",
+        body=(
+            "die Administration hat die Zwei-Faktor-Anmeldung Ihres Kontos ausgeschaltet. Sie melden sich "
+            "jetzt nur mit Ihrem Passwort oder einem Passkey an."
+        ),
+        cta="Zwei-Faktor-Anmeldung wieder einrichten",
+        outro="Haben Sie das nicht veranlasst? Ändern Sie Ihr Passwort und schreiben Sie an {contact}.",
+    ),
+    "en": MailText(
+        subject="Two-factor sign-in was switched off for your {app} account",
+        intro="Hello {name},",
+        body=(
+            "an administrator switched off two-factor sign-in for your account. You now sign in with your "
+            "password or a passkey alone."
+        ),
+        cta="Set up two-factor sign-in again",
+        outro="Did you not ask for this? Change your password and write to {contact}.",
+    ),
+    "es": MailText(
+        subject="Se ha desactivado la verificación en dos pasos de su cuenta de {app}",
+        intro="Hola, {name}:",
+        body=(
+            "Un administrador ha desactivado la verificación en dos pasos de su cuenta. Ahora inicia sesión "
+            "solo con su contraseña o una clave de acceso."
+        ),
+        cta="Volver a configurar la verificación en dos pasos",
+        outro="¿No lo ha pedido usted? Cambie su contraseña y escriba a {contact}.",
+    ),
+    "fr": MailText(
+        subject="La connexion à deux facteurs de votre compte {app} a été désactivée",
+        intro="Bonjour {name},",
+        body=(
+            "Un administrateur a désactivé la connexion à deux facteurs de votre compte. Vous vous connectez "
+            "désormais avec votre seul mot de passe ou une clé d’accès."
+        ),
+        cta="Configurer à nouveau la connexion à deux facteurs",
+        outro="Si vous ne l’avez pas demandé, changez votre mot de passe et écrivez à {contact}.",
+    ),
+    "it": MailText(
+        subject="L’accesso a due fattori del Suo account {app} è stato disattivato",
+        intro="Buongiorno {name},",
+        body=(
+            "un amministratore ha disattivato l’accesso a due fattori del Suo account. Ora accede solo con la "
+            "password o una passkey."
+        ),
+        cta="Configurare di nuovo l’accesso a due fattori",
+        outro="Non l’ha chiesto Lei? Cambi la password e scriva a {contact}.",
+    ),
+    "hu": MailText(
+        subject="Kikapcsolták a kétlépcsős bejelentkezést {app}-fiókjában",
+        intro="Kedves {name}!",
+        body=(
+            "Egy adminisztrátor kikapcsolta fiókja kétlépcsős bejelentkezését. Mostantól csak a jelszavával vagy "
+            "egy azonosítókulccsal jelentkezik be."
+        ),
+        cta="Kétlépcsős bejelentkezés újbóli beállítása",
+        outro="Nem Ön kérte? Változtassa meg a jelszavát, és írjon ide: {contact}.",
+    ),
+    "zh": MailText(
+        subject="您的 {app} 账户的双重验证登录已被关闭",
+        intro="{name}，您好：",
+        body="管理员关闭了您账户的双重验证登录。您现在只需密码或通行密钥即可登录。",
+        cta="重新设置双重验证登录",
+        outro="不是您本人要求的？请修改密码并联系：{contact}。",
+    ),
+}
+
 #: 0.32: the invitation into a group the app names (a team), the group in its words.
 _GROUP_INVITATION: Mapping[str, MailText] = {
     "de-CH": MailText(
@@ -830,6 +905,7 @@ ACCOUNT_MAIL_TEXTS: Mapping[AccountMailText, Mapping[str, MailText]] = {
     AccountMailText.ACCOUNT_DELETION: _DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: _DELETION_OPERATOR,
     AccountMailText.PASSKEY_ADDED_NOTICE: _PASSKEY_ADDED,
+    AccountMailText.TWO_FACTOR_RESET_NOTICE: _TWO_FACTOR_RESET,
 }
 
 

@@ -664,7 +664,7 @@ review's reviewer: a mapping from that user, never a second bearer check), and
 
 | Area | Names |
 |---|---|
-| Ports (`auth.ports`) | `AccountRow` (read-only; `is_demo` and the `iat` cut-off `sessions_invalid_before` optional), `UserStore[UserT]` (`get`, `by_email`, `by_emails`, `count_people`, `count_active(role=)` (0.29), `add(NewAccount)`, `apply(row, changes)` with `ACCOUNT_FIELDS` keys only, `delete`); `SessionRow`, `SessionStore` (`start(NewSession)`, `get`, `touch`, `end`, `end_all(user_id, keep=)`, `live`); `OneTimeTokenRow`, `OneTimeTokenStore` (`put`, `take`, `pending`, `drop`); `InvitationRow`, `InvitationStore` (`get`, `by_token_hash`, `open_for`, `listing`, `add(NewInvitation)`, `remint`, `accept`, `revoke`); `PasskeyRow`, `PasskeyStore` (`for_user`, `by_credential_id`, `add(NewPasskey)`, `used`, `rename`, `remove`, `spend_challenge`); `AdminActionLog`; `AfterCommit` (`later`, `commit_now`); `TokenSigner` (`sign`, `verify`); `PasswordHasher` (`hash`, `verify`); (0.32) `TwoFactorState(enabled, secret, pending_secret, last_step)`, `TwoFactorStore` (`state(user_id, *, lock=False)`, `save(user_id, state)`), `SecretSeal` (`seal(plaintext, *, aad)`, `unseal(sealed, *, aad)`) |
+| Ports (`auth.ports`) | `AccountRow` (read-only; `is_demo` and the `iat` cut-off `sessions_invalid_before` optional), `UserStore[UserT]` (`get`, `by_email`, `by_emails`, `count_people`, `count_active(role=)` (0.29), `add(NewAccount)`, `apply(row, changes)` with `ACCOUNT_FIELDS` keys only, `delete`); `SessionRow`, `SessionStore` (`start(NewSession)`, `get`, `touch`, `end`, `end_all(user_id, keep=)`, `live`); `OneTimeTokenRow`, `OneTimeTokenStore` (`put`, `take`, `pending`, `drop`); `InvitationRow`, `InvitationStore` (`get`, `by_token_hash`, `open_for`, `listing`, `add(NewInvitation)`, `remint`, `accept`, `revoke`); `PasskeyRow`, `PasskeyStore` (`for_user`, `by_credential_id`, `add(NewPasskey)`, `used`, `rename`, `remove`, `spend_challenge`); `AdminActionLog`; `AfterCommit` (`later`, `commit_now`); `TokenSigner` (`sign`, `verify`); `PasswordHasher` (`hash`, `verify`); (0.32) `TwoFactorState(enabled, secret, pending_secret, last_step, backup_codes)`, `TwoFactorStore` (`state(user_id, *, lock=False)`, `save(user_id, state)`), `SecretSeal` (`seal(plaintext, *, aad)`, `unseal(sealed, *, aad)`) |
 | Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, two_factor=None, secret_seal=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep, timer=time.monotonic)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", invitable_roles=None, bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…, answer_floor=timedelta(seconds=3))`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `TwoFactorChallengeIssued` (0.32), `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
 | Routes (`auth.router`) | `AuthDeps` (below), `auth_router(deps, *, prefix="/auth", tags=("auth",))`, `invitations_admin_router(deps, *, prefix="/admin/invitations", tags=("admin",), guard=None)`, `current_user(deps)`, `admin_guard(deps)`, `account_service(deps)`, `app_state_limiters`, `peer_address`, `no_hooks` |
 | Mails (`auth.mails`) | `AccountMailText` (`password_reset`, `verification`, `email_change`, `email_change_notice`, `invitation`, `account_deletion`, `account_deletion_operator`, `passkey_added_notice`), `ACCOUNT_MAIL_TEXTS` (seven languages each, `de-CH` formal with "ss"), `ACCOUNT_MAIL_KINDS` (the `kind` each is sent under), `ACCOUNT_MAIL_VALUES` (the placeholders each fills), `account_mail_texts(overrides)`, `mail_date(when, locale)` |
@@ -698,17 +698,25 @@ monotonic clock the reset request's floor is measured on; a test passes a fake o
 | Route | What it does |
 |---|---|
 | `POST /auth/login` | an account with 2FA on answers `{requires_2fa: true, challenge_token}` (five minutes, the last accepted step and the shared-computer choice in it); no session, no `last_login_at` yet |
-| `POST /auth/login/2fa {challenge_token, code}` | the per-IP and per-account challenge windows, then: active, 2FA still on, the secret readable, the challenge unspent, the code (its step spent, the row locked), then a forced password change's challenge, then the session; a dead challenge is `token_invalid` |
+| `POST /auth/login/2fa {challenge_token, code}` | the per-IP and per-account challenge windows, then: active, 2FA still on, the secret readable, the challenge unspent, the code (its step spent, the row locked) — or a backup code in the same field, spent, its challenge with it — then a forced password change's challenge, then the session; a dead challenge is `token_invalid` |
 | `POST /auth/me/2fa/setup {password}` | the password every time; a new secret, sealed as the PENDING one beside the live one, answered as `{secret, otpauth_url}` (the page draws the QR); nothing signs in differently yet |
-| `POST /auth/me/2fa/enable {code}` | a code from the pending secret, charged to the password-check window: it becomes the live secret and its step is spent; `404 two_factor_not_pending` without a setup |
+| `POST /auth/me/2fa/enable {code}` | a code from the pending secret, charged to the password-check window: it becomes the live secret and its step is spent; answers ten backup codes once (`{backup_codes}`); `404 two_factor_not_pending` without a setup |
+| `GET /auth/me/2fa` | `{enabled, backup_codes_left}` |
+| `POST /auth/me/2fa/backup-codes {password}` | a new set of ten, the old ones dead; `409 two_factor_not_enabled` while off |
 | `POST /auth/me/2fa/disable {password, code}` | the password and a live code, then every field cleared; a secret this server cannot open goes by the password alone |
 
 A wrong, malformed or replayed code is `400 two_factor_invalid` (never a 401: two of the routes
 are signed in); a secret no key opens, or a setup without a key, is `503
 two_factor_unavailable`, and the sign-in says so at `/login`, before a code is typed. A
-passkey sign-in counts as both factors. No backup codes and no admin reset (keksdose's): a
-password reset leaves 2FA on, and a new setup from a signed-in session is the way back from a
-lost authenticator. `/auth/me` answers `totp_enabled` from the store. The setup, the
+passkey sign-in counts as both factors. **Backup codes and an admin reset** (Marcel
+2026-11-14, over keksdose's "none": a lost phone with no passkey locked the account out for
+good): ten codes `ABCD-EFGH-JKLM-NPQR` (no I, O, 0, 1) when it is switched on, kept as digests
+(`TwoFactorState.backup_codes`, `TwoFactorColumns.totp_backup_codes`), each good once in place of
+the code; and `user_admin_router`'s `POST /admin/users/{id}/two-factor-reset` (mounted with the
+store: acknowledged, never one's own, logged as `two_factor_reset`, the account told by the
+`two_factor_reset_notice` mail; the roster's `totp_enabled` reads the store). A password reset
+leaves 2FA on, and a new setup from a signed-in session is the way back from a lost
+authenticator too. `/auth/me` answers `totp_enabled` from the store. The setup, the
 confirmation and switching off are behind the app's `demo_guard`, and the service refuses a
 demo itself. `auth.testing` has `InMemoryTwoFactorStore`, `check_two_factor_store` and
 `totp_code`.

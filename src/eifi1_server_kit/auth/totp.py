@@ -66,18 +66,23 @@ import hmac
 import re
 import secrets
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from eifi1_server_kit.auth.tokens import ChallengeKind, challenge_claims
+from eifi1_server_kit.auth.tokens import ChallengeKind, challenge_claims, hash_token
 
 __all__ = [
+    "BACKUP_CODE_ALPHABET",
+    "BACKUP_CODE_COUNT",
     "TOTP_DIGITS",
     "TOTP_STEP_CLAIM",
     "TOTP_STEP_SECONDS",
     "TOTP_WINDOW",
+    "backup_code_digest",
+    "backup_code_spent",
+    "new_backup_codes",
     "new_totp_secret",
     "totp_code",
     "totp_matched_step",
@@ -148,6 +153,55 @@ def totp_uri(secret: str, *, account: str, issuer: str) -> str:
     label = f"{quote(issuer)}:{quote(account)}"
     query = urlencode({"secret": secret, "issuer": issuer}).replace("+", "%20")
     return f"otpauth://totp/{label}?{query}"
+
+
+#: Backup codes in a set (0.32): made when two-factor is switched on, and again on request.
+BACKUP_CODE_COUNT = 10
+#: What a backup code is made of: letters and digits without I, O, 0 and 1, which read alike.
+BACKUP_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+#: A backup code's letters and digits: 16 of 32, 80 bits — kastlan's and ui-kit's
+#: `SignInForm` length, printed in groups of four.
+_BACKUP_CODE_LENGTH = 16
+_BACKUP_SEPARATORS = re.compile(r"[\s\-‐-―]")
+
+
+def new_backup_codes(count: int = BACKUP_CODE_COUNT) -> list[str]:
+    """A fresh set of backup codes (0.32), each ``ABCD-EFGH-JKLM-NPQR`` from
+    :data:`BACKUP_CODE_ALPHABET` through :mod:`secrets`: shown to the person once, kept as
+    :func:`backup_code_digest` only."""
+    codes = []
+    for _ in range(count):
+        raw = "".join(secrets.choice(BACKUP_CODE_ALPHABET) for _ in range(_BACKUP_CODE_LENGTH))
+        codes.append("-".join(raw[index : index + 4] for index in range(0, _BACKUP_CODE_LENGTH, 4)))
+    return codes
+
+
+def backup_code_digest(code: str) -> str | None:
+    """A backup code's digest as stored (:func:`~eifi1_server_kit.auth.hash_token` of the code
+    in upper case, without spaces or dashes, NFKC-normalised as typed), or ``None`` for
+    anything that is not one's shape — a six-digit TOTP code among them."""
+    typed = _BACKUP_SEPARATORS.sub("", unicodedata.normalize("NFKC", code)).upper()
+    if len(typed) != _BACKUP_CODE_LENGTH or any(char not in BACKUP_CODE_ALPHABET for char in typed):
+        return None
+    return hash_token(typed)
+
+
+def backup_code_spent(code: str, digests: Sequence[str]) -> tuple[str, ...] | None:
+    """The digests left once ``code`` is spent, or ``None`` when it matches none of
+    ``digests`` (0.32): a backup code works once. Every digest is compared in constant time,
+    whatever matched."""
+    digest = backup_code_digest(code)
+    if digest is None:
+        return None
+    found: str | None = None
+    for stored in digests:
+        if hmac.compare_digest(stored.encode(), digest.encode()):
+            found = stored
+    if found is None:
+        return None
+    left = list(digests)
+    left.remove(found)
+    return tuple(left)
 
 
 def totp_code(secret: str, *, now: datetime | float) -> str:

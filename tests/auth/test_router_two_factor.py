@@ -5,6 +5,7 @@ keksdose's rules exactly (its ``auth_router`` ``/2fa/*`` and ``/login/2fa``).
 No ``from __future__ import annotations``: the hooks below are read at run time.
 """
 
+import re
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Annotated, Any
@@ -47,8 +48,8 @@ def next_step(world: World) -> None:
     world.clock.advance(seconds=TOTP_STEP_SECONDS)
 
 
-async def enrol(world: World, user: MemoryUser) -> tuple[str, str]:
-    """2FA switched on for ``user``: its secret and a session token from before."""
+async def enrol_codes(world: World, user: MemoryUser) -> tuple[str, str, list[str]]:
+    """2FA switched on for ``user``: its secret, a session token from before, its backup codes."""
     token = await world.token_of(user)
     response = await world.call("POST", "/auth/me/2fa/setup", token=token, json={"password": PASSWORD})
     assert response.status_code == 200, response.text
@@ -56,8 +57,15 @@ async def enrol(world: World, user: MemoryUser) -> tuple[str, str]:
     response = await world.call(
         "POST", "/auth/me/2fa/enable", token=token, json={"code": totp_code(secret, now=world.clock())}
     )
-    assert response.status_code == 204, response.text
+    assert response.status_code == 200, response.text
+    codes: list[str] = response.json()["backup_codes"]
     next_step(world)
+    return secret, token, codes
+
+
+async def enrol(world: World, user: MemoryUser) -> tuple[str, str]:
+    """2FA switched on for ``user``: its secret and a session token from before."""
+    secret, token, _ = await enrol_codes(world, user)
     return secret, token
 
 
@@ -113,7 +121,7 @@ async def test_a_code_from_the_pending_secret_switches_it_on(tf: World) -> None:
     assert tf.two_factor_store.states[user.id].enabled is False
     now = tf.clock()
     response = await tf.call("POST", "/auth/me/2fa/enable", token=token, json={"code": totp_code(secret, now=now)})
-    assert response.status_code == 204, response.text
+    assert response.status_code == 200, response.text
     state = tf.two_factor_store.states[user.id]
     assert state.enabled is True and state.pending_secret is None
     assert state.secret is not None and tf.seal.unseal(state.secret, aad=totp_secret_aad(user.id)) == secret
@@ -328,7 +336,7 @@ async def test_a_new_setup_keeps_the_old_factor_until_its_code_confirms(tf: Worl
     assert (await redeem(tf, await challenge(tf, user), old)).status_code == 200
     next_step(tf)
     response = await tf.call("POST", "/auth/me/2fa/enable", token=token, json={"code": totp_code(new, now=tf.clock())})
-    assert response.status_code == 204
+    assert response.status_code == 200
     next_step(tf)
     assert code(await redeem(tf, await challenge(tf, user), old)) == "two_factor_invalid"
     assert (await redeem(tf, await challenge(tf, user), new)).status_code == 200
@@ -399,6 +407,7 @@ async def test_a_demo_never_sets_up_two_factor() -> None:
             ("/auth/me/2fa/setup", {"password": PASSWORD}),
             ("/auth/me/2fa/enable", {"code": "123456"}),
             ("/auth/me/2fa/disable", {"password": PASSWORD, "code": "123456"}),
+            ("/auth/me/2fa/backup-codes", {"password": PASSWORD}),
         ):
             response = await world.call("POST", path, token=token, json=body)
             assert response.status_code == 403 and code(response) == "demo_refused", path
@@ -435,3 +444,82 @@ async def test_the_store_and_the_seal_come_together(world: World) -> None:
         }
         with pytest.raises(ValueError, match="two_factor and secret_seal come together"):
             auth_router(AuthDeps(**lone))
+
+
+# --- backup codes (0.32, Marcel 2026-11-14: a lost phone with no passkey must not lock out) -------
+
+
+async def test_switching_on_answers_ten_backup_codes_once_kept_as_digests(tf: World) -> None:
+    user = tf.account()
+    token = await tf.token_of(user)
+    status = await tf.call("GET", "/auth/me/2fa", token=token)
+    assert status.json() == {"enabled": False, "backup_codes_left": 0}
+    _, token, codes = await enrol_codes(tf, user)
+    assert len(codes) == 10 and len(set(codes)) == 10
+    for code_ in codes:
+        assert re.fullmatch(r"[A-HJ-NP-Z2-9]{4}(-[A-HJ-NP-Z2-9]{4}){3}", code_), code_
+    state = tf.two_factor_store.states[user.id]
+    assert len(state.backup_codes) == 10
+    assert not any(
+        code_ in stored or code_.replace("-", "") in stored for code_ in codes for stored in state.backup_codes
+    )
+    status = await tf.call("GET", "/auth/me/2fa", token=token)
+    assert status.json() == {"enabled": True, "backup_codes_left": 10}
+
+
+async def test_a_backup_code_signs_in_once_in_place_of_the_code(tf: World) -> None:
+    user = tf.account()
+    _, token, codes = await enrol_codes(tf, user)
+    challenge_ = await challenge(tf, user)
+    typed = f" {codes[0].lower().replace('-', ' ')} "
+    response = await tf.call("POST", "/auth/login/2fa", json={"challenge_token": challenge_, "code": typed})
+    assert response.status_code == 200, response.text
+    # Spent, and its challenge with it.
+    response = await tf.call("POST", "/auth/login/2fa", json={"challenge_token": challenge_, "code": codes[1]})
+    assert code(response) == "token_invalid"
+    again = await challenge(tf, user)
+    response = await tf.call("POST", "/auth/login/2fa", json={"challenge_token": again, "code": codes[0]})
+    assert code(response) == "two_factor_invalid"
+    response = await tf.call("POST", "/auth/login/2fa", json={"challenge_token": again, "code": "ABCD-EFGH-JKLM-NPQR"})
+    assert code(response) == "two_factor_invalid"
+    assert (
+        await tf.call("POST", "/auth/login/2fa", json={"challenge_token": again, "code": codes[1]})
+    ).status_code == 200
+    assert (await tf.call("GET", "/auth/me/2fa", token=token)).json()["backup_codes_left"] == 8
+
+
+async def test_new_backup_codes_take_the_password_and_end_the_old_ones(tf: World) -> None:
+    user = tf.account()
+    token = await tf.token_of(user)
+    response = await tf.call("POST", "/auth/me/2fa/backup-codes", token=token, json={"password": PASSWORD})
+    assert response.status_code == 409 and code(response) == "two_factor_not_enabled"
+    _, token, old = await enrol_codes(tf, user)
+    response = await tf.call("POST", "/auth/me/2fa/backup-codes", token=token, json={"password": "wrong"})
+    assert code(response) == "password_incorrect"
+    response = await tf.call("POST", "/auth/me/2fa/backup-codes", token=token, json={"password": PASSWORD})
+    assert response.status_code == 200
+    new = response.json()["backup_codes"]
+    assert len(new) == 10 and not set(new) & set(old)
+    response = await tf.call(
+        "POST", "/auth/login/2fa", json={"challenge_token": await challenge(tf, user), "code": old[0]}
+    )
+    assert code(response) == "two_factor_invalid"
+    response = await tf.call(
+        "POST", "/auth/login/2fa", json={"challenge_token": await challenge(tf, user), "code": new[0]}
+    )
+    assert response.status_code == 200
+
+
+async def test_switching_off_takes_the_backup_codes_with_it(tf: World) -> None:
+    user = tf.account()
+    secret, token, _ = await enrol_codes(tf, user)
+    body = {"password": PASSWORD, "code": totp_code(secret, now=tf.clock())}
+    assert (await tf.call("POST", "/auth/me/2fa/disable", token=token, json=body)).status_code == 204
+    assert (await tf.call("GET", "/auth/me/2fa", token=token)).json() == {"enabled": False, "backup_codes_left": 0}
+
+
+async def test_the_service_s_reset_of_an_account_with_2fa_off_changes_nothing(tf: World) -> None:
+    user = tf.account()
+    service = tf.service(two_factor=tf.two_factor_store, secret_seal=tf.seal)
+    assert await service.reset_two_factor(user) is False
+    assert tf.mailer.of("two_factor_reset_notice") == []

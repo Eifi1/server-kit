@@ -472,13 +472,17 @@ class TwoFactorState:
     * ``pending_secret`` — a setup not yet confirmed by a code, sealed beside the live one so
       that a setup walked away from changes nothing (keksdose's F-4), or ``None``;
     * ``last_step`` — the time step of the last code accepted
-      (:func:`~eifi1_server_kit.auth.totp_step_accepted`), ``None`` until one is.
+      (:func:`~eifi1_server_kit.auth.totp_step_accepted`), ``None`` until one is;
+    * ``backup_codes`` — the backup codes left, each a digest
+      (:func:`~eifi1_server_kit.auth.backup_code_digest`), never the code (0.32, Marcel
+      2026-11-14: a lost phone with no passkey must not lock the account out).
     """
 
     enabled: bool = False
     secret: str | None = None
     pending_secret: str | None = None
     last_step: int | None = None
+    backup_codes: tuple[str, ...] = ()
 
 
 class TwoFactorStore(Protocol):

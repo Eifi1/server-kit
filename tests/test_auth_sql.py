@@ -729,6 +729,7 @@ def test_the_two_factor_columns_are_keksdose_s() -> None:
         "totp_secret VARCHAR(255)",
         "totp_pending_secret VARCHAR(255)",
         "totp_last_step BIGINT",
+        "totp_backup_codes JSONB",
     ):
         assert column in ddl
 
