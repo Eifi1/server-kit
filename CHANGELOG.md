@@ -10,6 +10,15 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### Added
+
+* **auth.router (Kurvenschmiede's gap 1):** `install_account_layer(app, deps)` and the
+  placeholders `app_current_user`, `app_admin` and `app_account_service`. An app's own routers
+  are made when their module is imported, before its `AuthDeps` exist, so they could not call
+  `current_user(deps)`; they depend on the placeholders, and the install binds them through the
+  app's `dependency_overrides` (and keeps `deps` on `app.state.account_deps`). Unbound, a
+  placeholder raises a `RuntimeError` naming the missing call.
+
 ### Changed
 
 * **auth (Kurvenschmiede):** an admin's invitation whose body names no `locale` is written in

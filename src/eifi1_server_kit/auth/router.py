@@ -122,9 +122,13 @@ __all__ = [
     "account_request_window",
     "account_service",
     "admin_guard",
+    "app_account_service",
+    "app_admin",
+    "app_current_user",
     "app_state_limiters",
     "auth_router",
     "current_user",
+    "install_account_layer",
     "invitations_admin_router",
     "no_hooks",
     "peer_address",
@@ -381,6 +385,49 @@ def admin_guard(deps: AuthDeps) -> Callable[..., Awaitable[Any]]:
     """:func:`current_user`, and ``403 admin_required`` unless the account holds
     ``policy.admin_role``. The same callable for the same ``deps``."""
     return _built(deps).admin_guard
+
+
+_NOT_INSTALLED = (
+    "the app's account layer is not installed: call install_account_layer(app, deps) where the app "
+    "is built, before it serves (eifi1_server_kit.auth.router)"
+)
+
+
+async def app_current_user() -> Any:
+    """The signed-in account, for a router an app makes when its module is imported — before
+    its ``AuthDeps`` exist, so :func:`current_user` cannot be called yet (0.32,
+    Kurvenschmiede's gap 1). ``Depends(app_current_user)`` there, and
+    :func:`install_account_layer` binds it to the app's ``current_user(deps)``; unbound, it
+    raises :class:`RuntimeError` naming the missing call."""
+    raise RuntimeError(_NOT_INSTALLED)
+
+
+async def app_admin() -> Any:
+    """:func:`admin_guard`'s account, for an import-time router (:func:`app_current_user`)."""
+    raise RuntimeError(_NOT_INSTALLED)
+
+
+async def app_account_service() -> AccountService[Any, Any, Any]:
+    """This request's :class:`~eifi1_server_kit.auth.service.AccountService`, for an
+    import-time router (:func:`app_current_user`)."""
+    raise RuntimeError(_NOT_INSTALLED)
+
+
+def install_account_layer(app: Any, deps: AuthDeps) -> None:
+    """Bind the import-time placeholders — :func:`app_current_user`, :func:`app_admin`,
+    :func:`app_account_service` — to ``deps``, through the app's ``dependency_overrides``,
+    and keep ``deps`` on ``app.state.account_deps``. Call it once where the app is built,
+    beside mounting :func:`auth_router` (0.32)::
+
+        deps = AuthDeps(...)
+        app.include_router(auth_router(deps), prefix="/api/v1")
+        install_account_layer(app, deps)
+
+    A test that builds its own app calls it on that app too."""
+    app.state.account_deps = deps
+    app.dependency_overrides[app_current_user] = current_user(deps)
+    app.dependency_overrides[app_admin] = admin_guard(deps)
+    app.dependency_overrides[app_account_service] = account_service(deps)
 
 
 def _guards(deps: AuthDeps, what: str) -> list[Any]:
