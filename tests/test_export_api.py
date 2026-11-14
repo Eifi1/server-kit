@@ -140,6 +140,9 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         "eifi1_server_kit.user_admin.scope",
         "eifi1_server_kit.user_admin.service",
         "eifi1_server_kit.feedback.router",
+        # The feedback's and the verdicts' ready tables and stores (0.31), behind the `sql` extra.
+        "eifi1_server_kit.feedback.sql",
+        "eifi1_server_kit.translation_review.sql",
         "eifi1_server_kit.notifications.router",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.translation_review.router",

@@ -78,6 +78,9 @@ dev = [
     # The `sql` extra's stores are tested on SQLite in memory through its asyncio driver, the
     # same statements an app runs on asyncpg (auth-harmonization §12.3, decision C).
     "aiosqlite>=0.21.0",
+    # The opt-in PostgreSQL run of the sql extra's stores (tests/test_sql_on_postgresql.py, with
+    # EIFI1_TEST_POSTGRES_URL set): the driver the apps run the same statements on.
+    "asyncpg>=0.30.0",
     # `auth.sql.alembic_render_item` is tested by rendering: Alembic's own autogenerate writes
     # the account tables' migration, and the test runs it on an empty database with nothing of
     # the kit in scope. The kit never imports Alembic; the apps' floor, no ceiling.

@@ -10,6 +10,22 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+### Added
+
+- **`feedback.sql` and `translation_review.sql`, the feedback's and the verdicts' ready tables and
+  stores** behind the existing `sql` extra (Marcel, 2026-11-13: everything that is the same in
+  every app goes into the kits). Declarative mixins (`FeedbackColumns`, `FeedbackReplyColumns`,
+  `FeedbackCommentColumns`, `FeedbackVoteColumns`, `FeedbackAttachmentColumns`,
+  `TranslationReviewColumns`) on the pattern of `auth.sql`: foreign keys follow
+  `__accounts_table__` (and `__feedback_table__`), constraints are unnamed for the app's naming
+  convention, every instant is a `UtcDateTime`. The stores implement every port of
+  `feedback.ports` (`SqlFeedbackRepository` with the public repository,
+  `SqlFeedbackReplyStore`, `SqlFeedbackCommentStore`, `SqlFeedbackVoteStore`, `SqlPeopleLookup`,
+  `SqlAttachmentStorage`) and `translation_review.ports` (`SqlTranslationReviewStore`); every
+  write flushes and none commits. The existing contract suites pass against them on SQLite and,
+  opt-in, on PostgreSQL (`tests/test_sql_on_postgresql.py`, with `EIFI1_TEST_POSTGRES_URL`).
+  No protocol changed.
+
 ## [0.30.0] (2026-11-13)
 
 server-kit 0.30.0: the admin half of the account layer (docs/auth-harmonization.md §12.3–§12.6,
