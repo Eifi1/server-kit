@@ -499,6 +499,46 @@ async def test_the_log_pages_newest_first_naming_the_people_and_the_groups(world
     assert (await world.call("GET", "/admin/actions?limit=0", token=token)).status_code == 422
 
 
+class _LogWithoutSearch:
+    """An app's own admin log from before 0.31: no ``page_by_email``."""
+
+    def __init__(self, log: Any) -> None:
+        self._log = log
+
+    async def add(self, record: Any) -> Any:
+        return await self._log.add(record)
+
+    async def page(self, *, target_user_id: int | None, limit: int, offset: int) -> Any:
+        return await self._log.page(target_user_id=target_user_id, limit=limit, offset=offset)
+
+    async def scrub_email(self, email: str) -> None:
+        await self._log.scrub_email(email)
+
+
+async def test_the_log_finds_the_rows_on_an_address(world: AdminWorld) -> None:
+    """Kurvenschmiede's G9: an invitation's rows name an address and no account."""
+    admin, token = await world.admin_token()
+    user = world.account()
+    for action, target_id, email in (
+        ("deactivate", user.id, user.email),
+        ("invite", None, "new@example.org"),
+        ("invite_revoke", None, "new@example.org"),
+    ):
+        await world.log.add(
+            admin_action_record(
+                action, actor_id=admin.id, target_user_id=target_id, target_email=email, now=world.clock()
+            )
+        )
+    found = (await world.call("GET", "/admin/actions?target_email=%20New@Example.org%20", token=token)).json()
+    assert found["total"] == 2 and {row["action"] for row in found["actions"]} == {"invite", "invite_revoke"}
+    both = await world.call("GET", f"/admin/actions?target={user.id}&target_email=new@example.org", token=token)
+    assert both.json()["total"] == 0
+    world.log = _LogWithoutSearch(world.log)  # type: ignore[assignment]
+    refused = await world.call("GET", "/admin/actions?target_email=new@example.org", token=token)
+    assert refused.status_code == 501
+    assert (await world.call("GET", "/admin/actions", token=token)).json()["total"] == 3
+
+
 # ── the overview ────────────────────────────────────────────────────────────
 
 

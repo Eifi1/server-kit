@@ -34,6 +34,12 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `InMemoryAdminActionLog.scrub_account`; **user_admin.testing:** `check_account_log_scrub(log,
   *, actor_id, user_id, other_user_id)`. An app's own log without it is scrubbed by address, as
   in 0.30.
+* **user_admin.ports:** `AdminActionsByEmail` (`page_by_email(*, target_email, target_user_id,
+  limit, offset)`, optional, runtime-checkable; G9, Kurvenschmiede): `GET /admin/actions` takes
+  `?target_email=` (trimmed and lower-cased, combinable with `target`), so an invitation's rows,
+  which name an address and no account, can be found. **auth.sql:**
+  `SqlAdminActionLog.page_by_email`; **auth.testing:** `InMemoryAdminActionLog.page_by_email`.
+  An app's own log without it answers that query with `501`; 0.29's `page` is unchanged.
 
 ### Changed
 

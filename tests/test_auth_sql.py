@@ -761,6 +761,13 @@ async def test_the_invitation_store_forgets_what_an_erased_account_accepted(sess
 # ── 0.31: the log an erasure scrubs by the account ──────────────────────────
 
 
+async def test_the_admin_log_pages_by_address(session: AsyncSession) -> None:
+    from tests.user_admin._log_search import assert_pages_by_email
+
+    one, two = await _ids(session, "p1@example.org", "p2@example.org")
+    await assert_pages_by_email(SqlAdminActionLog(session, AdminActionRecord), actor_id=one, user_id=two)
+
+
 async def test_the_admin_log_scrubs_an_account_s_rows(session: AsyncSession) -> None:
     log = SqlAdminActionLog(session, AdminActionRecord)
     assert isinstance(log, AccountLogScrub)

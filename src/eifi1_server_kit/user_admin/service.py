@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
+from eifi1_server_kit.auth.accounts import normalise_email
 from eifi1_server_kit.auth.limits import AuthLimiters
 from eifi1_server_kit.auth.ports import AccountRow, AdminActionLog, InvitationStore, UserStore
 from eifi1_server_kit.auth.service import AccountPolicy, AccountService, SessionsEndedReason
@@ -57,6 +58,7 @@ from eifi1_server_kit.user_admin.attention import AdminAttention
 from eifi1_server_kit.user_admin.audit import admin_action_record
 from eifi1_server_kit.user_admin.deletion import DeletionMode
 from eifi1_server_kit.user_admin.errors import AccountError, AccountErrorCode
+from eifi1_server_kit.user_admin.ports import AdminActionsByEmail
 from eifi1_server_kit.user_admin.roster import SORT_KEYS, STATE_TOKENS, parse_roster_query
 from eifi1_server_kit.user_admin.rules import refuse_self, require_confirmation
 from eifi1_server_kit.user_admin.schemas import (
@@ -526,11 +528,22 @@ class UserAdminService[UserT: AccountRow]:
 
     # --- the log ---------------------------------------------------------------------------
 
-    async def actions(self, *, limit: int, offset: int, target_user_id: int | None) -> dict[str, Any]:
-        """``GET /admin/actions?limit=&offset=&target=`` (§4.3): newest first, with the actor
-        and the target joined as people (an erased one is ``None``) and the groups named by
-        the ``group_names`` hook."""
-        rows, total = await self._log.page(target_user_id=target_user_id, limit=limit, offset=offset)
+    async def actions(
+        self, *, limit: int, offset: int, target_user_id: int | None, target_email: str | None = None
+    ) -> dict[str, Any]:
+        """``GET /admin/actions?limit=&offset=&target=&target_email=`` (§4.3): newest first,
+        with the actor and the target joined as people (an erased one is ``None``) and the
+        groups named by the ``group_names`` hook. ``target_email`` (0.31) needs a log with
+        :class:`~eifi1_server_kit.user_admin.ports.AdminActionsByEmail`; without it,
+        :class:`NotImplementedError`."""
+        if target_email is None:
+            rows, total = await self._log.page(target_user_id=target_user_id, limit=limit, offset=offset)
+        elif isinstance(self._log, AdminActionsByEmail):
+            rows, total = await self._log.page_by_email(
+                target_email=normalise_email(target_email), target_user_id=target_user_id, limit=limit, offset=offset
+            )
+        else:
+            raise NotImplementedError("the admin log cannot page by address (user_admin.ports.AdminActionsByEmail)")
         people: dict[int, PersonRef | None] = {}
         for person_id in {row.actor_id for row in rows} | {row.target_user_id for row in rows}:
             if person_id is not None:

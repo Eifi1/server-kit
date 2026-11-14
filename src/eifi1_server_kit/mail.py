@@ -608,7 +608,9 @@ class ConsoleMailer:
     kastlan's choice all along). Pass ``level`` for another.
     """
 
-    def __init__(self, *, level: int = logging.WARNING, log: logging.Logger = logger, show_content: bool = False) -> None:
+    def __init__(
+        self, *, level: int = logging.WARNING, log: logging.Logger = logger, show_content: bool = False
+    ) -> None:
         self._level = level
         self._log = log
         self._show = show_content

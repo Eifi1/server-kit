@@ -73,6 +73,12 @@ async def test_the_in_memory_log_scrubs_an_account_s_rows() -> None:
     await check_account_log_scrub(log, actor_id=1, user_id=2, other_user_id=3)
 
 
+async def test_the_in_memory_log_pages_by_address() -> None:
+    from tests.user_admin._log_search import assert_pages_by_email
+
+    await assert_pages_by_email(InMemoryAdminActionLog(), actor_id=1, user_id=2)
+
+
 async def test_a_log_without_scrub_account_is_named() -> None:
     class Plain:
         pass

@@ -373,6 +373,16 @@ class MemoryActionLog:
         rows = [row for row in reversed(self.rows) if target_user_id is None or row.target_user_id == target_user_id]
         return rows[offset : offset + limit], len(rows)
 
+    async def page_by_email(
+        self, *, target_email: str, target_user_id: int | None, limit: int, offset: int
+    ) -> tuple[Sequence[MemoryAction], int]:
+        rows = [
+            row
+            for row in reversed(self.rows)
+            if row.target_email == target_email and (target_user_id is None or row.target_user_id == target_user_id)
+        ]
+        return rows[offset : offset + limit], len(rows)
+
     async def scrub_email(self, email: str) -> None:
         for row in self.rows:
             if row.target_email == email:

@@ -48,10 +48,10 @@ from eifi1_server_kit.auth.sql import (
     prune_account_rows,
 )
 from eifi1_server_kit.auth.testing import check_invitation_store, check_user_store
-from eifi1_server_kit.user_admin.service import AdminPolicy
-from eifi1_server_kit.user_admin.testing import check_roster_store
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.clock import utc_now
+from eifi1_server_kit.user_admin.service import AdminPolicy
+from eifi1_server_kit.user_admin.testing import check_roster_store
 
 #: A fixed instant in the past, so every horizon the tests prune at has passed.
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=UTC)
@@ -440,7 +440,6 @@ async def test_a_role_column_that_holds_only_the_policy_s_names_keeps_the_contra
     inviter = await SqlUserStore(strict, StrictUser).add(new)
     store = SqlInvitationStore(strict, StrictInvitation)
     await check_invitation_store(store, inviter_id=inviter.id, user_id=inviter.id)
-
 
 
 async def test_the_roster_suite_s_roles_are_the_policy_s_too(strict: AsyncSession) -> None:
