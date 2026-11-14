@@ -26,6 +26,14 @@ entry in the Conventional Commit; this file is assembled from them at release.
   called after the switch and after the new address's open invitations attached
   (Kurvenschmiede moves the shares waiting for the old address there). A refused confirmation
   calls nothing.
+* **user_admin.ports:** `AccountLogScrub` (`scrub_account(user_id)`, optional, runtime-checkable,
+  like 0.30's `AcceptedInvitations`; G2): the erasure also clears `target_email` on every log row
+  about the account, so a row written before an address change loses the earlier address too.
+  It runs before the account's row is deleted (`[sql]`'s log keys are `SET NULL`).
+  **auth.sql:** `SqlAdminActionLog.scrub_account`; **auth.testing:**
+  `InMemoryAdminActionLog.scrub_account`; **user_admin.testing:** `check_account_log_scrub(log,
+  *, actor_id, user_id, other_user_id)`. An app's own log without it is scrubbed by address, as
+  in 0.30.
 
 ### Changed
 

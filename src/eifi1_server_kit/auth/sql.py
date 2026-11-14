@@ -927,6 +927,17 @@ class SqlAdminActionLog[ActionT: AdminActionColumns]:
             .execution_options(synchronize_session="fetch")
         )
 
+    async def scrub_account(self, user_id: int) -> None:
+        """0.31's :class:`~eifi1_server_kit.user_admin.ports.AccountLogScrub`: the rows about
+        the account lose their address, whichever it was, before its row goes."""
+        model = self._model
+        await self._session.execute(
+            update(model)
+            .where(model.target_user_id == user_id, model.target_email.is_not(None))
+            .values(target_email=None)
+            .execution_options(synchronize_session="fetch")
+        )
+
 
 # ── After the commit ────────────────────────────────────────────────────────
 

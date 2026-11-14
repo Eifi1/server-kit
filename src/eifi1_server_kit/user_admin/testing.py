@@ -10,7 +10,8 @@ SQLAlchemy, no FastAPI.
   any mapping of ids to account rows); the kit's own router tests run on it;
 * :func:`check_roster_store`, which an app runs once against its own roster (or the ``sql``
   extra's ``SqlRosterStore``) on its test database as it is, and
-  :func:`check_accepted_invitations` for an invitation store's ``forget_accepted``. Each
+  :func:`check_accepted_invitations` for an invitation store's ``forget_accepted`` and
+  :func:`check_account_log_scrub` for an admin log's ``scrub_account`` (0.31). Each
   raises :class:`AssertionError` naming the first promise that fails, writes under fresh
   addresses, and asserts only on what it adds.
 
@@ -24,13 +25,22 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from eifi1_server_kit.auth.ports import AccountRow, InvitationStore, NewAccount, NewInvitation, UserStore
+from eifi1_server_kit.auth.ports import (
+    AccountRow,
+    AdminActionLog,
+    InvitationStore,
+    NewAccount,
+    NewInvitation,
+    UserStore,
+)
 from eifi1_server_kit.auth.tokens import hash_token
 from eifi1_server_kit.clock import utc_now
-from eifi1_server_kit.user_admin.ports import AcceptedInvitations, RosterCounts
+from eifi1_server_kit.user_admin.actions import AdminAction
+from eifi1_server_kit.user_admin.audit import admin_action_record
+from eifi1_server_kit.user_admin.ports import AcceptedInvitations, AccountLogScrub, RosterCounts
 from eifi1_server_kit.user_admin.roster import RosterSort, UserListQuery, parse_roster_query
 
-__all__ = ["InMemoryRosterStore", "check_accepted_invitations", "check_roster_store"]
+__all__ = ["InMemoryRosterStore", "check_accepted_invitations", "check_account_log_scrub", "check_roster_store"]
 
 
 def _aware(moment: datetime) -> datetime:
@@ -352,3 +362,74 @@ async def check_accepted_invitations(
     _check(await store.get(others.id) is not None, "forget_accepted: another account's stay")
     _check(await store.get(still_open.id) is not None, "forget_accepted: an open invitation stays")
     _check(list(await store.forget_accepted(user_id)) == [], "forget_accepted: twice forgets nothing more")
+
+
+async def _every_row(log: AdminActionLog[Any], target_user_id: int | None) -> dict[int, Any]:
+    """Every row ``page`` answers for ``target_user_id``, by id, a page at a time."""
+    found: dict[int, Any] = {}
+    offset = 0
+    while True:
+        rows, total = await log.page(target_user_id=target_user_id, limit=200, offset=offset)
+        found.update({row.id: row for row in rows})
+        offset += len(rows)
+        if not rows or offset >= total:
+            return found
+
+
+async def check_account_log_scrub(log: AdminActionLog[Any], *, actor_id: int, user_id: int, other_user_id: int) -> None:
+    """Does the app's admin log scrub the rows about an account by its id (0.31, G2)? Raises
+    :class:`AssertionError` naming the first promise that fails, and :class:`TypeError` for a
+    log without ``scrub_account``
+    (:class:`~eifi1_server_kit.user_admin.ports.AccountLogScrub`).
+
+    ``actor_id``, ``user_id`` and ``other_user_id`` are existing accounts. It adds four rows
+    under fresh addresses: two about ``user_id`` (an earlier address and the current one), one
+    about ``other_user_id`` that ``user_id`` took, and an invitation with no account to the
+    current address — that one is ``scrub_email``'s, and stays here.
+    """
+    if not isinstance(log, AccountLogScrub):
+        raise TypeError("the admin log has no scrub_account (user_admin.ports.AccountLogScrub)")
+    token = secrets.token_hex(6)
+    now = utc_now()
+    earlier, current, other = (f"check-{token}-{label}@example.test" for label in ("earlier", "current", "other"))
+
+    def record(action: AdminAction, **fields: Any) -> dict[str, Any]:
+        return admin_action_record(action, now=now, **fields)
+
+    about = [
+        await log.add(
+            record(
+                AdminAction.DEACTIVATE,
+                actor_id=actor_id,
+                target_user_id=user_id,
+                target_email=earlier,
+                detail={"sessions_ended": True},
+            )
+        ),
+        await log.add(record(AdminAction.REACTIVATE, actor_id=actor_id, target_user_id=user_id, target_email=current)),
+    ]
+    theirs = await log.add(record(AdminAction.ROLE, actor_id=user_id, target_user_id=other_user_id, target_email=other))
+    invitation = await log.add(record(AdminAction.INVITE, actor_id=actor_id, target_user_id=None, target_email=current))
+
+    await log.scrub_account(user_id)
+    rows = await _every_row(log, user_id)
+    _check(
+        all(row.id in rows and rows[row.id].target_email is None for row in about),
+        "scrub_account: every row about the account loses its address, the earlier one too",
+    )
+    _check(
+        [(rows[row.id].action, dict(rows[row.id].detail)) for row in about]
+        == [("deactivate", {"sessions_ended": True}), ("reactivate", {})],
+        "scrub_account: the rows stay as they were but for the address",
+    )
+    others = await _every_row(log, other_user_id)
+    _check(
+        theirs.id in others and others[theirs.id].target_email == other,
+        "scrub_account: another account's rows keep their address, whoever acted",
+    )
+    unnamed = await _every_row(log, None)
+    _check(
+        invitation.id in unnamed and unnamed[invitation.id].target_email == current,
+        "scrub_account: a row about no account keeps its address (scrub_email's)",
+    )
+    await log.scrub_account(user_id)

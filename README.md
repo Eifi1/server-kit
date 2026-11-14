@@ -893,7 +893,9 @@ over stays the app's; its counts ride on the answer and the row),
 the feedback through `FeedbackService.erase_author` with `erasure_identifiers` (its files to
 `AuthHooks.purge_files` after the commit), the invitations the account accepted deleted where
 the store has `forget_accepted`, the log scrubbed of the account's address and those
-invitations', every session and link ended, an `erase` row (the admin or no actor, no target,
+invitations' and, where the log has `scrub_account` (0.31: `[sql]`'s and the in-memory one),
+of every row about the account whatever address it names (an address changed since), before
+the row goes, every session and link ended, an `erase` row (the admin or no actor, no target,
 `{feedback_anonymised, …}`), and the row deleted (`[sql]`'s sessions, links and passkeys
 cascade; the log's keys are `SET NULL`). **The `after_days` job** is the app's scheduled job:
 
@@ -922,13 +924,13 @@ the app's (Kurvenschmiede's `demo_router`, keksdose's demo).
 
 | Area | Names |
 |---|---|
-| Ports (`user_admin.ports`) | `RosterStore` (`page(query, *, admin_role, reviewer_role)`, `counts(*, since)` → `RosterCounts(people, new, deletion_requests)`, `deletion_requested()`), `AcceptedInvitations` (`forget_accepted(user_id)`, optional, runtime-checkable) |
+| Ports (`user_admin.ports`) | `RosterStore` (`page(query, *, admin_role, reviewer_role)`, `counts(*, since)` → `RosterCounts(people, new, deletion_requests)`, `deletion_requested()`), `AcceptedInvitations` (`forget_accepted(user_id)`, optional, runtime-checkable), `AccountLogScrub` (`scrub_account(user_id)`, optional, runtime-checkable; 0.31) |
 | Scope (`user_admin.scope`) | `AdminScope` (`find`, `roster`, `counts`, `roles_of`, `grantable_roles`, `set_roles`, `active_admins`, `refuse_last_admin`, `refuse_account_wide`, `record_fields`), `GlobalScope` |
 | Service (`user_admin.service`) | `UserAdminService`, `AdminPolicy(roles, grantable, reviewer_role, review_locales, review_areas, states, sort_keys, app_actions)`, `UserAdminHooks(to_row, attention, confirmation, role_changing, activating, group_names)`, `ADMIN_ACTIONS`, `erase_due_accounts`, `ErasureRun` |
 | Routes (`user_admin.router`) | `UserAdminDeps(auth, roster, scope, hooks, feedback, guard, policy, role_sets, row_model, action_row_model, attention_model, erasure_result_model, active_change_model, role_change_model, roles_change_model, mail_request_model)`, `user_admin_router(deps, *, prefix="/admin", tags=("admin",))`, `no_admin_hooks` |
 | Account layer (0.30) | `AccountService.start_session`, `end_sessions`, `send_account_mail`, `erase`, `erase_if_due`; `StartedSession`; `AuthHooks.erase`, `purge_files`; `SessionsEndedReason.PASSWORD_CHANGE_REQUIRED`; `AccountPolicy.invitable_roles`; `AuthDeps.offered_locales`; `AuthLimiters(mail_test=MAIL_TEST_PER_ACCOUNT)` |
 | Answers (`user_admin`) | `AdminActionPage[RowT]`, `AdminActionRow.target`, `ReviewerResult`, `MailBackendInfo`, `ErasureResult`; `AccountErrorCode` `user_not_found`, `role_not_grantable`, `reviewer_is_admin`, `account_inactive`, `email_already_verified`, `deletion_not_requested` |
-| Testing (`user_admin.testing`) | `InMemoryRosterStore(rows)`, `check_roster_store(roster, users, *, admin_role, member_role, reviewer_role, add_demo=None)`, `check_accepted_invitations(store, *, inviter_id, user_id, other_user_id)` |
+| Testing (`user_admin.testing`) | `InMemoryRosterStore(rows)`, `check_roster_store(roster, users, *, admin_role, member_role, reviewer_role, add_demo=None)`, `check_accepted_invitations(store, *, inviter_id, user_id, other_user_id)`, `check_account_log_scrub(log, *, actor_id, user_id, other_user_id)` (0.31) |
 
 **On `[sql]` (Staunlabor):** 0.30 adds **no table and no column**, so the 0.29 migration
 needs nothing new. It adds `SqlRosterStore(session, User)` (the roster, the overview's counts
@@ -936,7 +938,9 @@ and the job's candidates, over `AccountColumns` as it is; demo accounts left out
 model has `DemoAccountColumn`) and `SqlInvitationStore.forget_accepted` (deletes rows of the
 invitations table as it is). Run `check_roster_store(SqlRosterStore(session, User),
 SqlUserStore(session, User))` and `check_accepted_invitations(SqlInvitationStore(session,
-Invitation), …)` beside 0.29's suites. No 0.29 Protocol gained a method.
+Invitation), …)` beside 0.29's suites, and since 0.31
+`check_account_log_scrub(SqlAdminActionLog(session, AdminAction), …)`. No 0.29 Protocol gained a
+method.
 
 **Stays app-side:** what an erasure deletes or hands over (the `erase` hook), keksdose's API
 tokens and push devices at a deactivation (the `sessions_ended` hook), plans and billing,

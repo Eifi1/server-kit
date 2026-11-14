@@ -378,6 +378,11 @@ class MemoryActionLog:
             if row.target_email == email:
                 row.target_email = None
 
+    async def scrub_account(self, user_id: int) -> None:
+        for row in self.rows:
+            if row.target_user_id == user_id:
+                row.target_email = None
+
     def actions(self) -> list[str]:
         return [row.action for row in self.rows]
 

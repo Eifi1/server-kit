@@ -26,7 +26,7 @@ from typing import Protocol, runtime_checkable
 from eifi1_server_kit.auth.ports import AccountRow
 from eifi1_server_kit.user_admin.roster import UserListQuery
 
-__all__ = ["AcceptedInvitations", "RosterCounts", "RosterStore"]
+__all__ = ["AcceptedInvitations", "AccountLogScrub", "RosterCounts", "RosterStore"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,3 +95,20 @@ class AcceptedInvitations(Protocol):
     async def forget_accepted(self, user_id: int) -> Sequence[str]:
         """Delete every invitation ``user_id`` accepted, flushed, and answer the addresses
         they were sent to (the erasure scrubs those from the admin log too)."""
+
+
+@runtime_checkable
+class AccountLogScrub(Protocol):
+    """An admin log that can scrub the rows about an account by its id (0.31, G2;
+    Kurvenschmiede): an erasure scrubs the log by address (``AdminActionLog.scrub_email``),
+    and a row written before an address change names the earlier one, which no address the
+    erasure knows matches.
+
+    Optional: the ``sql`` extra's and the in-memory logs have it; an app's own log adds the
+    method. The erasure checks for it with ``isinstance`` and calls it **before the account's
+    row is deleted**: on ``[sql]`` the log's keys are ``SET NULL``, so afterwards no row names
+    the account any more."""
+
+    async def scrub_account(self, user_id: int) -> None:
+        """Clear ``target_email`` on every row whose ``target_user_id`` is ``user_id``,
+        flushed; the rows stay, and so does everything else on them."""

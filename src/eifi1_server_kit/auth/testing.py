@@ -539,6 +539,12 @@ class InMemoryAdminActionLog:
             if row.target_email == email:
                 row.target_email = None
 
+    async def scrub_account(self, user_id: int) -> None:
+        """0.31's :class:`~eifi1_server_kit.user_admin.ports.AccountLogScrub`."""
+        for row in self.rows.values():
+            if row.target_user_id == user_id:
+                row.target_email = None
+
 
 class InMemoryAfterCommit:
     """An :class:`~eifi1_server_kit.auth.ports.AfterCommit` whose queue a test runs by hand.

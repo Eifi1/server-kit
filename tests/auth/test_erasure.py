@@ -163,6 +163,52 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
     assert erased.detail == detail
 
 
+async def test_an_erasure_scrubs_the_rows_about_the_account_whatever_address_they_name(world: World) -> None:
+    """G2: a row written before an address change names the earlier address; the erasure
+    scrubs every row about the account by its id too, before the row goes (``[sql]``'s keys
+    are ``SET NULL``: after the delete nothing names the account any more)."""
+    admin = world.account(email="root@example.com", role="ADMIN")
+    user = world.account(email="ada@new.example", is_active=False, deletion_requested_at=world.clock())
+    for address, target in (("ada@old.example", user.id), (user.email, user.id), ("bob@example.com", 99)):
+        await world.log.add(
+            admin_action_record(
+                "deactivate", actor_id=admin.id, target_user_id=target, target_email=address, now=world.clock()
+            )
+        )
+    present: list[bool] = []
+    scrub = world.log.scrub_account
+
+    async def scrub_account(user_id: int) -> None:
+        present.append(user_id in world.users.rows)
+        await scrub(user_id)
+
+    world.log.scrub_account = scrub_account  # type: ignore[method-assign]
+    await world.service().erase(user, actor_id=admin.id)
+    assert [row.target_email for row in world.log.rows[:3]] == [None, None, "bob@example.com"]
+    assert present == [True], "scrubbed by the account while its row is still there"
+
+
+async def test_a_log_without_scrub_account_is_scrubbed_by_address_alone(world: World) -> None:
+    class Plain:
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            if name == "scrub_account":
+                raise AttributeError(name)
+            return getattr(self.inner, name)
+
+    user = world.account(email="ada@new.example", is_active=False, deletion_requested_at=world.clock())
+    for address in ("ada@old.example", user.email):
+        await world.log.add(
+            admin_action_record(
+                "deactivate", actor_id=None, target_user_id=user.id, target_email=address, now=world.clock()
+            )
+        )
+    await world.service(log=Plain(world.log)).erase(user, actor_id=None)
+    assert [row.target_email for row in world.log.rows[:2]] == ["ada@old.example", None]
+
+
 async def test_an_erasure_without_feedback_files_or_hooks_still_erases(world: World) -> None:
     user = world.account(is_active=False, deletion_requested_at=world.clock())
     assert await world.service().erase(user, actor_id=None) == {"feedback_anonymised": 0}

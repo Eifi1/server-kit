@@ -160,7 +160,7 @@ from eifi1_server_kit.user_admin.deletion import (
 )
 from eifi1_server_kit.user_admin.errors import AccountError, AccountErrorCode
 from eifi1_server_kit.user_admin.export import export_envelope
-from eifi1_server_kit.user_admin.ports import AcceptedInvitations
+from eifi1_server_kit.user_admin.ports import AcceptedInvitations, AccountLogScrub
 from eifi1_server_kit.user_admin.rules import refuse_last_admin, require_confirmation
 from eifi1_server_kit.user_admin.schemas import (
     InvitationCreate,
@@ -1373,7 +1373,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         3. the invitations the account accepted are deleted, where the store can
            (:class:`~eifi1_server_kit.user_admin.ports.AcceptedInvitations`);
         4. the admin log keeps its rows and loses the addresses: the account's and those
-           invitations' (``scrub_email``); the account's id goes with the row's foreign key;
+           invitations' (``scrub_email``), and, where the log can (0.31,
+           :class:`~eifi1_server_kit.user_admin.ports.AccountLogScrub`), every row about the
+           account whatever address it names; the account's id goes with the row's foreign
+           key;
         5. every session row ends and every link is dropped, for a table that does not
            cascade;
         6. an ``erase`` row: the actor, no target, ``{feedback_anonymised, **the hook's}``;
@@ -1392,6 +1395,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             addresses.update(await self._invitations.forget_accepted(user.id))
         for address in sorted(addresses):
             await self._log.scrub_email(address)
+        if isinstance(self._log, AccountLogScrub):
+            await self._log.scrub_account(user.id)
         await self._sessions.end_all(user.id)
         for kind in (OneTimeTokenKind.PASSWORD_RESET, OneTimeTokenKind.VERIFICATION, OneTimeTokenKind.EMAIL_CHANGE):
             await self._tokens.drop(kind, user.id)
