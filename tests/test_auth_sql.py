@@ -791,6 +791,13 @@ async def test_the_invitation_store_forgets_what_an_erased_account_accepted(sess
 # ── 0.31: the log an erasure scrubs by the account ──────────────────────────
 
 
+async def test_the_admin_log_reads_the_names_deleted_groups_had(session: AsyncSession) -> None:
+    from tests.user_admin._log_search import assert_reads_deleted_group_names
+
+    (one,) = await _ids(session, "g1@example.org")
+    await assert_reads_deleted_group_names(SqlAdminActionLog(session, AdminActionRecord), actor_id=one)
+
+
 async def test_the_admin_log_pages_by_address(session: AsyncSession) -> None:
     from tests.user_admin._log_search import assert_pages_by_email
 

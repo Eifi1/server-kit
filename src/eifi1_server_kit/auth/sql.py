@@ -1018,6 +1018,21 @@ class SqlAdminActionLog[ActionT: AdminActionColumns]:
             .execution_options(synchronize_session="fetch")
         )
 
+    async def deleted_group_names(self, group_ids: Sequence[int]) -> Mapping[int, str]:
+        """0.32's :class:`~eifi1_server_kit.user_admin.ports.DeletedGroupNames`: the names the
+        ``group_delete`` rows of these groups kept, in one query."""
+        if not group_ids:
+            return {}
+        model = self._model
+        rows = await self._session.execute(
+            select(model.target_group_id, model.target_group_name).where(
+                model.action == "group_delete",
+                model.target_group_id.in_(list(group_ids)),
+                model.target_group_name.is_not(None),
+            )
+        )
+        return {group_id: name for group_id, name in rows.all() if group_id is not None and name is not None}
+
 
 # ── After the commit ────────────────────────────────────────────────────────
 

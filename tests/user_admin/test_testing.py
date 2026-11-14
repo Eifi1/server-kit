@@ -79,6 +79,12 @@ async def test_the_in_memory_log_pages_by_address() -> None:
     await assert_pages_by_email(InMemoryAdminActionLog(), actor_id=1, user_id=2)
 
 
+async def test_the_in_memory_log_reads_the_names_deleted_groups_had() -> None:
+    from tests.user_admin._log_search import assert_reads_deleted_group_names
+
+    await assert_reads_deleted_group_names(InMemoryAdminActionLog(), actor_id=1)
+
+
 async def test_a_log_without_scrub_account_is_named() -> None:
     class Plain:
         pass

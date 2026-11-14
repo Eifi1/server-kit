@@ -1578,15 +1578,29 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         )
         return {**fields, "sent": issued.sent}
 
-    async def create_invitation(self, admin: UserT, body: InvitationCreate, *, show_link: bool) -> dict[str, Any]:
+    async def create_invitation(
+        self,
+        admin: UserT,
+        body: InvitationCreate,
+        *,
+        show_link: bool,
+        scope: Mapping[str, Any] | None = None,
+        detail: Mapping[str, object] | None = None,
+    ) -> dict[str, Any]:
         """``POST /admin/invitations`` (user-admin §5): an invitation to an address, in the
         invitee's language, logged as ``invite``; the mail after the commit. ``show_link``:
         the console transport's shown-once link (§12.5 item 11). A ``scope`` goes through the
-        ``invitation_scope`` hook, else it is refused."""
+        ``invitation_scope`` hook, else it is refused.
+
+        For a caller that decided the scope itself (0.32, the teams: a team and the role in
+        it), ``scope`` is stored as it is, past the hook, and ``detail`` joins the ``invite``
+        row's detail beside the kit's (``team_role``). A body that names a scope too is a
+        :class:`ValueError`. Without either, nothing changes."""
         invitable = self._policy.invitable_roles
         if invitable is not None and body.role not in invitable:
             raise AccountError(AccountErrorCode.ROLE_NOT_GRANTABLE)
-        scope: Mapping[str, Any] | None = None
+        if scope is not None and body.scope is not None:
+            raise ValueError("create_invitation: a decided scope, or the body's scope through the hook, not both")
         if body.scope is not None:
             if self._hooks.invitation_scope is None:
                 raise AuthError(AuthErrorCode.INVITATION_SCOPE_INVALID)
@@ -1617,7 +1631,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             )
         )
         group = await self._group_of(invitation)
-        await self._record(AdminAction.INVITE, admin, invitation, now, group)
+        await self._record(AdminAction.INVITE, admin, invitation, now, group, detail)
         link, sent = await self._mail_invitation(invitation, raw, group, admin)
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
@@ -1662,9 +1676,15 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         await self._record(AdminAction.INVITE_REVOKE, admin, invitation, now, await self._group_of(invitation))
 
     async def _record(
-        self, action: AdminAction, admin: UserT, invitation: InvT, now: datetime, group: GroupRef | None
+        self,
+        action: AdminAction,
+        admin: UserT,
+        invitation: InvT,
+        now: datetime,
+        group: GroupRef | None,
+        more: Mapping[str, object] | None = None,
     ) -> None:
-        detail = (
+        detail: dict[str, object] = (
             {"invitation_id": invitation.id, "role": invitation.role}
             if invitation.role
             else {"invitation_id": invitation.id}
@@ -1675,7 +1695,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 actor_id=admin.id,
                 target_user_id=None,
                 target_email=invitation.email,
-                detail=detail,
+                detail={**detail, **(more or {})},
                 target_group_id=None if group is None else group.id,
                 now=now,
             )
