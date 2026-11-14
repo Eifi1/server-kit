@@ -49,6 +49,10 @@ entry in the Conventional Commit; this file is assembled from them at release.
   path that names an account (a reset, a verification or an address change's link, the forced
   change's challenge), called as soon as the account is loaded and before any other hook reads
   under it (keksdose's key wraps are FORCE row-level security on the current user).
+* **auth (keksdose's KG-4):** `AuthHooks.invitation_accepting(user, invitation)`, before an existing
+  account's accept spends anything: a kit refusal refuses it (keksdose refuses a registration
+  invitation for an existing account, a budget invitation passes). Which invitations the admin's
+  list shows stays the app's store's: `listing()` answers the kinds the admin manages.
 
 ### Changed
 

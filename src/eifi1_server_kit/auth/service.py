@@ -281,6 +281,10 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: on the invitation's log rows (``target_group_id``), its ``name`` into the mail's
     #: ``{group}``. ``None``, or no hook: no group.
     invitation_group: Callable[[InvT], Awaitable[GroupRef | None]] | None = None
+    #: An existing account is about to take up an invitation (``/invitations/accept``, 0.32,
+    #: keksdose's KG-4): ``(user, invitation)``, before anything is spent; a kit refusal
+    #: refuses it (keksdose: a registration invitation is for a new address).
+    invitation_accepting: Callable[[UserT, InvT], Awaitable[None]] | None = None
     #: An admin is about to invite (0.31, G7): ``(admin, body, existing, scope)`` — the
     #: request's ``InvitationCreate``, the account that already has the address or ``None``,
     #: and what ``invitation_scope`` answered or ``None``. Raise a kit refusal to refuse it
@@ -1231,6 +1235,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         invitation = await self._open_invitation(token)
         if not invitation_accepts(invitation.email, user.email, self._policy.app):
             raise AuthError(AuthErrorCode.INVITATION_INVALID)
+        if self._hooks.invitation_accepting is not None:
+            await self._hooks.invitation_accepting(user, invitation)
         await self._invitations.accept(invitation, user_id=user.id, at=self._now())
         if self._hooks.on_invitation_redeemed is not None:
             await self._hooks.on_invitation_redeemed(user, invitation)

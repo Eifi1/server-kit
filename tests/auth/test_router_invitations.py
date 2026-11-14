@@ -421,3 +421,26 @@ async def test_an_accepted_invitation_names_its_group() -> None:
         raw, _ = invite(world, "bob@example.com", role="MEMBER")
         response = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": raw})
         assert response.json()["group"] == {"id": 4, "name": "Rig 4"}
+
+
+async def test_the_app_may_refuse_an_existing_account_s_accept() -> None:
+    """keksdose's KG-4 (c) (0.32): a registration invitation is for a new address; an existing
+    account taking it up is refused (keksdose answers ``invitation_invalid``), while a budget
+    invitation is accepted. ``invitation_accepting`` sees the account and the invitation
+    before anything is spent."""
+    world = World()
+    async with world.client:
+        user = world.account(email="bob@example.com")
+        token = await world.token_of(user)
+
+        async def invitation_accepting(account: MemoryUser, invitation: MemoryInvitation) -> None:
+            if invitation.scope is None:
+                raise AuthError(AuthErrorCode.INVITATION_INVALID)
+
+        world.hooks = AuthHooks(invitation_accepting=invitation_accepting)
+        registration, first = invite(world, "bob@example.com", role="MEMBER")
+        refused = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": registration})
+        assert code(refused) == "invitation_invalid" and first.accepted_at is None
+        budget, second = invite(world, "bob@example.com", role="GUEST", scope={"budget_id": 7})
+        accepted = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": budget})
+        assert accepted.status_code == 200 and second.accepted_by_user_id == user.id
