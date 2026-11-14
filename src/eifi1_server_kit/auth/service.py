@@ -300,8 +300,9 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: RLS variables), or refuse (its 401 for a lost membership, 403 for a closed company).
     bind: Callable[[UserT, Mapping[str, Any]], Awaitable[None]] | None = None
     #: The same on a signed-out path that names an account (0.32, keksdose's KG-2): a mailed
-    #: link (reset, verification, address change) or a sign-in challenge (the forced
-    #: change). Called as soon as the account is loaded, before any other hook reads under
+    #: link (reset, verification, address change), the sign-in once its credential passed
+    #: (password or passkey), or a sign-in challenge (the forced change, the second
+    #: factor). Called as soon as the account is loaded, before any other hook reads under
     #: it (keksdose's key wraps are FORCE row-level security on the current user).
     bind_anonymous: Callable[[UserT], Awaitable[None]] | None = None
     #: Seam 4: every session of the account ended, and why: what else ends with them.
@@ -688,7 +689,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
     ) -> IssuedSession[UserT] | ChallengeIssued[UserT]:
         """What a sign-in that passed answers, by password or by passkey: a session, or,
         while an admin requires a new password, the challenge to set one first
-        (user-admin §4.1). ``last_login_at`` waits for the session."""
+        (user-admin §4.1). ``last_login_at`` waits for the session. The account is bound
+        first (``bind_anonymous``, keksdose's KG-2): a sign-in is signed out until it ends,
+        and the challenge's hook reads under the binding."""
+        await self._bind_anonymous(user)
         now = self._now()
         if user.password_change_required_at is not None:
             claims = challenge_claims(user.id, ChallengeKind.PASSWORD_CHANGE, now=now, shared_device=shared)

@@ -47,7 +47,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `household_has_members`) refuses the request with nothing deactivated, ended, mailed or logged.
 * **auth (keksdose's KG-2):** `AuthHooks.bind_anonymous(user)`, the app's binding on a signed-out
   path that names an account (a reset, a verification or an address change's link, the forced
-  change's challenge), called as soon as the account is loaded and before any other hook reads
+  change's challenge, and the sign-in itself, by password or passkey, before the challenge's
+  `challenge_extras`), called as soon as the account is loaded and before any other hook reads
   under it (keksdose's key wraps are FORCE row-level security on the current user).
 * **auth (keksdose's KG-4):** `AuthHooks.invitation_accepting(user, invitation)`, before an existing
   account's accept spends anything: a kit refusal refuses it (keksdose refuses a registration

@@ -423,4 +423,24 @@ async def test_the_forced_change_binds_the_account_before_its_hook(world: World)
         "/auth/login/set-password",
         json={"challenge_token": challenge["challenge_token"], "new_password": "a new one"},
     )
-    assert events == ["bind", "password_changing"]
+    # The sign-in binds, then the set-password step again before its hook.
+    assert events == ["bind", "bind", "password_changing"]
+
+
+async def test_the_sign_in_binds_the_account_before_the_challenge_s_hook(world: World) -> None:
+    """keksdose's KG-2 (0.32): ``/login`` is signed out too, and keksdose's ``encrypted`` on
+    the forced change's challenge reads the key wrap under the account's binding."""
+    user = world.account(password_change_required_at=world.clock())
+    events: list[str] = []
+
+    async def bind_anonymous(account: MemoryUser) -> None:
+        events.append("bind")
+
+    async def challenge_extras(account: MemoryUser) -> dict[str, Any]:
+        events.append("challenge_extras")
+        return {}
+
+    world.hooks = AuthHooks(bind_anonymous=bind_anonymous, challenge_extras=challenge_extras)
+    response = await world.call("POST", "/auth/login", json={"email": user.email, "password": PASSWORD})
+    assert response.json()["requires_password_change"] is True
+    assert events == ["bind", "challenge_extras"]
