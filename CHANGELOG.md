@@ -44,7 +44,8 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `check_two_factor_store` and `totp_code`.
 
 * **auth.router (Kurvenschmiede's gap 1):** `install_account_layer(app, deps)` and the
-  placeholders `app_current_user`, `app_admin` and `app_account_service`. An app's own routers
+  placeholders `app_current_user`, `app_admin` and `app_account_service` (the first two take the
+  kit's bearer scheme, so an app's route on them declares it in `app.openapi()`). An app's own routers
   are made when their module is imported, before its `AuthDeps` exist, so they could not call
   `current_user(deps)`; they depend on the placeholders, and the install binds them through the
   app's `dependency_overrides` (and keeps `deps` on `app.state.account_deps`). Unbound, a

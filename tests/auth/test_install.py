@@ -88,3 +88,16 @@ async def test_without_the_install_the_placeholder_names_what_is_missing() -> No
         for path in ("/mine", "/service", "/admin-only"):
             with pytest.raises(RuntimeError, match="install_account_layer"):
                 await client.get(path)
+
+
+async def test_an_app_s_own_routes_declare_the_bearer_in_openapi() -> None:
+    """Kurvenschmiede's S1 on 0.32.0.dev1: ``dependency_overrides`` do not reach OpenAPI, so a
+    route on a placeholder declared no security scheme, where the kit's own routes declare the
+    bearer. The placeholders take the same scheme themselves."""
+    world = World()
+    world.app.include_router(router, prefix=BASE)
+    install_account_layer(world.app, world.deps)
+    paths = world.app.openapi()["paths"]
+    kit = paths["/api/v1/auth/me"]["get"]["security"]
+    for path in ("/mine", "/admin-only", "/actor"):
+        assert paths[f"/api/v1{path}"]["get"].get("security") == kit, path

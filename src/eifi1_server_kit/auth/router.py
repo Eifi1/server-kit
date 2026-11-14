@@ -414,17 +414,26 @@ _NOT_INSTALLED = (
 )
 
 
-async def app_current_user() -> Any:
+async def app_current_user(
+    _credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+) -> Any:
     """The signed-in account, for a router an app makes when its module is imported — before
     its ``AuthDeps`` exist, so :func:`current_user` cannot be called yet (0.32,
     Kurvenschmiede's gap 1). ``Depends(app_current_user)`` there, and
     :func:`install_account_layer` binds it to the app's ``current_user(deps)``; unbound, it
-    raises :class:`RuntimeError` naming the missing call."""
+    raises :class:`RuntimeError` naming the missing call.
+
+    It takes the kit's bearer scheme itself, unused: ``dependency_overrides`` do not reach
+    ``app.openapi()``, which reads this function's own dependencies, so a route on it declares
+    the bearer as the kit's routes do (Kurvenschmiede's S1)."""
     raise RuntimeError(_NOT_INSTALLED)
 
 
-async def app_admin() -> Any:
-    """:func:`admin_guard`'s account, for an import-time router (:func:`app_current_user`)."""
+async def app_admin(
+    _credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+) -> Any:
+    """:func:`admin_guard`'s account, for an import-time router (:func:`app_current_user`),
+    declaring the bearer as it does."""
     raise RuntimeError(_NOT_INSTALLED)
 
 

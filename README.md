@@ -2436,7 +2436,12 @@ cannot call `current_user(deps)`. They depend on the kit's placeholders instead 
 `FeedbackDeps(actor=app_feedback_actor, …)`. Write it that way, not as a closure over
 `current_user(deps)` in a factory: under `from __future__ import annotations` FastAPI resolves
 a route's annotations in the module's globals, the closure's dependency is not there, and the
-routes drop out of `app.openapi()` without a word (Staunlabor's pilot).
+routes drop out of `app.openapi()` without a word (Staunlabor's pilot). The placeholders take
+the kit's bearer scheme themselves, so a route on them declares it in `app.openapi()` as the
+kit's routes do (Kurvenschmiede's S1). The install binds them through the app's
+`dependency_overrides`: a test guard that asserts the shared app carries no overrides compares
+against the install's own (`app.dependency_overrides` right after `install_account_layer`),
+not an empty mapping (Kurvenschmiede's S2).
 
 Run `auth.testing`'s contract suites (`check_user_store`, `check_session_store`, …) once
 against the stores on the test database.
