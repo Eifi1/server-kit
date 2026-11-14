@@ -128,6 +128,8 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         "eifi1_server_kit.auth.passkeys",
         "eifi1_server_kit.auth.ports",
         "eifi1_server_kit.auth.router",
+        # The account layer's daily jobs as the scheduler's routes (0.31), behind `fastapi`.
+        "eifi1_server_kit.auth.jobs",
         "eifi1_server_kit.auth.service",
         # The ready account tables and their stores (decision C), behind the `sql` extra.
         "eifi1_server_kit.auth.sql",
@@ -271,7 +273,8 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
     assert gcs["__init__"] == "__init__(bucket: str, *, client: Client | None = None) -> None"
     assert members["eifi1_server_kit.objects", "purge_objects"]["signature"] == (
         "async purge_objects(store: ObjectStore, keys: Iterable[str], *, reason: str, "
-        "concurrency: int = PURGE_CONCURRENCY) -> list[str]"
+        "concurrency: int = PURGE_CONCURRENCY, spare_written_within: timedelta | None = None, "
+        "now: datetime | None = None) -> list[str]"
     )
     assert members["eifi1_server_kit.objects", "MAX_KEY_BYTES"]["value"] == 1024
     assert members["eifi1_server_kit.objects", "ObjectNotFoundError"]["signature"] == (
