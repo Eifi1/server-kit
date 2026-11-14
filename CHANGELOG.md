@@ -35,6 +35,12 @@ entry in the Conventional Commit; this file is assembled from them at release.
   not starve it; one still running at the floor is cut and logged at ERROR. An app's tests that
   call the route on the real clock now wait 3 s each: pass a fake `AuthDeps.sleep`, or
   `answer_floor=timedelta(0)`.
+* **auth:** what `AuthHooks.on_deletion_requested` and `on_deletion_withdrawn` answer is the
+  `deletion_request` / `deletion_cancel` row's `detail` (G3), through `audit_detail`; `None` or
+  `{}` writes none, as before. Both rows are now written after their hook (0.30 wrote them
+  first), and `on_deletion_withdrawn` may answer a mapping. The extras are held to the log's
+  rule (ids, counts, flags, short tokens): a sentence there is an `AuditDetailError`, as
+  everywhere in the log.
 
 ### Documentation
 

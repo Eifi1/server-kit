@@ -708,8 +708,8 @@ rides on the route's answer, which the app's answer model declares.
 | `passkey_removing(user, passkey)` | before a passkey goes; may refuse | 3 |
 | `sessions_ended(user, reason)` | every "every session ends": `logout_everywhere`, `password_changed`, `password_reset`, `forced_change`, `deletion_requested` (and 0.30's `deactivated`) | 4 |
 | `deletion_terms(user)` → extras | `GET /auth/me/deletion` (Kurvenschmiede's hand-over count) | 5 |
-| `on_deletion_requested(user)` → extras | after the deactivation, before the mail | 5 |
-| `on_deletion_withdrawn(user)` | `withdraw_deletion` (0.30's admin) | 5 |
+| `on_deletion_requested(user)` → extras | after the deactivation, before the mail; the extras are the `deletion_request` row's detail too (0.31) | 5 |
+| `on_deletion_withdrawn(user)` → extras | `withdraw_deletion` (0.30's admin); the extras are the `deletion_cancel` row's detail (0.31) | 5 |
 | `export_data(user)` → `data` | the export's `data` | 5 |
 | `erase(user, *, actor_id)` → extras | the erasure (0.30; the actor since 0.31: the admin, `None` for the job) | 5 |
 | `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30) | 5 |

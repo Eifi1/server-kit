@@ -297,10 +297,12 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: ``hand_over_count``).
     deletion_terms: Callable[[UserT], Awaitable[_Extras]] | None = None
     #: Seam 5: the account asked to be deleted and is deactivated: cancel or tell what is
-    #: the app's (billing, budget guests); the extras ride on the answer.
+    #: the app's (billing, budget guests); the extras ride on the answer and, since 0.31, are
+    #: the ``deletion_request`` row's detail (ids, counts and flags: ``audit_detail``'s rule).
     on_deletion_requested: Callable[[UserT], Awaitable[_Extras | None]] | None = None
-    #: Seam 5: an admin reactivated the account before its erasure (0.30's admin routes).
-    on_deletion_withdrawn: Callable[[UserT], Awaitable[None]] | None = None
+    #: Seam 5: an admin reactivated the account before its erasure (0.30's admin routes); what
+    #: it answers is the ``deletion_cancel`` row's detail (0.31), ``None`` none.
+    on_deletion_withdrawn: Callable[[UserT], Awaitable[_Extras | None]] | None = None
     #: Seam 5: the export's ``data`` (user-admin §6.5): the app's own rows.
     export_data: Callable[[UserT], Awaitable[_Extras]] | None = None
     #: Seam 5 (0.30): the account is being erased (:meth:`AccountService.erase`): delete or hand
@@ -1449,8 +1451,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         """``POST /auth/me/deletion`` (user-admin §6.4): the password (``password_incorrect``)
         and the typed address (``confirmation_required`` / ``_mismatch``); never the last
         active admin (``last_admin``). The account is deactivated at once, every session
-        ends, the request is logged with the account as its actor; the confirming mail goes
-        after the commit, and the answer says whether it did."""
+        ends, the ``on_deletion_requested`` hook runs, and the request is logged with the
+        account as its actor and the hook's extras as its detail (0.31, held to
+        ``audit_detail``); the confirming mail goes after the commit, and the answer says
+        whether it did, with the extras."""
         refuse_demo(getattr(user, "is_demo", False), "deleting the account")
         await self._check_password(user, password)
         require_confirmation(
@@ -1475,12 +1479,17 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         )
         await self._sessions.end_all(user.id)
         await self._sessions_ended(user, SessionsEndedReason.DELETION_REQUESTED)
+        extras = await self._extras(self._hooks.on_deletion_requested, user)
         await self._log.add(
             admin_action_record(
-                AdminAction.DELETION_REQUEST, actor_id=user.id, target_user_id=user.id, target_email=user.email, now=now
+                AdminAction.DELETION_REQUEST,
+                actor_id=user.id,
+                target_user_id=user.id,
+                target_email=user.email,
+                detail=extras or None,
+                now=now,
             )
         )
-        extras = await self._extras(self._hooks.on_deletion_requested, user)
         await self._after.commit_now()
         values: dict[str, Any] = {"name": self._name(user), "contact": self._policy.contact, **self._policy.retention}
         if scheduled is None:
@@ -1493,18 +1502,23 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     async def withdraw_deletion(self, user: UserT, *, actor_id: int) -> UserT:
         """An admin's reactivation before the erasure (user-admin §6.4; 0.30's admin route):
-        both stamps cleared, the account active, ``deletion_cancel`` logged, the hook told."""
+        both stamps cleared, the account active, the hook told, then ``deletion_cancel``
+        logged with what the hook answered as its detail (0.31)."""
         now = self._now()
         user = await self._users.apply(
             user, {"is_active": True, "deletion_requested_at": None, "deletion_scheduled_at": None}
         )
+        extras = await self._extras(self._hooks.on_deletion_withdrawn, user)
         await self._log.add(
             admin_action_record(
-                AdminAction.DELETION_CANCEL, actor_id=actor_id, target_user_id=user.id, target_email=user.email, now=now
+                AdminAction.DELETION_CANCEL,
+                actor_id=actor_id,
+                target_user_id=user.id,
+                target_email=user.email,
+                detail=extras or None,
+                now=now,
             )
         )
-        if self._hooks.on_deletion_withdrawn is not None:
-            await self._hooks.on_deletion_withdrawn(user)
         return user
 
     async def export(self, user: UserT) -> dict[str, Any]:
