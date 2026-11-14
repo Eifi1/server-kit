@@ -2,14 +2,28 @@
 Kurvenschmiede's teams, lifted into the kit so an app adopts them with no data migration and
 no change on the wire.
 
-The coded refusals (:class:`TeamError`, :class:`TeamErrorCode`) and the wire shapes
-(:class:`TeamOut`, :class:`AdminTeamOut`, :class:`AdminTeamsResponse`, the bodies) are here.
+The coded refusals (:class:`TeamError`, :class:`TeamErrorCode`), the wire shapes
+(:class:`TeamOut`, :class:`AdminTeamOut`, :class:`AdminTeamsResponse`, the bodies) and the
+store's port (:class:`TeamStore`; a team invitation's ``scope``, :func:`team_scope`) are here.
+The in-memory store and its contract suite are ``eifi1_server_kit.teams.testing``, not
+re-exported.
+
 Nothing in the account layer or the admin's routes changes unless an app gives teams.
 """
 
 from __future__ import annotations
 
 from eifi1_server_kit.teams.errors import TEAM_ERROR_DETAIL, TEAM_ERROR_STATUS, TeamError, TeamErrorCode
+from eifi1_server_kit.teams.ports import (
+    Membership,
+    NewTeam,
+    TeamMemberRow,
+    TeamRow,
+    TeamStore,
+    invitation_team,
+    invitation_team_role,
+    team_scope,
+)
 from eifi1_server_kit.teams.schemas import (
     MAX_TEAM_NAME_LENGTH,
     AdminTeamOut,
@@ -30,6 +44,8 @@ __all__ = [
     "TEAM_ERROR_STATUS",
     "AdminTeamOut",
     "AdminTeamsResponse",
+    "Membership",
+    "NewTeam",
     "TeamError",
     "TeamErrorCode",
     "TeamIn",
@@ -38,6 +54,12 @@ __all__ = [
     "TeamMemberIn",
     "TeamMemberOut",
     "TeamMemberRoleIn",
+    "TeamMemberRow",
     "TeamOut",
     "TeamRole",
+    "TeamRow",
+    "TeamStore",
+    "invitation_team",
+    "invitation_team_role",
+    "team_scope",
 ]
