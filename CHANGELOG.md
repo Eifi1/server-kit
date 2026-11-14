@@ -22,6 +22,10 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `POST /auth/password-reset/request` takes at least, account or not; `AuthDeps.timer` and
   `AccountService(timer=)` (`time.monotonic` by default), the clock it is measured on, which a
   test fakes with `sleep`.
+* **auth:** `AuthHooks.on_email_changed(user, old, new)` (G4): an address change was confirmed,
+  called after the switch and after the new address's open invitations attached
+  (Kurvenschmiede moves the shares waiting for the old address there). A refused confirmation
+  calls nothing.
 
 ### Changed
 

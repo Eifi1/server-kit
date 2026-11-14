@@ -265,6 +265,10 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: Seam 1: an existing account took up an invitation (``/invitations/accept``), or an
     #: address confirmation found an open one for the new address (§12.5 item 9).
     on_invitation_redeemed: Callable[[UserT, InvT], Awaitable[None]] | None = None
+    #: An address change was confirmed (``/me/email/confirm``, 0.31): ``(user, old, new)``,
+    #: after the switch and the new address's invitations attached (Kurvenschmiede moves the
+    #: shares waiting for the old address to the new one).
+    on_email_changed: Callable[[UserT, str, str], Awaitable[None]] | None = None
     #: The answer's words for an invitation (its team's name), on ``/invitations/check``,
     #: ``/accept`` and the admin's rows.
     describe_invitation: Callable[[InvT], Awaitable[_Extras]] | None = None
@@ -1013,8 +1017,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     async def confirm_email_change(self, token: str, *, ip: str) -> EmailChangeConfirmed:
         """``POST /auth/me/email/confirm`` (user-admin §6.2), anonymous: the address switches
-        and is verified, the sessions stay, and the open, unexpired invitations for the new
-        address attach (§12.5 item 9). ``email_taken`` if it found an account meanwhile."""
+        and is verified, the sessions stay, the open, unexpired invitations for the new
+        address attach (§12.5 item 9), and the ``on_email_changed`` hook is told (0.31).
+        ``email_taken`` if it found an account meanwhile."""
         row, user = await self._redeem(OneTimeTokenKind.EMAIL_CHANGE, token, ip)
         if not user.is_active:
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
@@ -1022,6 +1027,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         if holder is not None and holder.id != user.id:
             raise AuthError(AuthErrorCode.EMAIL_TAKEN)
         now = self._now()
+        old = user.email
         user = await self._users.apply(user, {"email": row.email, "email_verified_at": now})
         for kind in (OneTimeTokenKind.EMAIL_CHANGE, OneTimeTokenKind.VERIFICATION, OneTimeTokenKind.PASSWORD_RESET):
             await self._tokens.drop(kind, user.id)
@@ -1032,6 +1038,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 if self._hooks.on_invitation_redeemed is not None:
                     await self._hooks.on_invitation_redeemed(user, invitation)
                 attached += 1
+        if self._hooks.on_email_changed is not None:
+            await self._hooks.on_email_changed(user, old, user.email)
         return EmailChangeConfirmed(email=user.email, invitations_attached=attached)
 
     # --- verification --------------------------------------------------------------------

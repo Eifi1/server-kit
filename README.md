@@ -697,6 +697,7 @@ rides on the route's answer, which the app's answer model declares.
 |---|---|---|
 | `on_register(user, invitation \| None, body)` | a sign-up, with its invitation (`None` for the first account) and the app's `register_model` body | 1 |
 | `on_invitation_redeemed(user, invitation)` | `/invitations/accept`; an address confirmation's open invitations | 1 |
+| `on_email_changed(user, old, new)` | `/auth/me/email/confirm`, after the switch and the new address's invitations (0.31; Kurvenschmiede's pending shares) | 1 |
 | `describe_invitation(invitation)` → extras | the check, the accept and the admin's rows (a team's name) | 1 |
 | `invitation_scope(admin, scope)` → stored mapping | an admin's `scope`; without it a scope is `invitation_scope_invalid` | 1 |
 | `claims(user, session)` → extra claims | every access token minted; may refuse a refresh | 2 |
