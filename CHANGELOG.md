@@ -47,6 +47,11 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `AccountPolicy.reuse_open_invitations` (default off): an invitation to an address with an
   open one of the same role and scope sends that one again (a new link, 14 more days,
   `invite_resend`) instead of adding a second row.
+* **auth (G5/G6, Kurvenschmiede):** `AuthHooks.invitation_group(invitation) -> GroupRef | None`:
+  the group an invitation is for (a team). Its `id` goes on the invitation's `invite`,
+  `invite_resend` and `invite_revoke` rows (`target_group_id`), its `name` into the invitation
+  mail's new `{group}` placeholder (empty without a group). The kit's own invitation text names
+  none; an app's own table (`AuthDeps.mail_texts`) may ("you are invited to the team {group}").
 
 ### Changed
 

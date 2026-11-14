@@ -23,7 +23,9 @@ The placeholders each kind fills are :data:`ACCOUNT_MAIL_VALUES`: ``{app}`` the 
 ``{contact}`` a person to write to (the app's support address), ``{new_email}`` where an
 address change's link went, ``{passkey}`` the new passkey's name, ``{date}`` the erasure's day
 (:func:`mail_date`), ``{backup_days}`` and ``{log_days}`` the retention note
-(:func:`~eifi1_server_kit.user_admin.deletion_mail_retention_note`).
+(:func:`~eifi1_server_kit.user_admin.deletion_mail_retention_note`), ``{group}`` the invitation's
+group (0.31: a team's name from ``AuthHooks.invitation_group``, empty without one; the kit's own
+invitation text names none, an app's own table may).
 """
 
 from __future__ import annotations
@@ -85,7 +87,7 @@ ACCOUNT_MAIL_VALUES: Mapping[AccountMailText, frozenset[str]] = {
     AccountMailText.VERIFICATION: frozenset({"app", "name"}),
     AccountMailText.EMAIL_CHANGE: frozenset({"app", "name"}),
     AccountMailText.EMAIL_CHANGE_NOTICE: frozenset({"app", "name", "new_email", "contact"}),
-    AccountMailText.INVITATION: frozenset({"app"}),
+    AccountMailText.INVITATION: frozenset({"app", "group"}),
     AccountMailText.ACCOUNT_DELETION: frozenset({"app", "name", "date", "contact", "backup_days", "log_days"}),
     AccountMailText.ACCOUNT_DELETION_OPERATOR: frozenset({"app", "name", "contact", "backup_days", "log_days"}),
     AccountMailText.PASSKEY_ADDED_NOTICE: frozenset({"app", "name", "passkey", "contact"}),

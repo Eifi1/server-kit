@@ -163,6 +163,7 @@ from eifi1_server_kit.user_admin.export import export_envelope
 from eifi1_server_kit.user_admin.ports import AcceptedInvitations, AccountLogScrub
 from eifi1_server_kit.user_admin.rules import refuse_last_admin, require_confirmation
 from eifi1_server_kit.user_admin.schemas import (
+    GroupRef,
     InvitationCreate,
     InvitationStatus,
     MailKind,
@@ -275,6 +276,10 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: The admin named a ``scope`` (``InvitationCreate.scope``): what the store keeps for it,
     #: or a refusal (a team the admin may not invite into). Without it a scope is refused.
     invitation_scope: Callable[[UserT, int | str], Awaitable[Mapping[str, Any]]] | None = None
+    #: The group an invitation is for (0.31, G5/G6; Kurvenschmiede's team): its ``id`` goes
+    #: on the invitation's log rows (``target_group_id``), its ``name`` into the mail's
+    #: ``{group}``. ``None``, or no hook: no group.
+    invitation_group: Callable[[InvT], Awaitable[GroupRef | None]] | None = None
     #: An admin is about to invite (0.31, G7): ``(admin, body, existing, scope)`` — the
     #: request's ``InvitationCreate``, the account that already has the address or ``None``,
     #: and what ``invitation_scope`` answered or ``None``. Raise a kit refusal to refuse it
@@ -1248,11 +1253,18 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             **(await self._extras(self._hooks.describe_invitation, invitation)),
         }
 
-    async def _mail_invitation(self, invitation: InvT, raw: str) -> tuple[str, bool]:
-        """Commit, then mail the invitation in the invitee's language."""
+    async def _group_of(self, invitation: InvT) -> GroupRef | None:
+        hook = self._hooks.invitation_group
+        return None if hook is None else await hook(invitation)
+
+    async def _mail_invitation(self, invitation: InvT, raw: str, group: GroupRef | None) -> tuple[str, bool]:
+        """Commit, then mail the invitation in the invitee's language, naming its group."""
         await self._after.commit_now()
         link = self._policy.links.url(self._policy.links.register, invite=raw)
-        return link, await self._send(invitation.email, AccountMailText.INVITATION, invitation.locale, link=link)
+        name = "" if group is None or group.name is None else group.name
+        return link, await self._send(
+            invitation.email, AccountMailText.INVITATION, invitation.locale, link=link, group=name
+        )
 
     async def _issued(self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool) -> dict[str, Any]:
         inviter = PersonRef.model_validate(admin, from_attributes=True)
@@ -1296,8 +1308,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 note=body.note,
             )
         )
-        await self._record(AdminAction.INVITE, admin, invitation, now)
-        link, sent = await self._mail_invitation(invitation, raw)
+        group = await self._group_of(invitation)
+        await self._record(AdminAction.INVITE, admin, invitation, now, group)
+        link, sent = await self._mail_invitation(invitation, raw, group)
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def _closed_or_found(self, invitation_id: int) -> InvT:
@@ -1322,8 +1335,9 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         now = self._now()
         raw, digest = mint()
         invitation = await self._invitations.remint(invitation, token_hash=digest, expires_at=now + INVITE_TTL)
-        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now)
-        link, sent = await self._mail_invitation(invitation, raw)
+        group = await self._group_of(invitation)
+        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group)
+        link, sent = await self._mail_invitation(invitation, raw, group)
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def revoke_invitation(self, admin: UserT, invitation_id: int) -> None:
@@ -1337,9 +1351,11 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             return
         now = self._now()
         await self._invitations.revoke(invitation, at=now)
-        await self._record(AdminAction.INVITE_REVOKE, admin, invitation, now)
+        await self._record(AdminAction.INVITE_REVOKE, admin, invitation, now, await self._group_of(invitation))
 
-    async def _record(self, action: AdminAction, admin: UserT, invitation: InvT, now: datetime) -> None:
+    async def _record(
+        self, action: AdminAction, admin: UserT, invitation: InvT, now: datetime, group: GroupRef | None
+    ) -> None:
         detail = (
             {"invitation_id": invitation.id, "role": invitation.role}
             if invitation.role
@@ -1347,7 +1363,13 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         )
         await self._log.add(
             admin_action_record(
-                action, actor_id=admin.id, target_user_id=None, target_email=invitation.email, detail=detail, now=now
+                action,
+                actor_id=admin.id,
+                target_user_id=None,
+                target_email=invitation.email,
+                detail=detail,
+                target_group_id=None if group is None else group.id,
+                now=now,
             )
         )
 

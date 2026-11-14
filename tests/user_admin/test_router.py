@@ -476,7 +476,7 @@ async def test_the_log_pages_newest_first_naming_the_people_and_the_groups(world
     gone = await world.log.add(
         admin_action_record("erase", actor_id=None, target_user_id=None, target_email=None, now=world.clock())
     )
-    gone.target_group_id = 7  # type: ignore[attr-defined]
+    gone.target_group_id = 7
 
     async def group_names(ids: Any) -> dict[int, str | None]:
         return {7: "Fahrwerk"}

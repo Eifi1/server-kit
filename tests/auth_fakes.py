@@ -358,6 +358,7 @@ class MemoryAction:
     target_user_id: int | None
     target_email: str | None
     detail: Mapping[str, Any] = field(default_factory=dict)
+    target_group_id: int | None = None
 
 
 class MemoryActionLog:

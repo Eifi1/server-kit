@@ -300,3 +300,50 @@ async def test_with_reuse_an_open_invitation_to_the_same_address_and_scope_is_se
                 "POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER"}
             )
         assert len(plain.invitations.rows) == 2, "off by default: 0.29's behaviour"
+
+
+async def test_an_invitation_names_its_group_in_the_mail_and_the_log() -> None:
+    """Kurvenschmiede's G5/G6: "you are invited to the team Rig 4", and the team on every row."""
+    from eifi1_server_kit.mail import MailText
+    from eifi1_server_kit.user_admin.schemas import GroupRef
+
+    own = {
+        "en": MailText(
+            subject="Join {group} on {app}",
+            intro="Hello,",
+            body="you have been invited to the team {group}.",
+            cta="Accept",
+            outro="",
+        )
+    }
+
+    async def invitation_scope(admin: MemoryUser, scope: int | str) -> dict[str, Any]:
+        return {"team": scope}
+
+    async def invitation_group(invitation: MemoryInvitation) -> GroupRef | None:
+        team = (invitation.scope or {}).get("team")
+        return None if team is None else GroupRef(id=team, name=f"Rig {team}")
+
+    world = World(mail_texts={"invitation": own})
+    async with world.client:
+        _, token = await admin_token(world)
+        world.hooks = AuthHooks(invitation_scope=invitation_scope, invitation_group=invitation_group)
+        made = await world.call(
+            "POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER", "scope": 4}
+        )
+        invitation_id = made.json()["id"]
+        await world.call("POST", f"/admin/invitations/{invitation_id}/resend", token=token)
+        await world.call("DELETE", f"/admin/invitations/{invitation_id}", token=token)
+        mails = world.mailer.of("invitation")
+        assert [mail.message.subject for mail in mails] == ["Join Rig 4 on Staunlabor"] * 2
+        assert all("the team Rig 4." in mail.message.text for mail in mails)
+        assert [(row.action, row.target_group_id) for row in world.log.rows] == [
+            ("invite", 4),
+            ("invite_resend", 4),
+            ("invite_revoke", 4),
+        ]
+        plain = await world.call(
+            "POST", "/admin/invitations", token=token, json={"email": "cy@example.com", "role": "MEMBER"}
+        )
+        assert plain.status_code == 201 and world.log.rows[-1].target_group_id is None
+        assert world.mailer.of("invitation")[-1].message.subject == "Join  on Staunlabor"
