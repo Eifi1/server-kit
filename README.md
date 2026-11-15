@@ -1139,6 +1139,7 @@ async def account_hooks(session: AsyncSession = Depends(db_session)) -> AuthHook
         describe_invitation=teams.describe_invitation,  # {scope, team_name, team_role}
     )
 
+
 # and UserAdminHooks(group_names=teams.group_names): the live name, else the group_delete row's
 ```
 
