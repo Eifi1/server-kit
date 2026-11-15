@@ -102,6 +102,38 @@ entry in the Conventional Commit; this file is assembled from them at release.
   `group_invitation_account` kind ("join" where a new address reads "register"), whose kit words
   are the general ones and which an app's own table words apart; the deletion mails fill
   `{privacy}`, `AccountLinks.privacy`'s link (default `/privacy`).
+* **teams (Marcel 2026-11-14; Kurvenschmiede's teams, lifted): the opt-in teams module.** An
+  app that mounts neither router and uses no mixin sees no change. `eifi1_server_kit.teams`:
+  `TeamRole` and Kurvenschmiede's wire shapes field for field (`TeamOut`, `AdminTeamOut` with
+  `grant_count`, `AdminTeamsResponse {teams, levels}`, `TeamMemberOut`, `TeamInvitationOut`,
+  `TeamInvited`, `TeamIn`, `TeamMemberIn`, `TeamMemberRoleIn`); the port `TeamStore`, its rows
+  and `team_scope` (a team invitation is the account layer's own, `{"team_id", "team_role"}` in
+  its scope); `TeamsService` on Kurvenschmiede's rules (the version, a re-add as a role change,
+  no row for no change, the manager's one-query reach, the system team a 404 everywhere, an
+  unknown address invited into the team through `AccountService.create_invitation` and its
+  open invitation sent again instead); `TeamHooks(deleting, member_added, billing_gate,
+  refuse_address)`; `TeamAccountHooks` (`on_register`, `on_invitation_redeemed`,
+  `invitation_group`, `invitation_scope`, `describe_invitation`, `group_names`), `join_team` (the
+  invitee's `membership_add`) and `add_system_member` for a demo.
+* **teams: the coded refusals** `TeamError(TeamErrorCode)`: `team_not_found` (404),
+  `team_name_taken` (`name`), `team_changed` (`name`), `manager_named_by_admin`,
+  `manager_kept_by_admin` (`email`), `manager_removed_by_admin` (409), in `CONTRACT_ERRORS`.
+* **teams.router (the `fastapi` extra):** `teams_router(TeamsDeps)` at `/teams` — `GET`, and a
+  manager's `POST /{id}/members`, `DELETE /{id}/members/{user_id}`, `POST
+  /{id}/invitations/{inv}/resend`, `DELETE /{id}/invitations/{inv}` behind the app's
+  `demo_guard("teams")` — and `teams_admin_router(TeamsDeps)` at `/admin/teams` — `GET` with the
+  levels, `POST` (201), `PATCH` (`If-Match` optional), `DELETE` (204, an optional
+  `ActionConfirmation` body), and `POST`, `PATCH`, `DELETE` on members.
+* **teams.sql (the `sql` extra):** `TeamColumns`, `TeamMemberColumns` and `TeamInvitationColumns`,
+  Kurvenschmiede's tables column for column (Alembic's comparison finds no change);
+  `SqlTeamStore`; `SqlTeamInvitationStore`, which writes a scope's team into `team_id` and
+  `team_role` (Kurvenschmiede's `TeamInvitations`, lifted). **teams.testing:**
+  `InMemoryTeamStore` and `check_team_store`.
+* **auth (for the teams):** `AccountService.create_invitation(…, scope=, detail=)`: a scope the
+  caller decided, stored past the `invitation_scope` hook, and more detail on the `invite` row;
+  without them nothing changes. **user_admin.ports:** `DeletedGroupNames`
+  (`deleted_group_names(ids)`, the name a `group_delete` row kept), on `SqlAdminActionLog` and
+  `InMemoryAdminActionLog`.
 
 ### Changed
 

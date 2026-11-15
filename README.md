@@ -977,7 +977,7 @@ method.
 
 **Stays app-side:** what an erasure deletes or hands over (the `erase` hook), keksdose's API
 tokens and push devices at a deactivation (the `sessions_ended` hook), plans and billing,
-Kurvenschmiede's transfer and teams, keksdose's health, jobs, metrics, push, legal changes,
+Kurvenschmiede's transfer (its teams: the opt-in `eifi1_server_kit.teams`, 0.32), keksdose's health, jobs, metrics, push, legal changes,
 support, demo budget and user message routes, kastlan's company routes (membership removal,
 the user PATCH) and its RLS, the demo routes, the scheduler's wiring of the job, and a row lock
 for the job (the port has none; keksdose's `with_for_update` is its own).
@@ -1085,6 +1085,133 @@ re-checks `deletion_due(…, scheduled_at=row.deletion_scheduled_at)` on the loc
 `operator` mode an operator erases from the platform. The email change's link lives
 `auth.EMAIL_CHANGE_TTL` (48 h) as a `OneTimeTokenKind.EMAIL_CHANGE` row holding the new
 address.
+
+### `eifi1_server_kit.teams` — Teams (opt-in)
+
+Kurvenschmiede's teams, lifted (0.32, Marcel 2026-11-14; user-admin §11): named groups of
+accounts, the managers an admin names in each, and invitations into them — with
+Kurvenschmiede's tables column for column and its wire shapes field for field, so the app adopts
+them with no data migration and no change on the wire. **Opt-in**: an app that mounts neither
+router and uses no mixin of `teams.sql` sees nothing change; the account layer and the admin's
+routes behave as before unless teams are given. The refusals, the shapes, the port and the
+service need no FastAPI or SQLAlchemy; the routes are `teams.router` (the `fastapi` extra), the
+tables `teams.sql` (the `sql` extra), the in-memory store and its suite `teams.testing`.
+
+**Mounting it**, beside the account layer's routers and on its `AuthDeps`:
+
+```python
+from eifi1_server_kit.teams.router import TeamsDeps, teams_admin_router, teams_router
+from eifi1_server_kit.teams.service import TeamAccountHooks, TeamHooks
+from eifi1_server_kit.teams.sql import SqlTeamInvitationStore, SqlTeamStore
+
+
+async def team_store(session: AsyncSession = Depends(db_session)) -> SqlTeamStore[Team, TeamMember]:
+    return SqlTeamStore(session, Team, TeamMember, users=User, invitations=Invitation)
+
+
+async def team_hooks(session: AsyncSession = Depends(db_session)) -> TeamHooks[User]:
+    return TeamHooks(
+        deleting=lambda ids: grant_counts(session, ids),  # {team_id: grants}, in one call
+        member_added=lambda actor, team, user: tell_team_added(session, actor, team, user),
+        billing_gate=lambda manager, what: refuse_unpaid(session, manager, what),  # "add" | "resend"
+        refuse_address=refuse_demo_address,  # by shape, before the lookup
+    )
+
+
+teams = TeamsDeps(auth=deps, teams=team_store, hooks=team_hooks)  # the app's AuthDeps
+app.include_router(teams_router(teams), prefix="/api/v1")
+app.include_router(teams_admin_router(teams), prefix="/api/v1")
+```
+
+The invitation store is `SqlTeamInvitationStore(session, Invitation, teams=Team)` (an
+invitation whose scope names a team gets its `team_id` and `team_role` columns too), and the
+joins and the admin log's team names are the ready `TeamAccountHooks`, wired into the app's
+hooks:
+
+```python
+async def account_hooks(session: AsyncSession = Depends(db_session)) -> AuthHooks[User, Invitation]:
+    teams = TeamAccountHooks(team_store_on(session), SqlAdminActionLog(session, AdminActionRecord))
+    return AuthHooks(
+        on_register=teams.on_register,  # a sign-up through a team invitation joins the team
+        on_invitation_redeemed=teams.on_invitation_redeemed,  # /invitations/accept, an address confirmation
+        invitation_group=teams.invitation_group,  # the team on the invitation's log rows and in its mail
+        invitation_scope=teams.invitation_scope,  # an admin's scope on POST /admin/invitations: a team
+        describe_invitation=teams.describe_invitation,  # {scope, team_name, team_role}
+    )
+
+
+# and UserAdminHooks(group_names=teams.group_names): the live name, else the group_delete row's
+```
+
+| Route | Answer | Codes | Guard |
+|---|---|---|---|
+| `GET /teams` | `list[TeamOut]`, the caller's teams by name; the invitations only where they manage | — | signed in (no demo guard) |
+| `POST /teams/{id}/members {email, locale?, role}` (`If-Match` optional) | `TeamOut` (`invited` when the address had no account) | `team_not_found` (404), `team_changed`, `manager_named_by_admin`, `manager_kept_by_admin` (`email`), the `billing_gate`'s, the `refuse_address`' | a manager of the team; `demo_guard("teams")` |
+| `DELETE /teams/{id}/members/{user_id}` (`If-Match` optional) | `TeamOut` | `team_not_found`, `team_changed`, `manager_removed_by_admin` | the same |
+| `POST /teams/{id}/invitations/{inv}/resend` | `TeamOut` with `invited` | `team_not_found`, `invitation_closed`, the `billing_gate`'s | the same |
+| `DELETE /teams/{id}/invitations/{inv}` | `TeamOut` | `team_not_found`, `invitation_closed` | the same |
+| `GET /admin/teams` | `AdminTeamsResponse {teams, levels}`: each `AdminTeamOut` with its `grant_count`, the levels `CONFIRMATION_LEVELS`' | — | `admin_guard` or `TeamsDeps.guard` |
+| `POST /admin/teams {name}` | `TeamOut`, `201` | `team_name_taken` (`name`), 422 (blank) | the same |
+| `PATCH /admin/teams/{id} {name}` (`If-Match` optional) | `TeamOut` | `team_not_found`, `team_changed` (`name`), `team_name_taken` | the same |
+| `DELETE /admin/teams/{id}` (body `ActionConfirmation`, optional) | `204` | `team_not_found`, `confirmation_required` (a body a proxy dropped fails closed) | the same |
+| `POST /admin/teams/{id}/members {email, locale?, role}` | `TeamOut` (`invited` when it invited) | `team_not_found`, the `refuse_address`' | the same |
+| `PATCH /admin/teams/{id}/members/{user_id} {role}` | `TeamOut` | `team_not_found` | the same |
+| `DELETE /admin/teams/{id}/members/{user_id}` | `TeamOut` | `team_not_found` | the same |
+
+Every answer to a change is the whole team again. **New codes for the ui-kit's words:** a
+team's own family, `TeamError(TeamErrorCode)` — `team_not_found` (404; Kurvenschmiede answered
+it uncoded), `team_name_taken`, `team_changed`, `manager_named_by_admin`,
+`manager_kept_by_admin`, `manager_removed_by_admin` (409) — Kurvenschmiede's spellings, in
+`CONTRACT_ERRORS`.
+
+**The rules** (Kurvenschmiede's review of the plan):
+- **The version** moves with a rename and every change of who is in the team: an add, a role
+  change, a removal, an invitation into it, a join by one. `If-Match` (`3`, `"3"`, `W/"3"`) is
+  checked when sent and never demanded; one that names no number is `team_changed`.
+- **A re-add is a role change** (`membership_role`); the role a member has, or a team's own name,
+  changes nothing and **writes no row**.
+- **A manager's reach** is one query: a team they manage, never a system team. They add members
+  only, never change or remove a manager, and are asked through the `billing_gate` before an add
+  or a re-send (never a removal, a withdrawal or an admin's).
+- **An address** is trimmed and lower-cased and offered to `refuse_address` before it is looked
+  up. One with no account is **invited into the team** through the account layer
+  (`AccountService.create_invitation` with the team in its `scope`, `team_scope(team_id, role)`:
+  `{"team_id", "team_role"}`), in the language picked or the inviter's; an open invitation of
+  the address into the same team is sent again instead (`invite_resend`), in the role asked for.
+  The link is answered only while mail goes to the console.
+- **The log** names the team as `target_group_id`: `group_create` and `group_rename` (`{}`),
+  `group_delete` (`{members, grants, invitations}` — the open ones — and `target_group_name`),
+  `membership_add` (`{role}`), `membership_role` (`{from, to}`), `membership_remove` (`{role}`),
+  `invite` (`{invitation_id, role, team_role}`). A join by invitation is a `membership_add`
+  whose actor is the invitee; an account already in the team changes nothing.
+- **The views**: teams by name; members by last name, first name, id, each with
+  `display_name` in the viewer's language; the invitations neither accepted nor withdrawn,
+  oldest first, `open` or `expired`, for an admin and the team's managers only; an admin's
+  `my_role` is `null`.
+- **The system team** (`is_system`, a demo's) is a 404 everywhere and never listed; a demo is put
+  in it with `add_system_member(teams, team, user)`: no row, no notice, no new version. No
+  self-join and no leave.
+
+| Area | Names |
+|---|---|
+| Refusals and shapes (`teams`) | `TeamError`, `TeamErrorCode`, `TEAM_ERROR_STATUS`, `TEAM_ERROR_DETAIL`; `TeamRole`, `TeamOut`, `AdminTeamOut`, `AdminTeamsResponse`, `TeamMemberOut`, `TeamInvitationOut`, `TeamInvited`, `TeamIn`, `TeamMemberIn`, `TeamMemberRoleIn`, `MAX_TEAM_NAME_LENGTH` |
+| Port (`teams.ports`) | `TeamStore` (`get`, `names`, `name_taken`, `listing`, `of_user`, `managed`, `add`, `rename`, `bump`, `delete`, `members`, `membership`, `add_member`, `set_member_role`, `remove_member`, `open_invitations`, `set_invitation_role`), `TeamRow`, `TeamMemberRow`, `NewTeam`, `Membership`, `team_scope`, `invitation_team`, `invitation_team_role` |
+| Service (`teams.service`) | `TeamsService`, `TeamHooks(deleting, member_added, billing_gate, refuse_address)`, `TeamGate`, `TeamView`, `TeamInvitationSent`, `TeamAccountHooks`, `join_team`, `add_system_member` |
+| Routes (`teams.router`) | `TeamsDeps(auth, teams, hooks, guard)`, `teams_router(deps, *, prefix="/teams", tags=("teams",))`, `teams_admin_router(deps, *, prefix="/admin/teams", tags=("admin",))`, `team_out`, `if_match_version`, `no_team_hooks` |
+| Tables (`teams.sql`) | `TeamColumns`, `TeamMemberColumns`, `TeamInvitationColumns`, `team_role_type`, `TEAMS_TABLE` (`__teams_table__`), `SqlTeamStore(session, model, members, *, users, invitations)`, `SqlTeamInvitationStore(session, model, *, teams)` |
+| Testing (`teams.testing`) | `InMemoryTeamStore(users, invitations=None, *, now)`, `MemoryTeamRow`, `MemoryTeamMemberRow`, `check_team_store(store, invitations, *, user_id, other_user_id)` |
+| Account layer (0.32, additive) | `AccountService.create_invitation(…, scope=, detail=)`; `user_admin.ports.DeletedGroupNames` (`deleted_group_names(ids)`), on `SqlAdminActionLog` and `InMemoryAdminActionLog` |
+
+**On `[sql]`:** `class Team(TeamColumns, Base)`, `class TeamMember(TeamMemberColumns, Base)` and
+`TeamInvitationColumns` beside `InvitationColumns` on the invitation model (table names
+`teams`, `team_members`; another name through `__teams_table__`). They are Kurvenschmiede's
+tables as its migrations made them, so its autogenerate finds no change; a new app writes their
+migration with its own. Run `check_team_store(SqlTeamStore(…), SqlTeamInvitationStore(…), …)`
+beside the account layer's suites, on a database that enforces foreign keys.
+
+**Stays app-side:** what a team is for — Kurvenschmiede's grants to a team and who holds them
+(`access.held_by`), the share mails, a team in the export — the `team_added` notice itself, the
+billing rule behind the gate, the demo's addresses, and the system team's seed.
 
 ### `eifi1_server_kit.settings`
 

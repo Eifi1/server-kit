@@ -11,6 +11,7 @@ from eifi1_server_kit.auth import AuthLimiters
 from eifi1_server_kit.auth.router import AuthDeps, account_service, admin_guard, auth_router, peer_address
 from eifi1_server_kit.auth.service import AccountLinks, AccountService, AuthHooks
 from eifi1_server_kit.errors import install_contract_error_handlers
+from eifi1_server_kit.user_admin.schemas import InvitationCreate
 from tests.auth._world import POLICY, World
 from tests.auth_fakes import MemoryUser
 
@@ -137,3 +138,32 @@ def test_peer_address_answers_unknown_without_a_peer() -> None:
     from starlette.requests import Request
 
     assert peer_address(Request({"type": "http", "headers": [], "client": None})) == "unknown"
+
+
+async def test_an_invitation_may_come_with_its_scope_decided_and_more_detail_on_its_row(world: World) -> None:
+    """0.32, for the teams: a caller that decided the scope itself (a team and the role in it)
+    passes it, past the ``invitation_scope`` hook, and the ``invite`` row carries its detail
+    beside the kit's; with neither, nothing changes."""
+    admin = world.account(email="root@example.com", role="ADMIN")
+    asked: list[object] = []
+
+    async def invitation_scope(_admin: MemoryUser, scope: int | str) -> dict[str, Any]:
+        asked.append(scope)
+        return {"team_id": int(scope)}
+
+    service = service_of(world, AuthHooks(invitation_scope=invitation_scope))
+    body = InvitationCreate(email="new@example.com", role="MEMBER")
+    issued = await service.create_invitation(
+        admin, body, show_link=False, scope={"team_id": 3, "team_role": "manager"}, detail={"team_role": "manager"}
+    )
+    invitation = world.invitations.rows[issued["id"]]
+    assert invitation.scope == {"team_id": 3, "team_role": "manager"} and asked == []
+    assert world.log.rows[-1].detail == {"invitation_id": invitation.id, "role": "MEMBER", "team_role": "manager"}
+    await service.create_invitation(
+        admin, InvitationCreate(email="two@example.com", role="MEMBER", scope=4), show_link=False
+    )
+    assert asked == [4] and world.log.rows[-1].detail == {"invitation_id": invitation.id + 1, "role": "MEMBER"}
+    with pytest.raises(ValueError, match="scope"):
+        await service.create_invitation(
+            admin, InvitationCreate(email="three@example.com", role="MEMBER", scope=4), show_link=False, scope={}
+        )

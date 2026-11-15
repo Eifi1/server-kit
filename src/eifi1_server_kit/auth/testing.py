@@ -587,6 +587,17 @@ class InMemoryAdminActionLog:
             if row.target_user_id == user_id:
                 row.target_email = None
 
+    async def deleted_group_names(self, group_ids: Sequence[int]) -> Mapping[int, str]:
+        """0.32's :class:`~eifi1_server_kit.user_admin.ports.DeletedGroupNames`."""
+        wanted = set(group_ids)
+        return {
+            row.target_group_id: row.target_group_name
+            for row in self.rows.values()
+            if row.action == AdminAction.GROUP_DELETE
+            and row.target_group_id in wanted
+            and row.target_group_name is not None
+        }
+
 
 class InMemoryAfterCommit:
     """An :class:`~eifi1_server_kit.auth.ports.AfterCommit` whose queue a test runs by hand.

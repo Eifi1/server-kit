@@ -18,7 +18,7 @@ scope (kastlan, §12.4) answers its own roster through its
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
@@ -26,7 +26,14 @@ from typing import Any, Protocol, runtime_checkable
 from eifi1_server_kit.auth.ports import AccountRow
 from eifi1_server_kit.user_admin.roster import UserListQuery
 
-__all__ = ["AcceptedInvitations", "AccountLogScrub", "AdminActionsByEmail", "RosterCounts", "RosterStore"]
+__all__ = [
+    "AcceptedInvitations",
+    "AccountLogScrub",
+    "AdminActionsByEmail",
+    "DeletedGroupNames",
+    "RosterCounts",
+    "RosterStore",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,3 +137,18 @@ class AccountLogScrub(Protocol):
     async def scrub_account(self, user_id: int) -> None:
         """Clear ``target_email`` on every row whose ``target_user_id`` is ``user_id``,
         flushed; the rows stay, and so does everything else on them."""
+
+
+@runtime_checkable
+class DeletedGroupNames(Protocol):
+    """An admin log that reads the name a deleted group had off its ``group_delete`` row (0.32,
+    the teams' ready ``UserAdminHooks.group_names``): the one row that keeps it,
+    ``target_group_name`` (§11.2 decision 6), so the log still says which team went.
+
+    Optional: the ``sql`` extra's and the in-memory logs have it; without it a deleted team's
+    rows read "a deleted team". The teams check for it with ``isinstance``."""
+
+    async def deleted_group_names(self, group_ids: Sequence[int]) -> Mapping[int, str]:
+        """The ``target_group_name`` of the ``group_delete`` rows of these groups, by id; a
+        group with no such row (or one without a name) is left out."""
+        ...
