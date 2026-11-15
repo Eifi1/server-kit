@@ -376,7 +376,8 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: for the ``after_days`` job (Kurvenschmiede logs the hand-over in its own rows by it).
     erase: _EraseHook[UserT] | None = None
     #: Seam 5 (0.30): the stored files an erasure left nobody naming (the feedback's), deleted
-    #: after the commit (keksdose's object purge). Without it they are left to the app.
+    #: after the commit (keksdose's object purge). Without it they stay in the store, and each
+    #: erasure that leaves any logs a WARNING (0.32): an app with feedback files sets it.
     #: Delete them through ``objects.purge_objects``: since 0.31 it spares a file written in
     #: the last minutes by default, as a byte-identical upload committed after the erasure's
     #: decision names the same content-addressed object.
@@ -1796,7 +1797,12 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             return
         purge = self._hooks.purge_files
         if purge is None:
-            logger.info("an erasure left %s stored files and the app takes no purge_files", len(keys))
+            # A WARNING (0.32, Staunlabor): the erased person's files stay in the store, and an
+            # app with feedback files and no hook would otherwise never notice.
+            logger.warning(
+                "an erasure left %s stored files in the store: the app takes no AuthHooks.purge_files",
+                len(keys),
+            )
             return
         kept = tuple(keys)
 

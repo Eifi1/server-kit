@@ -745,7 +745,7 @@ rides on the route's answer, which the app's answer model declares.
 | `on_deletion_withdrawn(user)` → extras | `withdraw_deletion` (0.30's admin); the extras are the `deletion_cancel` row's detail (0.31) | 5 |
 | `export_data(user)` → `data` | the export's `data` | 5 |
 | `erase(user, *, actor_id)` → extras | the erasure (0.30; the actor since 0.31: the admin, `None` for the job) | 5 |
-| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30) | 5 |
+| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30); an app with feedback files sets it, since without it they stay in the store and the erasure logs a WARNING (0.32) | 5 |
 | `to_me(user)` → the app's `me_model` | `/auth/me` and every token answer's user | 6 |
 
 **The work after the commit** (`AfterCommit`, §12.5 item 2): the kit never commits but where

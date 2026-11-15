@@ -164,6 +164,11 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Fixed
 
+* **auth (Staunlabor's review of 0.32.0.dev4):** an erasure that leaves stored files and finds
+  no `AuthHooks.purge_files` logs a **WARNING** naming the hook, where it logged INFO: an app
+  with feedback files and no hook kept the erased person's files without noticing. Set the hook
+  (`objects.purge_objects`) wherever the account layer runs beside feedback attachments.
+
 * **auth.sql (keksdose's review of 0.32.0.dev3):** every nullable JSON column of `auth.sql`, and
   so of `teams.sql`, writes `None` as SQL `NULL` rather than JSON `null`, as `feedback.sql`'s
   already did: an invitation without a scope was stored as JSON `null`, so an app's
