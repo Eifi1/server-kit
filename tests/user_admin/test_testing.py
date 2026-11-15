@@ -131,7 +131,10 @@ class _Broken(InMemoryRosterStore):
         super().__init__(rows)
         self.broken = broken
 
-    async def page(self, query: Any, *, admin_role: str, reviewer_role: str | None) -> tuple[Sequence[Any], int]:
+    # Without 0.32's filters, as an app's store may be: the check never passes them.
+    async def page(  # type: ignore[override]
+        self, query: Any, *, admin_role: str, reviewer_role: str | None
+    ) -> tuple[Sequence[Any], int]:
         if self.broken == "unescaped" and query.q is not None and query.q.startswith("%"):
             query = query.model_copy(update={"q": query.q.lstrip("%")})
         if self.broken == "state_and" and len(query.state) > 1:
