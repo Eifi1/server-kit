@@ -508,7 +508,7 @@ async def test_check_invitation_store_fails_on_an_open_for_that_keeps_revoked_on
 
 async def test_check_invitation_store_fails_on_a_listing_with_accepted_ones() -> None:
     class ListsAll(InMemoryInvitationStore):
-        async def listing(self) -> Sequence[MemoryInvitationRow]:
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
             return sorted(self.rows.values(), key=lambda row: (row.created_at, row.id), reverse=True)
 
     with pytest.raises(AssertionError, match="listing: not an accepted invitation"):
@@ -517,8 +517,8 @@ async def test_check_invitation_store_fails_on_a_listing_with_accepted_ones() ->
 
 async def test_check_invitation_store_fails_on_a_listing_that_hides_a_kept_revoked_one() -> None:
     class HidesRevoked(InMemoryInvitationStore):
-        async def listing(self) -> Sequence[MemoryInvitationRow]:
-            return [row for row in await super().listing() if row.revoked_at is None]
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+            return [row for row in await super().listing(accepted=accepted) if row.revoked_at is None]
 
     with pytest.raises(AssertionError, match="listing: a revoked invitation the store keeps is still listed"):
         await check_invitation_store(HidesRevoked(), inviter_id=1, user_id=2)
@@ -526,8 +526,8 @@ async def test_check_invitation_store_fails_on_a_listing_that_hides_a_kept_revok
 
 async def test_check_invitation_store_fails_on_a_listing_without_the_id_tie_break() -> None:
     class OldestFirst(InMemoryInvitationStore):
-        async def listing(self) -> Sequence[MemoryInvitationRow]:
-            return list(reversed(await super().listing()))
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+            return list(reversed(await super().listing(accepted=accepted)))
 
     with pytest.raises(AssertionError, match="listing: newest first, the higher id first on a tie"):
         await check_invitation_store(OldestFirst(now=fixed()), inviter_id=1, user_id=2)
@@ -536,13 +536,46 @@ async def test_check_invitation_store_fails_on_a_listing_without_the_id_tie_brea
 async def test_check_invitation_store_fails_on_a_remint_that_keeps_the_old_link() -> None:
     class KeepsLink(InMemoryInvitationStore):
         async def remint(
-            self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime
+            self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime, **fields: Any
         ) -> MemoryInvitationRow:
             invitation.expires_at = expires_at
             return invitation
 
     with pytest.raises(AssertionError, match="remint: the new token_hash and expires_at read back"):
         await check_invitation_store(KeepsLink(), inviter_id=1, user_id=2)
+
+
+async def test_check_invitation_store_fails_on_a_listing_that_never_shows_accepted_ones() -> None:
+    """0.32: a store whose listing takes ``accepted`` answers the accepted ones with it."""
+
+    class NeverAccepted(InMemoryInvitationStore):
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+            return await super().listing()
+
+    with pytest.raises(AssertionError, match="listing\\(accepted=True\\): the accepted invitation"):
+        await check_invitation_store(NeverAccepted(), inviter_id=1, user_id=2)
+
+
+async def test_check_invitation_store_fails_on_a_remint_that_drops_the_new_fields() -> None:
+    """0.32: a store whose remint takes the re-used invitation's fields writes them."""
+
+    from eifi1_server_kit.auth.ports import UNCHANGED
+
+    class DropsFields(InMemoryInvitationStore):
+        async def remint(
+            self,
+            invitation: MemoryInvitationRow,
+            *,
+            token_hash: str,
+            expires_at: datetime,
+            locale: Any = UNCHANGED,
+            note: Any = UNCHANGED,
+            invited_by_user_id: Any = UNCHANGED,
+        ) -> MemoryInvitationRow:
+            return await super().remint(invitation, token_hash=token_hash, expires_at=expires_at)
+
+    with pytest.raises(AssertionError, match="remint: locale, note"):
+        await check_invitation_store(DropsFields(), inviter_id=1, user_id=2)
 
 
 # ── Passkeys ────────────────────────────────────────────────────────────────
