@@ -50,7 +50,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlencode
 
@@ -468,6 +468,11 @@ class AccountPolicy:
     #: Above the mail provider's slow answers (Resend's are well under a second); a send still
     #: running at the floor is cut and logged, so the answer is never late.
     answer_floor: timedelta = timedelta(seconds=3)
+    #: How a mail writes a day (``{date}``, the deletion mail's erasure day): ``(day,
+    #: locale)`` to the words. Default :func:`~eifi1_server_kit.auth.mails.mail_date`,
+    #: numeric so no month name needs a translation; keksdose writes it as a sentence does
+    #: ("6. November 2026", its ``server_text.format_day``) (0.32, KG-5).
+    mail_date: Callable[[date | datetime, str | None], str] = mail_date
 
     def __post_init__(self) -> None:
         if not _APP_NAME.match(self.app):
@@ -2030,7 +2035,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         if scheduled is None:
             kind = AccountMailText.ACCOUNT_DELETION_OPERATOR
         else:
-            kind, values["date"] = AccountMailText.ACCOUNT_DELETION, mail_date(scheduled, user.locale)
+            kind, values["date"] = AccountMailText.ACCOUNT_DELETION, self._policy.mail_date(scheduled, user.locale)
         link = self._policy.links.url(self._policy.links.home)
         sent = await self._send(user.email, kind, user.locale, link=link, **values)
         return {"deletion_scheduled_at": scheduled, "mail_sent": sent, **extras}

@@ -24,6 +24,10 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Added
 
+* **auth (keksdose's KG-5):** `AccountPolicy.mail_date` (`(day, locale) -> str`, default
+  `mail_date`) writes a mail's `{date}`, the deletion mail's erasure day: keksdose writes it as a
+  sentence does ("6. November 2026"), never numerically.
+
 * **auth (Kurvenschmiede's review of 0.32.0.dev3):** an app's `mail_texts` table for `invitation`
   or `group_invitation` stands for `invitation_account` or `group_invitation_account` too, unless
   the app names that kind itself; before, the existing account's invitation kept the kit's words.
