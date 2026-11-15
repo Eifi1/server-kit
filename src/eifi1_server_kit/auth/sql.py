@@ -62,6 +62,8 @@ from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal, cast
 
+from pydantic import BaseModel
+
 try:
     from sqlalchemy import (
         JSON,
@@ -797,7 +799,8 @@ class SqlRosterStore[UserT: AccountColumns]:
     erasure job's candidates, people only — ``is_demo`` accounts left out where the model has
     :class:`DemoAccountColumn`; an app with a system account of its own subclasses and narrows
     :meth:`people`, as with :class:`SqlUserStore`. An app that sorts by a column of its own
-    (keksdose's ``plan``) subclasses and widens :meth:`sort_columns`."""
+    (keksdose's ``plan``) subclasses and widens :meth:`sort_columns`, and one with filters of
+    its own (0.32, ``UserAdminDeps.roster_query_model``) answers them in :meth:`filter_clause`."""
 
     def __init__(self, session: AsyncSession, model: type[UserT]) -> None:
         self._session = session
@@ -818,6 +821,13 @@ class SqlRosterStore[UserT: AccountColumns]:
             "created": (model.created_at,),
             "last_login": (model.last_login_at,),
         }
+
+    def filter_clause(self, filters: BaseModel) -> ColumnElement[bool] | None:
+        """The ``WHERE`` clause of the app's own filters (0.32, an instance of
+        ``UserAdminDeps.roster_query_model``: keksdose's plan, privacy mode and dates), AND-ed
+        with the kit's; ``None``, here, for none: the kit's store takes them and ignores them."""
+        del filters
+        return None
 
     def _where(self, *clauses: ColumnElement[bool] | None) -> list[ColumnElement[bool]]:
         return [clause for clause in (self.people(), *clauses) if clause is not None]
@@ -852,7 +862,7 @@ class SqlRosterStore[UserT: AccountColumns]:
         return or_(*(column.ilike(pattern, escape=LIKE_ESCAPE) for column in columns))
 
     async def page(
-        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None
+        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None, filters: BaseModel | None = None
     ) -> tuple[Sequence[UserT], int]:
         model = self._model
         columns = self.sort_columns()
@@ -863,6 +873,7 @@ class SqlRosterStore[UserT: AccountColumns]:
             None if pattern is None else self._search(pattern),
             model.role.in_(query.role) if query.role else None,
             or_(*(self._state(token, admin_role, reviewer_role) for token in query.state)) if query.state else None,
+            None if filters is None else self.filter_clause(filters),
         )
         total = await self._session.scalar(select(func.count()).select_from(model).where(*where))
         order = [

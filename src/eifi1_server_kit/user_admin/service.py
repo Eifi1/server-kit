@@ -209,6 +209,10 @@ class UserAdminHooks[UserT: AccountRow = Any]:
     #: The log's groups: their names by id (Kurvenschmiede's teams, kastlan's companies), a
     #: deleted one's from its ``group_delete`` row.
     group_names: Callable[[Sequence[int]], Awaitable[Mapping[int, str | None]]] | None = None
+    #: ``GET /admin/users``' ``summary``: the app's counts beside the kit's ``active_admins``,
+    #: which always wins (0.32, keksdose's install-wide ``total``, ``by_plan``, …); type it with
+    #: ``UserAdminDeps.summary_model``. Asked with the admin, whatever the page and filter.
+    summary: Callable[[UserT], Awaitable[_Extras]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,22 +370,35 @@ class UserAdminService[UserT: AccountRow]:
 
     # --- the roster ------------------------------------------------------------------------
 
-    async def roster(self, **raw: Any) -> dict[str, Any]:
+    async def roster(
+        self, admin: UserT | None = None, *, filters: BaseModel | None = None, **raw: Any
+    ) -> dict[str, Any]:
         """``GET /admin/users`` (§3.1): the query parsed (``422`` for a bad one), one page of
-        the scope's people as rows, the total, the transport, the active admins and the
-        levels."""
+        the scope's people as rows, the total, the transport, the summary and the levels.
+
+        ``filters`` (0.32, ``UserAdminDeps.roster_query_model``) is the app's own query, handed
+        to the scope's roster only when given, so a roster without the parameter still runs.
+        The summary is the ``summary`` hook's counts, asked with ``admin``, under the kit's
+        ``active_admins``, which an app cannot override."""
         query = parse_roster_query(
             **raw,
             sort_keys=self._policy.sort_keys,
             accepted_states=self._policy.states,
             roles=self._policy.roles,
         )
-        rows, total = await self.scope.roster(query)
+        if filters is None:
+            rows, total = await self.scope.roster(query)
+        else:
+            rows, total = await self.scope.roster(query, filters=filters)
+        summary: dict[str, Any] = {}
+        if admin is not None and self._hooks.summary is not None:
+            summary.update(await self._hooks.summary(admin))
+        summary[SUMMARY_ACTIVE_ADMINS] = await self.scope.active_admins()
         return {
             "users": await self.rows(rows),
             "total": total,
             "mail_backend": self._backend,
-            "summary": {SUMMARY_ACTIVE_ADMINS: await self.scope.active_admins()},
+            "summary": summary,
             "levels": self.levels(),
         }
 

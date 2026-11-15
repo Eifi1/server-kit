@@ -3,7 +3,7 @@ roster, the four actions, the reviewer scope, the log, the overview, the mail ro
 operator's erasure, over HTTP (user-admin §3–§6, admin §2.4, §9.2)."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +23,7 @@ from eifi1_server_kit.user_admin import (
     admin_action_record,
 )
 from eifi1_server_kit.user_admin.service import AdminPolicy, UserAdminHooks
+from eifi1_server_kit.user_admin.testing import InMemoryRosterStore
 from tests.auth._world import PASSWORD
 from tests.auth_fakes import MemoryUser
 from tests.user_admin._admin_world import AdminWorld
@@ -94,6 +95,109 @@ async def test_an_app_draws_its_own_row() -> None:
         _, token = await world.admin_token()
         answer = (await world.call("GET", "/admin/users", token=token)).json()
         assert answer["users"][0]["plan"] == "pro"
+
+
+class KeksdoseSummary(BaseModel):
+    """keksdose's install-wide counts (a few of them), the kit's ``active_admins`` among them."""
+
+    active_admins: int
+    total: int
+    by_plan: dict[str, int]
+
+
+async def test_the_app_adds_its_own_counts_to_the_roster_s_summary_and_types_them() -> None:
+    """keksdose's roster summary: the app's install-wide counts beside the kit's, the kit's
+    ``active_admins`` never overridden, and the OpenAPI types them with ``summary_model``."""
+    world = AdminWorld(admin={"summary_model": KeksdoseSummary})
+    async with world.client:
+        asked: list[int] = []
+
+        async def summary(admin: MemoryUser) -> dict[str, Any]:
+            asked.append(admin.id)
+            return {"total": 7, "by_plan": {"free": 5, "pro": 2}, "active_admins": 99}
+
+        world.admin_hooks = UserAdminHooks(summary=summary)
+        admin, token = await world.admin_token()
+        answer = (await world.call("GET", "/admin/users?q=nobody", token=token)).json()
+        assert answer["summary"] == {"active_admins": 1, "total": 7, "by_plan": {"free": 5, "pro": 2}}
+        assert asked == [admin.id]
+        schema = world.app.openapi()["components"]["schemas"]
+        listed = next(name for name in schema if name.startswith("UserListResponse"))
+        summary_field = schema[listed]["properties"]["summary"]
+        assert {"$ref": "#/components/schemas/KeksdoseSummary"} in summary_field["anyOf"]
+
+    plain = AdminWorld()
+    async with plain.client:
+        _, token = await plain.admin_token()
+        assert (await plain.call("GET", "/admin/users", token=token)).json()["summary"] == {"active_admins": 1}
+
+
+def test_a_summary_model_without_the_kit_s_active_admins_is_refused() -> None:
+    class Counts(BaseModel):
+        total: int
+
+    with pytest.raises(ValueError, match="active_admins"):
+        AdminWorld(admin={"summary_model": Counts})
+
+
+class KeksdoseFilters(BaseModel):
+    """keksdose's roster filters beside the kit's query."""
+
+    plan: str | None = None
+    privacy_mode: str | None = None
+    created_from: date | None = None
+    created_to: date | None = None
+
+
+async def test_the_roster_takes_the_app_s_own_filters_and_hands_them_to_its_store() -> None:
+    """keksdose's plan, privacy mode and dates: ``roster_query_model`` adds them to ``GET
+    /admin/users`` alone, and the store's ``page`` gets them as ``filters``."""
+    seen: list[Any] = []
+
+    class FilteringRoster(InMemoryRosterStore):
+        async def page(self, query: Any, *, admin_role: str, reviewer_role: str | None, filters: Any = None) -> Any:
+            seen.append(filters)
+            rows, _ = await super().page(query, admin_role=admin_role, reviewer_role=reviewer_role, filters=filters)
+            kept = [row for row in rows if filters is None or filters.plan is None or row.first_name == filters.plan]
+            return kept, len(kept)
+
+    world = AdminWorld(admin={"roster_query_model": KeksdoseFilters})
+    world.roster = FilteringRoster(world.users.rows)
+    async with world.client:
+        _, token = await world.admin_token(first_name="free")
+        world.account(email="pro@example.com", first_name="pro")
+        response = await world.call(
+            "GET", "/admin/users?plan=pro&created_from=2026-11-01&sort=name&limit=10", token=token
+        )
+        assert response.status_code == 200, response.text
+        assert [row["email"] for row in response.json()["users"]] == ["pro@example.com"]
+        assert seen == [KeksdoseFilters(plan="pro", created_from=date(2026, 11, 1))]
+        bad = await world.call("GET", "/admin/users?created_from=soon", token=token)
+        assert bad.status_code == 422
+        paths = world.app.openapi()["paths"]
+        names = {param["name"] for param in paths["/api/v1/admin/users"]["get"]["parameters"]}
+        assert {"limit", "q", "role", "state", "plan", "privacy_mode", "created_from", "created_to"} <= names
+        attention = {param["name"] for param in paths["/api/v1/admin/attention"]["get"].get("parameters", [])}
+        assert "plan" not in attention, "only the roster's own route takes the filters"
+
+
+async def test_without_a_filter_model_a_store_without_filters_still_runs(world: AdminWorld) -> None:
+    class OldRoster(InMemoryRosterStore):
+        async def page(self, query: Any, *, admin_role: str, reviewer_role: str | None) -> Any:  # type: ignore[override]
+            return await super().page(query, admin_role=admin_role, reviewer_role=reviewer_role)
+
+    world.roster = OldRoster(world.users.rows)
+    _, token = await world.admin_token()
+    response = await world.call("GET", "/admin/users?plan=pro", token=token)
+    assert response.status_code == 200 and response.json()["total"] == 1
+
+
+def test_a_filter_model_naming_a_kit_parameter_is_refused() -> None:
+    class Clash(BaseModel):
+        q: str | None = None
+
+    with pytest.raises(ValueError, match="'q'"):
+        AdminWorld(admin={"roster_query_model": Clash})
 
 
 # ── deactivate and reactivate ───────────────────────────────────────────────

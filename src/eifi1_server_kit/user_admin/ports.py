@@ -21,10 +21,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from eifi1_server_kit.auth.ports import AccountRow
 from eifi1_server_kit.user_admin.roster import UserListQuery
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 __all__ = [
     "AcceptedInvitations",
@@ -56,10 +59,16 @@ class RosterStore[UserT: AccountRow](Protocol):
     ``count_people`` does)."""
 
     async def page(
-        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None
+        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None, filters: BaseModel | None = None
     ) -> tuple[Sequence[UserT], int]:
         """One page of ``query`` (:func:`~eifi1_server_kit.user_admin.parse_roster_query`) and
         how many people match it across every page.
+
+        ``filters`` (0.32) is the app's own query, an instance of
+        ``UserAdminDeps.roster_query_model`` (keksdose's plan, privacy mode and dates), AND-ed
+        with the rest. The kit passes it only when the app has that model, so a store whose
+        ``page`` lacks the parameter keeps working; ``SqlRosterStore`` takes it and applies
+        what its ``filter_clause`` answers (nothing, unless a subclass says).
 
         * ``q`` (its :attr:`~eifi1_server_kit.user_admin.UserListQuery.search_pattern`):
           the address, the first name, the last name, and both orders of the two together

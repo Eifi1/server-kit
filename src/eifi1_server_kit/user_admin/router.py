@@ -33,7 +33,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from eifi1_server_kit.auth.router import AuthDeps, account_request_window, account_service, admin_guard, current_user
 from eifi1_server_kit.auth.service import AccountService
@@ -42,6 +42,7 @@ from eifi1_server_kit.user_admin.attention import AdminAttention
 from eifi1_server_kit.user_admin.deletion import DeletionMode
 from eifi1_server_kit.user_admin.roster import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from eifi1_server_kit.user_admin.schemas import (
+    SUMMARY_ACTIVE_ADMINS,
     ActionConfirmation,
     ActiveChange,
     AdminActionPage,
@@ -118,6 +119,16 @@ class UserAdminDeps:
     role_change_model: type[RoleChange] = RoleChange
     roles_change_model: type[RolesChange] = RolesChange
     mail_request_model: type[MailRequest] = MailRequest
+    #: The roster's ``summary`` as the app's model (0.32, keksdose's install-wide counts from
+    #: ``UserAdminHooks.summary``), so the OpenAPI types it; it declares the kit's
+    #: ``active_admins`` too. ``None``: the summary is a plain mapping, as before.
+    summary_model: type[BaseModel] | None = None
+    #: The app's own roster filters (0.32, keksdose's plan, privacy mode and dates): ``GET
+    #: /admin/users`` alone takes its fields as query parameters, and the roster store's
+    #: ``page`` gets the instance as ``filters``. Its fields never name the kit's parameters,
+    #: and it does not forbid extra fields (the kit's parameters are in the same query).
+    #: ``None``: no ``filters`` is passed, so a store without the parameter keeps working.
+    roster_query_model: type[BaseModel] | None = None
 
 
 def _global_scope(deps: UserAdminDeps, roster: Callable[..., Any]) -> Callable[..., Any]:
@@ -179,11 +190,58 @@ def _service(deps: UserAdminDeps) -> Callable[..., Any]:
     return service
 
 
+#: The query parameters of ``GET /admin/users`` the kit reads itself.
+_ROSTER_PARAMETERS = frozenset({"limit", "offset", "sort", "q", "role", "state"})
+
+
+def _list_model(row_model: type[BaseModel], summary_model: type[BaseModel] | None) -> type[BaseModel]:
+    """``UserListResponse[row_model]``, its ``summary`` typed as ``summary_model`` when the app
+    has one (which must declare the kit's ``active_admins``)."""
+    list_model: type[BaseModel] = UserListResponse[row_model]  # type: ignore[valid-type]
+    if summary_model is None:
+        return list_model
+    if SUMMARY_ACTIVE_ADMINS not in summary_model.model_fields:
+        raise ValueError(
+            f"UserAdminDeps.summary_model {summary_model.__name__} lacks the kit's {SUMMARY_ACTIVE_ADMINS!r}"
+        )
+    return create_model(
+        f"UserListResponse[{row_model.__name__}, {summary_model.__name__}]",
+        __base__=list_model,
+        summary=(summary_model | None, None),  # type: ignore[arg-type]
+    )
+
+
+async def _no_filters() -> None:
+    """``GET /admin/users`` without the app's own filters."""
+    return None
+
+
+def _roster_filters(model: type[BaseModel] | None) -> Callable[..., Any]:
+    """The dependency reading the app's filters off the query (FastAPI's query model, alone in
+    its own dependency so its fields are flattened into parameters); without a model, none."""
+    if model is None:
+        return _no_filters
+    names = {each for name, info in model.model_fields.items() for each in (name, info.alias) if each}
+    if clash := sorted(names & _ROSTER_PARAMETERS):
+        raise ValueError(
+            f"UserAdminDeps.roster_query_model {model.__name__} names the kit's roster parameters: "
+            + ", ".join(repr(name) for name in clash)
+        )
+
+    async def roster_filters(filters: Annotated[model, Query()]) -> BaseModel:  # type: ignore[valid-type]
+        found: BaseModel = filters
+        return found
+
+    return roster_filters
+
+
 def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequence[str] = ("admin",)) -> APIRouter:
     """The admin's routes (§12.1), every one behind the guard, on
     ``APIRouter(prefix=prefix, tags=tags)``:
 
-    * ``GET /users`` — the roster (``UserListResponse[row_model]``);
+    * ``GET /users`` — the roster (``UserListResponse[row_model]``; its ``summary`` typed as
+      ``summary_model`` and its query widened by ``roster_query_model``, where the app has
+      them);
     * ``POST /users/{user_id}/active``, ``POST /users/{user_id}/role`` (or ``PUT …/roles``
       with ``role_sets``), ``POST`` and ``DELETE /users/{user_id}/password-change`` — each
       answers the account's row;
@@ -195,8 +253,9 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
       ``attention_model``, ``GET /mail`` → ``MailBackendInfo``, ``POST /mail/test`` →
       ``MailTestResult``.
 
-    Raises :class:`ValueError` for a policy naming a role the app does not have, and for the
-    global scope without a roster."""
+    Raises :class:`ValueError` for a policy naming a role the app does not have, for the
+    global scope without a roster, for a ``summary_model`` without ``active_admins`` and for a
+    ``roster_query_model`` naming one of the kit's roster parameters."""
     auth = deps.auth
     deps.policy.check(auth.policy)
     Service = Annotated[UserAdminService[Any], Depends(_service(deps))]  # noqa: N806
@@ -207,7 +266,8 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
         dependencies=[Depends(account_request_window(auth)), Depends(deps.guard or admin_guard(auth))],
     )
     row_model = deps.row_model
-    list_model = UserListResponse[row_model]  # type: ignore[valid-type]
+    list_model = _list_model(row_model, deps.summary_model)
+    filters_of = _roster_filters(deps.roster_query_model)
 
     async def target(user_id: int, service: Service) -> Any:
         return await service.target(user_id)
@@ -217,6 +277,8 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
     @router.get("/users", response_model=list_model)
     async def list_users(
         service: Service,
+        admin: Admin,
+        filters: Annotated[BaseModel | None, Depends(filters_of)],
         limit: int = DEFAULT_PAGE_SIZE,
         offset: int = 0,
         sort: str | None = None,
@@ -225,7 +287,9 @@ def user_admin_router(deps: UserAdminDeps, *, prefix: str = "/admin", tags: Sequ
         state: Annotated[list[str] | None, Query()] = None,
     ) -> BaseModel:
         """One page of the people the admin administers (§3.1); ``422`` for a bad query."""
-        found = await service.roster(limit=limit, offset=offset, sort=sort, q=q, role=role, state=state)
+        found = await service.roster(
+            admin, filters=filters, limit=limit, offset=offset, sort=sort, q=q, role=role, state=state
+        )
         return list_model.model_validate(found)
 
     active_model = deps.active_change_model

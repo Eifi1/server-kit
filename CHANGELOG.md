@@ -24,6 +24,20 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Added
 
+* **user_admin (keksdose's move onto the admin router): the roster's summary and filters are the
+  app's too.** `UserAdminHooks.summary(admin)` answers the app's counts for `GET /admin/users`'
+  `summary` (keksdose's install-wide `total`, `by_plan`, `by_privacy_mode`, …), merged under the
+  kit's `active_admins`, which an app cannot override; `UserAdminDeps.summary_model` types the
+  summary in the OpenAPI (it declares `active_admins`, else a `ValueError` when the router is
+  built). `UserAdminDeps.roster_query_model` adds the app's own filters (keksdose's plan, privacy
+  mode, created and last-login ranges) to `GET /admin/users` alone, as query parameters, and
+  hands the instance to `RosterStore.page(…, filters=)` through `AdminScope.roster(…,
+  filters=)`; a model naming a kit parameter (`limit`, `q`, …) is a `ValueError`. `filters` is
+  passed only where the app has the model, so a store or scope without the parameter keeps
+  working; `SqlRosterStore` and `InMemoryRosterStore` take it and ignore it, and a
+  `SqlRosterStore` subclass applies it in `filter_clause(filters)`. Without them the summary is
+  `{active_admins}` and the query the kit's, as before.
+
 * **auth (keksdose's erasure):** `AuthHooks.erasure_identifiers(user)` adds the app's own strings
   for the person to the kit's when an erasure anonymises the feedback (keksdose's
   `legacy_display_name`, which older report stamps hold); `erasure_identifiers(…, extra=)` takes

@@ -22,13 +22,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from eifi1_server_kit.auth.ports import AccountRow, UserStore
 from eifi1_server_kit.user_admin.actions import AdminAction
 from eifi1_server_kit.user_admin.ports import RosterCounts, RosterStore
 from eifi1_server_kit.user_admin.roster import UserListQuery
 from eifi1_server_kit.user_admin.rules import refuse_last_admin
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 __all__ = ["AdminScope", "GlobalScope"]
 
@@ -44,9 +47,11 @@ class AdminScope[UserT: AccountRow](Protocol):
         outside it, alike (``user_not_found``). A demo account is found; the router refuses
         it (``demo_refused``)."""
 
-    async def roster(self, query: UserListQuery) -> tuple[Sequence[UserT], int]:
+    async def roster(self, query: UserListQuery, *, filters: BaseModel | None = None) -> tuple[Sequence[UserT], int]:
         """One page of the people in the scope, and how many match in all
-        (:meth:`~eifi1_server_kit.user_admin.ports.RosterStore.page`'s promises)."""
+        (:meth:`~eifi1_server_kit.user_admin.ports.RosterStore.page`'s promises). ``filters``
+        (0.32) is the app's own query (``UserAdminDeps.roster_query_model``), passed only when
+        the app has one: a scope without the parameter runs as before."""
 
     async def counts(self, *, since: datetime) -> RosterCounts:
         """The overview's counts over the people in the scope."""
@@ -103,8 +108,11 @@ class GlobalScope[UserT: AccountRow]:
     async def find(self, user_id: int) -> UserT | None:
         return await self._users.get(user_id)
 
-    async def roster(self, query: UserListQuery) -> tuple[Sequence[UserT], int]:
-        return await self._roster.page(query, admin_role=self._admin_role, reviewer_role=self._reviewer_role)
+    async def roster(self, query: UserListQuery, *, filters: BaseModel | None = None) -> tuple[Sequence[UserT], int]:
+        admin, reviewer = self._admin_role, self._reviewer_role
+        if filters is None:
+            return await self._roster.page(query, admin_role=admin, reviewer_role=reviewer)
+        return await self._roster.page(query, admin_role=admin, reviewer_role=reviewer, filters=filters)
 
     async def counts(self, *, since: datetime) -> RosterCounts:
         return await self._roster.counts(since=since)

@@ -775,6 +775,35 @@ async def test_without_a_reviewer_role_a_reviewer_is_an_account_with_review_loca
     assert plain.id != reviewer.id
 
 
+async def test_the_roster_takes_the_app_s_filters_and_a_subclass_applies_them(session: AsyncSession) -> None:
+    """0.32 (keksdose's roster filters): the kit's store takes ``filters`` and ignores it; a
+    subclass answers them in ``filter_clause``, AND-ed with the kit's query."""
+    from pydantic import BaseModel
+    from sqlalchemy import ColumnElement
+
+    class Filters(BaseModel):
+        created_from: datetime | None = None
+
+    class FilteringRoster(SqlRosterStore[User]):
+        def filter_clause(self, filters: BaseModel) -> ColumnElement[bool] | None:
+            since = cast(Filters, filters).created_from
+            return None if since is None else User.created_at >= since
+
+    users = SqlUserStore(session, User)
+    old = await users.add(_account("old-filter@example.org"))
+    new = await users.add(_account("new-filter@example.org"))
+    old.created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    await session.flush()
+    query = parse_roster_query(q="-filter@", sort="email")
+    since = Filters(created_from=datetime(2026, 6, 1, tzinfo=UTC))
+    plain, _ = await SqlRosterStore(session, User).page(query, admin_role="admin", reviewer_role=None, filters=since)
+    assert [row.id for row in plain] == [new.id, old.id], "the kit's store ignores the app's filters"
+    rows, total = await FilteringRoster(session, User).page(
+        query, admin_role="admin", reviewer_role=None, filters=since
+    )
+    assert ([row.id for row in rows], total) == ([new.id], 1)
+
+
 async def test_the_roster_refuses_a_sort_key_it_has_no_column_for(session: AsyncSession) -> None:
     query = parse_roster_query(sort="plan", sort_keys=("plan",))
     with pytest.raises(ValueError, match="sorts by no plan"):

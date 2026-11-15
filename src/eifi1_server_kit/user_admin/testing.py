@@ -25,6 +25,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from pydantic import BaseModel
+
 from eifi1_server_kit.auth.ports import (
     AccountRow,
     AdminActionLog,
@@ -127,7 +129,7 @@ class InMemoryRosterStore:
     """A :class:`~eifi1_server_kit.user_admin.ports.RosterStore` over ``rows``, a live mapping
     of ids to account rows (``InMemoryUserStore.rows``), read at every call. A row with
     ``is_demo`` true is no person. An unknown sort key is a :class:`ValueError`, as the SQL
-    store's."""
+    store's. The app's ``filters`` (0.32) are taken and ignored; a subclass applies them."""
 
     def __init__(self, rows: Mapping[int, AccountRow]) -> None:
         self.rows = rows
@@ -136,8 +138,9 @@ class InMemoryRosterStore:
         return [row for row in self.rows.values() if _is_person(row)]
 
     async def page(
-        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None
+        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None, filters: BaseModel | None = None
     ) -> tuple[Sequence[Any], int]:
+        del filters
         if unknown := [sort.key for sort in query.sort if sort.key not in _SORT_VALUES]:
             raise ValueError(f"the roster sorts by no {', '.join(unknown)}")
         rows = self._people()
