@@ -548,7 +548,9 @@ class UserAdminService[UserT: AccountRow]:
         (``reviewer_is_admin``: they review every locale, and taking the admin role away is the
         role change's); the locales and areas checked against the app's (``422``). Locales give
         the reviewer role (with ``AdminPolicy.reviewer_role``), none take it away again; the
-        areas count only with locales. No confirmation (``none``)."""
+        areas count only with locales. No confirmation (``none``). Logged ``{from: {locales,
+        areas}, to: {locales, areas}}``, the account's scope before and after (0.32; before,
+        ``{locales, areas}``, the new scope alone)."""
         roles = await self.scope.roles_of(target)
         if self._accounts_policy.admin_role in roles:
             raise AccountError(AccountErrorCode.REVIEWER_IS_ADMIN)
@@ -556,16 +558,16 @@ class UserAdminService[UserT: AccountRow]:
         areas = normalize_areas(body.areas, self._policy.review_areas) if locales else None
         wanted = self._reviewer_roles(roles, given=bool(locales))
         scope = {"translation_review_locales": locales or None, "translation_review_areas": areas}
-        unchanged = (
-            wanted == roles
-            and list(target.translation_review_locales or []) == locales
-            and (None if target.translation_review_areas is None else list(target.translation_review_areas)) == areas
-        )
-        if not unchanged:
+        before = {
+            "locales": list(target.translation_review_locales or []),
+            "areas": None if target.translation_review_areas is None else list(target.translation_review_areas),
+        }
+        after = {"locales": locales, "areas": areas}
+        if wanted != roles or before != after:
             if wanted != roles:
                 await self._roles(admin, target, roles, wanted)
             target = await self._users.apply(target, scope)
-            await self._record(AdminAction.REVIEWER, admin, target, {"locales": locales, "areas": areas})
+            await self._record(AdminAction.REVIEWER, admin, target, {"from": before, "to": after})
         return ReviewerResult(user_id=target.id, role=target.role, locales=locales, areas=areas)
 
     def _reviewer_roles(self, roles: frozenset[str], *, given: bool) -> frozenset[str]:

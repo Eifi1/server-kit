@@ -198,6 +198,12 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Changed
 
+* **user_admin (keksdose's move onto the admin router):** the `reviewer` row's detail is the
+  account's scope before and after, `{"from": {"locales", "areas"}, "to": {"locales", "areas"}}`
+  (`locales` a list, `[]` for none; `areas` a list or `None`), where it was `{"locales",
+  "areas"}`, the new scope alone. Rows written before keep the old shape; ui-kit 0.65's log reader
+  reads both.
+
 * **auth (keksdose's KG-11):** `POST /auth/logout` carries the app's `demo_guard` ("signing out
   everywhere"), as the password, address, passkey, deletion and export routes do; a demo still
   ends its own session (`DELETE /auth/sessions/current`).

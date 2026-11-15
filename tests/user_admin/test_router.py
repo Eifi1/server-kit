@@ -509,14 +509,25 @@ async def test_the_reviewer_scope_sets_the_role_with_its_locales_and_takes_it_aw
     }
     assert (user.role, user.translation_review_locales) == ("REVIEWER", ["de-CH", "fr"])
     (row,) = world.log.rows
-    assert (row.action, row.detail) == ("reviewer", {"locales": ["de-CH", "fr"], "areas": ["feedback"]})
+    assert (row.action, row.detail) == (
+        "reviewer",
+        {"from": {"locales": [], "areas": None}, "to": {"locales": ["de-CH", "fr"], "areas": ["feedback"]}},
+    ), "the scope before and after (0.32)"
     await world.call("PUT", path, token=token, json={"locales": ["fr", "de-CH"], "areas": ["feedback"]})
     assert len(world.log.rows) == 1, "no change, no row"
     moved = await world.call("PUT", path, token=token, json={"locales": ["it"]})
     assert moved.json()["role"] == "REVIEWER" and moved.json()["areas"] is None and len(world.log.rows) == 2
+    assert world.log.rows[1].detail == {
+        "from": {"locales": ["de-CH", "fr"], "areas": ["feedback"]},
+        "to": {"locales": ["it"], "areas": None},
+    }
     gone = await world.call("PUT", path, token=token, json={"locales": [], "areas": ["auth"]})
     assert gone.json() == {"user_id": user.id, "role": "MEMBER", "locales": [], "areas": None}
     assert (user.translation_review_locales, user.translation_review_areas) == (None, None)
+    assert world.log.rows[2].detail == {
+        "from": {"locales": ["it"], "areas": None},
+        "to": {"locales": [], "areas": None},
+    }
 
 
 async def test_a_member_given_no_locales_stays_a_member_and_nothing_is_logged(world: AdminWorld) -> None:

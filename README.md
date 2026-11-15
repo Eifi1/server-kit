@@ -949,7 +949,8 @@ the admin mail's answer.
   is charged to the recipient's public window, commits its link before mailing it, and logs
   `{sent}` after.
 - **The reviewer scope** gives the reviewer role with the locales (the app's, `normalize_locales`)
-  and takes it away with none (the default role); an admin is refused.
+  and takes it away with none (the default role); an admin is refused. Logged `{from: {locales,
+  areas}, to: {locales, areas}}`, the scope before and after (0.32; `{locales, areas}` before).
 - **The overview** counts the people, the new ones of seven days and the open invitations; the
   deletion requests only in `operator` mode; the app's `attention` hook adds `feedback_waiting`
   and its `extra` tiles; a demo admin sees no count.
