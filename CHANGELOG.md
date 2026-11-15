@@ -10,6 +10,18 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.32.0] (2026-11-15)
+
+server-kit 0.32.0: the account layer that keksdose, Kurvenschmiede and Staunlabor move onto
+together. keksdose's last gaps (KG-1 to KG-11): **two-factor sign-in** on its rules, its secret
+sealed (`auth.seal`, the new `seal` extra), with **backup codes and an admin reset**; the app's
+hooks on the signed-out paths, the deletion and the invitation. Kurvenschmiede's teams as the
+**opt-in** `eifi1_server_kit.teams` (its tables column for column), and its gaps: the
+placeholders for import-time routers (`install_account_layer`), the group invitation's own mail,
+the roster's rows in one batch. A **minor** with **no breaking change**: every new port, hook and
+argument is optional, and an app that leaves them out runs as on 0.31. The `[sql]` account model
+gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it in.
+
 ### Added
 
 * **auth (Kurvenschmiede's review of 0.32.0.dev3):** an app's `mail_texts` table for `invitation`
@@ -149,6 +161,13 @@ entry in the Conventional Commit; this file is assembled from them at release.
 * **auth (Kurvenschmiede):** an admin's invitation whose body names no `locale` is written in
   the inviting admin's language, not the schema's `de-CH`; a body that names one wins, and an
   admin with no language of their own still gets the default.
+
+### Fixed
+
+* **auth.sql (keksdose's review of 0.32.0.dev3):** every nullable JSON column of `auth.sql`, and
+  so of `teams.sql`, writes `None` as SQL `NULL` rather than JSON `null`, as `feedback.sql`'s
+  already did: an invitation without a scope was stored as JSON `null`, so an app's
+  `scope IS NULL` (its RLS policy) missed the kit's own rows.
 
 ### Documentation
 
