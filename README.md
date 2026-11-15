@@ -746,7 +746,8 @@ model declares.
 | `on_deletion_withdrawn(user)` → extras | `withdraw_deletion` (0.30's admin); the extras are the `deletion_cancel` row's detail (0.31) | 5 |
 | `export_data(user)` → `data` | the export's `data` | 5 |
 | `erase(user, *, actor_id)` → extras | the erasure (0.30; the actor since 0.31: the admin, `None` for the job) | 5 |
-| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30); an app with feedback files sets it, since without it they stay in the store and the erasure logs a WARNING (0.32) | 5 |
+| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30), as bare keys (the store's path is the attachment storage's `object_key(key)`); an app with feedback files sets it, since without it they stay in the store and the erasure logs a WARNING (0.32) | 5 |
+| `erasure_identifiers(user)` | an erasure that anonymises the feedback: the app's own strings for the person, added to the kit's `erasure_identifiers` (0.32; keksdose's `legacy_display_name`); never a bare first or last name | 5 |
 | `to_me(user)` → the app's `me_model` | `/auth/me` and every token answer's user | 6 |
 | `observe(event, outcome)`, synchronous | every decision of the signed-out flows and the refresh (0.32, keksdose's review of 0.32.0.dev4): an `AuthEvent` and a short stable outcome (the table below); an exception it raises is logged at WARNING and changes no answer | — |
 

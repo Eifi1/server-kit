@@ -164,6 +164,25 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
     assert erased.detail == detail
 
 
+async def test_an_erasure_takes_the_app_s_own_identifiers_beside_the_kit_s(world: World) -> None:
+    """keksdose (0.32): older report stamps hold ``legacy_display_name``, the whole name an
+    account carried before its first/last split; ``AuthHooks.erasure_identifiers`` adds it,
+    and the list keeps the kit's rules (de-duplicated, longest first)."""
+    user = world.account(email="ada@example.com", is_active=False, deletion_requested_at=world.clock())
+
+    async def erasure_identifiers(account: MemoryUser) -> list[str]:
+        assert account is user
+        return ["Countess Ada Lovelace", "ADA@example.com", "  "]
+
+    feedback = FakeFeedback()
+    hooks = AuthHooks(erasure_identifiers=erasure_identifiers)
+    await world.service(hooks).erase(user, actor_id=None, feedback=feedback)  # type: ignore[arg-type]
+    (_id, identifiers) = feedback.asked[0]
+    assert identifiers[0] == "Countess Ada Lovelace" and "Ada Lovelace" in identifiers
+    assert [i.lower() for i in identifiers].count("ada@example.com") == 1
+    assert identifiers == sorted(identifiers, key=len, reverse=True)
+
+
 async def test_an_erasure_that_leaves_files_with_no_purge_warns(world: World, caplog: pytest.LogCaptureFixture) -> None:
     """Staunlabor's finding on 0.32.0.dev4: an app with feedback files and no ``purge_files``
     kept an erased person's files, and only an INFO line said so. It is a WARNING now, naming

@@ -24,6 +24,11 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Added
 
+* **auth (keksdose's erasure):** `AuthHooks.erasure_identifiers(user)` adds the app's own strings
+  for the person to the kit's when an erasure anonymises the feedback (keksdose's
+  `legacy_display_name`, which older report stamps hold); `erasure_identifiers(…, extra=)` takes
+  them under the same rules. `purge_files` says its keys are bare (`object_key(key)` is the path).
+
 * **auth (keksdose's KG-5):** `AccountPolicy.mail_date` (`(day, locale) -> str`, default
   `mail_date`) writes a mail's `{date}`, the deletion mail's erasure day: keksdose writes it as a
   sentence does ("6. November 2026"), never numerically.

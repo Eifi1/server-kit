@@ -386,7 +386,14 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: Delete them through ``objects.purge_objects``: since 0.31 it spares a file written in
     #: the last minutes by default, as a byte-identical upload committed after the erasure's
     #: decision names the same content-addressed object.
+    #: The keys are bare, as ``FeedbackService.erase_author`` answers them: the store's path is
+    #: the attachment storage's ``object_key(key)`` (keksdose's ``feedback/`` prefix).
     purge_files: Callable[[Sequence[str]], Awaitable[None]] | None = None
+    #: Seam 5 (0.32, keksdose's): the app's own strings for the person, added to the kit's
+    #: :func:`~eifi1_server_kit.auth.erasure_identifiers` when an erasure anonymises the
+    #: feedback (keksdose's ``legacy_display_name``, which older report stamps hold). Same
+    #: rules: never a bare first or last name.
+    erasure_identifiers: Callable[[UserT], Awaitable[Sequence[str]]] | None = None
     #: Seam 6: ``/auth/me`` and the user in every token answer, as the app's ``me_model``;
     #: without it, ``me_model.model_validate(user)`` with ``email_verified`` from the row.
     to_me: Callable[[UserT], Awaitable[BaseModel]] | None = None
@@ -1902,7 +1909,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         extras = await self._extras(self._hooks.erase, user, actor_id=actor_id)
         anonymised = 0
         if feedback is not None:
-            erased = await feedback.erase_author(user.id, erasure_identifiers(email, user.first_name, user.last_name))
+            own = self._hooks.erasure_identifiers
+            extra = await own(user) if own is not None else ()
+            identifiers = erasure_identifiers(email, user.first_name, user.last_name, extra=extra)
+            erased = await feedback.erase_author(user.id, identifiers)
             anonymised = erased.reports
             self._purge_later(erased.keys)
         addresses = {email}
