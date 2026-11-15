@@ -97,6 +97,40 @@ async def test_an_app_draws_its_own_row() -> None:
         assert answer["users"][0]["plan"] == "pro"
 
 
+async def test_an_app_s_row_on_the_base_answers_the_names_without_a_display_name() -> None:
+    """keksdose's rule (auth §3.2): an answer about ANOTHER person carries first and last name
+    and no formatted ``display_name``; a row on ``AdminUserRowBase`` leaves it out of the
+    answer and the schema, and the kit's ``AdminUserRow`` still has it."""
+    from eifi1_server_kit.user_admin import AdminUserRowBase
+
+    class Row(AdminUserRowBase):
+        plan: str | None = None
+
+    world = AdminWorld(admin={"row_model": Row})
+    async with world.client:
+        _, token = await world.admin_token(first_name="Ada", last_name="")
+        (row,) = (await world.call("GET", "/admin/users", token=token)).json()["users"]
+        assert (row["first_name"], row["last_name"], row["name_incomplete"]) == ("Ada", "", True)
+        assert "display_name" not in row and "email_verified" in row and "totp_enabled" in row
+        schema = world.app.openapi()["components"]["schemas"]
+        assert "display_name" not in schema["Row"]["properties"]
+        assert "name_incomplete" in schema["Row"]["properties"]
+        changed = await world.call(
+            "POST",
+            f"/admin/users/{world.account().id}/role",
+            token=token,
+            json={"role": "MEMBER", "acknowledged": True},
+        )
+        assert changed.status_code == 200 and "display_name" not in changed.json()
+
+    plain = AdminWorld()
+    async with plain.client:
+        _, token = await plain.admin_token()
+        (row,) = (await plain.call("GET", "/admin/users", token=token)).json()["users"]
+        assert "display_name" in row
+        assert "display_name" in plain.app.openapi()["components"]["schemas"]["AdminUserRow"]["properties"]
+
+
 class KeksdoseSummary(BaseModel):
     """keksdose's install-wide counts (a few of them), the kit's ``active_admins`` among them."""
 

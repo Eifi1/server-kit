@@ -303,19 +303,13 @@ class PasswordChangeChallenge(BaseModel):
     challenge_token: str
 
 
-class UserResponse(BaseModel):
-    """``GET /auth/me`` (§6.1): the core every app answers; subclass to add its own.
-
-    ``display_name`` and ``name_incomplete`` are DERIVED and read-only: computed from
-    ``first_name`` / ``last_name`` on every serialisation, never accepted as input. The
-    display name is written in the user's own ``locale`` — this is the user reading about
-    themselves; the kit formats from first and last name on screen, in the reader's
-    language, and uses ``display_name`` only as a fallback (§3.2).
-
-    ``role`` is the app's vocabulary; narrow it to the app's enum in the subclass. Since
-    0.21 it may be ``None`` — always answered, ``null`` for an account that holds no role:
-    a kastlan user in no company (its ``MeResponse.role``). An app whose every account has
-    one narrows it as before (``role: UserRole``, keksdose), and its answer stays a string.
+class UserCore(BaseModel):
+    """The account's fields every answer about a person shares (0.32): :class:`UserResponse`
+    without its derived names. :class:`UserResponse` adds ``display_name`` and
+    ``name_incomplete``; ``user_admin.AdminUserRowBase`` adds ``name_incomplete`` alone, for
+    an answer about ANOTHER person, which carries first and last name and no formatted
+    ``display_name`` (§3.2, keksdose's rule). Subclass :class:`UserResponse`, not this, for
+    ``/auth/me``.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -351,6 +345,27 @@ class UserResponse(BaseModel):
     #: only (amended 2026-10-20), ``None`` = the app's (``effective_zone``).
     device_timezone: str | None = None
 
+    def name_completion_exempt(self) -> bool:
+        """Override to exempt an account from completing its name — keksdose's demo
+        session (``return self.is_demo``, §3.3)."""
+        return False
+
+
+class UserResponse(UserCore):
+    """``GET /auth/me`` (§6.1): the core every app answers; subclass to add its own.
+
+    ``display_name`` and ``name_incomplete`` are DERIVED and read-only: computed from
+    ``first_name`` / ``last_name`` on every serialisation, never accepted as input. The
+    display name is written in the user's own ``locale`` — this is the user reading about
+    themselves; the kit formats from first and last name on screen, in the reader's
+    language, and uses ``display_name`` only as a fallback (§3.2).
+
+    ``role`` is the app's vocabulary; narrow it to the app's enum in the subclass. Since
+    0.21 it may be ``None`` — always answered, ``null`` for an account that holds no role:
+    a kastlan user in no company (its ``MeResponse.role``). An app whose every account has
+    one narrows it as before (``role: UserRole``, keksdose), and its answer stays a string.
+    """
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def display_name(self) -> str:
@@ -362,11 +377,6 @@ class UserResponse(BaseModel):
     def name_incomplete(self) -> bool:
         """Either part empty — the app shows ``CompleteNameDialog`` after sign-in (§3.3)."""
         return name_incomplete(self.first_name, self.last_name, is_demo=self.name_completion_exempt())
-
-    def name_completion_exempt(self) -> bool:
-        """Override to exempt an account from completing its name — keksdose's demo
-        session (``return self.is_demo``, §3.3)."""
-        return False
 
 
 #: The fields of :class:`ProfileUpdate` that a PATCH may leave out but never null. The

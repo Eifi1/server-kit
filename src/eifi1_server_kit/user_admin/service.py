@@ -68,6 +68,7 @@ from eifi1_server_kit.user_admin.schemas import (
     ActionConfirmation,
     AdminActionRow,
     AdminUserRow,
+    AdminUserRowBase,
     GroupRef,
     InvitationStatus,
     MailKind,
@@ -281,7 +282,7 @@ class UserAdminService[UserT: AccountRow]:
         hooks: UserAdminHooks[UserT] | None = None,
         feedback: FeedbackService[Any] | None = None,
         role_sets: bool = False,
-        row_model: type[AdminUserRow] = AdminUserRow,
+        row_model: type[AdminUserRowBase] = AdminUserRow,
         action_row_model: type[AdminActionRow] = AdminActionRow,
         now: Clock = utc_now,
     ) -> None:

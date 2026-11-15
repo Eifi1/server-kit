@@ -37,17 +37,20 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    computed_field,
     field_validator,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from eifi1_server_kit.auth.accounts import name_incomplete
 from eifi1_server_kit.auth.schemas import (
     DEFAULT_LOCALE,
     MAX_EMAIL_LENGTH,
     Email,
     ExistingPassword,
     LocaleTag,
+    UserCore,
     UserResponse,
     _offered_locale,
 )
@@ -64,6 +67,7 @@ __all__ = [
     "AdminActionPage",
     "AdminActionRow",
     "AdminUserRow",
+    "AdminUserRowBase",
     "DeletionRequest",
     "EmailChangeConfirm",
     "EmailChangeRequest",
@@ -120,22 +124,17 @@ def _discard(_value: object) -> None:
     return None
 
 
-class AdminUserRow(UserResponse):
-    """One row of ``GET /admin/users`` (§3.2): the auth contract's ``UserResponse`` core —
-    with its derived ``display_name`` and ``name_incomplete`` — plus what the admin page
-    shows. Reads an ORM row (``from_attributes``).
-
-    ``extra`` holds the app's own columns: keksdose's plan and key custody,
-    Kurvenschmiede's owned counts; kastlan's companies only in the PLATFORM list — a
-    company's list never names another company (§3.2). Attributes and counts, never
-    content (keksdose's roster rule).
-
-    The person's device zone (``UserResponse.device_timezone``) is NOT on the row (0.17.0):
-    it is where their device last was — their own data, a location signal the roster has
-    no use for. The row reads an account that has it and never answers it.
+class AdminUserRowBase(UserCore):
+    """One row of ``GET /admin/users`` without the formatted ``display_name`` (0.32,
+    keksdose's rule, auth §3.2): an answer about ANOTHER person carries ``first_name`` and
+    ``last_name`` and no ``display_name``; the page formats the name in the reader's language.
+    Everything else is :class:`AdminUserRow`'s — the ``UserResponse`` core, the derived
+    ``name_incomplete``, the admin's columns and ``extra``. An app's row subclasses it in
+    place of :class:`AdminUserRow` (``UserAdminDeps.row_model``); the kit takes either.
     """
 
-    #: Never read, never answered, not in the schema (0.17.0): see above.
+    #: Never read, never answered, not in the schema (0.17.0): where the person's device last
+    #: was is no roster's (:class:`AdminUserRow`).
     device_timezone: SkipJsonSchema[Annotated[None, BeforeValidator(_discard)]] = Field(default=None, exclude=True)
     #: ``None``: never signed in (or not since the column shipped) — "never", not "0
     #: days ago". kastlan's comes from its session rows, account-wide (§3.2).
@@ -152,6 +151,28 @@ class AdminUserRow(UserResponse):
     #: …limited to these areas; ``None`` = every area.
     translation_review_areas: list[str] | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def name_incomplete(self) -> bool:
+        """Either part empty — the app shows ``CompleteNameDialog`` after sign-in (§3.3)."""
+        return name_incomplete(self.first_name, self.last_name, is_demo=self.name_completion_exempt())
+
+
+class AdminUserRow(AdminUserRowBase, UserResponse):
+    """One row of ``GET /admin/users`` (§3.2): the auth contract's ``UserResponse`` core —
+    with its derived ``display_name`` and ``name_incomplete`` — plus what the admin page
+    shows. Reads an ORM row (``from_attributes``).
+
+    ``extra`` holds the app's own columns: keksdose's plan and key custody,
+    Kurvenschmiede's owned counts; kastlan's companies only in the PLATFORM list — a
+    company's list never names another company (§3.2). Attributes and counts, never
+    content (keksdose's roster rule).
+
+    The person's device zone (``UserResponse.device_timezone``) is NOT on the row (0.17.0):
+    it is where their device last was — their own data, a location signal the roster has
+    no use for. The row reads an account that has it and never answers it.
+    """
 
 
 class UserListResponse[RowT = AdminUserRow](BaseModel):

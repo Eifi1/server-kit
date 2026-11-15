@@ -48,6 +48,7 @@ from eifi1_server_kit.user_admin.schemas import (
     AdminActionPage,
     AdminActionRow,
     AdminUserRow,
+    AdminUserRowBase,
     ErasureResult,
     MailBackendInfo,
     MailRequest,
@@ -111,7 +112,9 @@ class UserAdminDeps:
     #: ``POST /users/{id}/role {role}``, logged ``{added, removed}``.
     role_sets: bool = False
     # The app's answers and bodies (subclasses of the kit's).
-    row_model: type[AdminUserRow] = AdminUserRow
+    #: The roster's row: an :class:`AdminUserRow` subclass, or (0.32) an
+    #: :class:`AdminUserRowBase` one, which answers no ``display_name`` (auth §3.2).
+    row_model: type[AdminUserRowBase] = AdminUserRow
     action_row_model: type[AdminActionRow] = AdminActionRow
     attention_model: type[AdminAttention] = AdminAttention
     erasure_result_model: type[ErasureResult] = ErasureResult
