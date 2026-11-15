@@ -684,6 +684,26 @@ async def test_the_erasure_runs_on_the_sql_stores_and_answers_the_files_nobody_e
     assert comment.user_id is None and "Ada Lovelace" not in comment.body
 
 
+async def test_keys_in_use_spares_another_living_uploader_s_copy_of_an_erased_file(world: World) -> None:
+    """Kurvenschmiede's review of 0.32.0.dev4: the erasure's keys count the reports only, so
+    the same bytes uploaded by somebody else and not filed yet (a day's wait, the sweep's)
+    lost their object. ``keys_in_use`` answers the keys an upload row of a living account
+    still holds; an erased person's rows (``user_id`` gone) hold nothing."""
+    service = world.service()
+    shared = await upload(world.storage, world.author, "shared")
+    own = await upload(world.storage, world.author, "own")
+    await service.create(world.author, FeedbackCreate(title="Mine", screenshot_url=shared, attachment_urls=[own]))
+    data = await world.objects.read(world.storage.object_key(POLICY.key_of(shared) or ""))
+    await world.storage.save(data, check_upload(data, "text/plain"), uploader=world.other, filename=None)
+    erased = await service.erase_author(world.author.id, [world.author.email])
+    assert set(erased.keys) == {POLICY.key_of(shared), POLICY.key_of(own)}
+    await world.session.execute(
+        update(FeedbackAttachment).where(FeedbackAttachment.user_id == world.author.id).values(user_id=None)
+    )
+    assert await world.storage.keys_in_use(erased.keys) == {POLICY.key_of(shared)}
+    assert await world.storage.keys_in_use(()) == set()
+
+
 async def test_a_deleted_comment_s_file_is_answered_when_nothing_else_names_it(world: World) -> None:
     service = world.service()
     row = await service.create(world.author, FeedbackCreate(title="Commented"))

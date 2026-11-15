@@ -2718,6 +2718,20 @@ recipe is the account layer's:
    against your stores, as `tests/sql_tables.py` does here; on PostgreSQL too if you can, as
    `tests/test_sql_on_postgresql.py` shows (opt-in through `EIFI1_TEST_POSTGRES_URL`).
 
+5. **The erasure's files** (0.32): set `AuthHooks.purge_files`, or an erased person's files
+   stay in the store (the erasure logs a WARNING). The keys it is handed count what the
+   reports name, not the uploads: ask `SqlAttachmentStorage.keys_in_use(keys)` on a session
+   of its own (the hook runs after the commit) and purge the rest, so the same bytes another
+   person uploaded and has not filed yet keep their object:
+
+   ```python
+   async def purge_files(keys: Sequence[str]) -> None:
+       async with sessions() as session:
+           storage = SqlAttachmentStorage(session, Upload, objects=store, reports=Feedback)
+           held = await storage.keys_in_use(keys)
+       await purge_objects(store, [storage.object_key(k) for k in keys if k not in held], reason="erasure")
+   ```
+
 What stays the app's: sealing a column (override it with your own type), a tenant's row
 filter, and the mails a reply or a comment sends (the stores fire the ports' notices; the app's
 `FeedbackAlerts` words and sends them).

@@ -151,6 +151,12 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
   (`deleted_group_names(ids)`, the name a `group_delete` row kept), on `SqlAdminActionLog` and
   `InMemoryAdminActionLog`.
 
+* **feedback.sql (Kurvenschmiede's review of 0.32.0.dev4):** `SqlAttachmentStorage.keys_in_use(keys)`,
+  the keys an upload row of a living account still holds. An erasure's keys count what the
+  reports name, not the uploads, so the same bytes another person uploaded and has not filed
+  yet would lose their content-addressed object; an app's `AuthHooks.purge_files` asks it
+  before `purge_objects` (README, "Adopting the feedback and translation review tables").
+
 ### Changed
 
 * **auth (keksdose's KG-11):** `POST /auth/logout` carries the app's `demo_guard` ("signing out
