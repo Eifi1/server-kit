@@ -843,7 +843,7 @@ a link's secret.
 | `POST /auth/passkey/login/finish` | `token_model` or `challenge_model` | `passkey_refused` (401) | `login` (IP) |
 | `GET /auth/passkeys`, `PATCH` / `DELETE /auth/passkeys/{passkey_id}` | `[PasskeyResponse]`, `PasskeyResponse`, 204 | `passkey_not_found` | — |
 | `GET /admin/invitations` | `[invitation_row_model]`, the accepted ones too with `list_accepted_invitations` (0.32) | `admin_required` | — |
-| `POST /admin/invitations`, `POST /admin/invitations/{id}/resend` | 201 / 200 `invitation_issued_model` (`link` on the console only; `resent` on a re-send and where `reuse_open_invitations` re-used the address's row, which then takes the new request's language, note and inviter, 0.32) | `invitation_scope_invalid`, `invitation_not_found`, `invitation_closed` | `verification_resend` (recipient) |
+| `POST /admin/invitations`, `POST /admin/invitations/{id}/resend` | 201 / 200 `invitation_issued_model` (`link` on the console only; `resent` on a re-send and where `reuse_open_invitations` re-used the address's row, which then takes the new request's language, note and inviter, 0.32); logged `invite` / `invite_resend` with `sent` after the commit and the mail (0.32), as the admin's mails are | `invitation_scope_invalid`, `invitation_not_found`, `invitation_closed` | `verification_resend` (recipient) |
 | `DELETE /admin/invitations/{id}` | 204 (also when revoked before) | `invitation_not_found`, `invitation_closed` | — |
 
 "Bearer" is `401 not_signed_in` (with `WWW-Authenticate: Bearer`) without a usable access

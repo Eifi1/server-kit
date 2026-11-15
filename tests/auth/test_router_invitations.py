@@ -137,7 +137,7 @@ async def test_an_admin_invites_and_the_mail_goes_after_the_commit(world: World)
     assert mail.message.subject == "Invitation à Staunlabor" and "/register?invite=" in world.mailer.link("invitation")
     (row,) = world.log.rows
     assert (row.action, row.actor_id, row.target_email) == ("invite", admin.id, "bob@example.com")
-    assert row.detail == {"invitation_id": body["id"], "role": "MEMBER"}
+    assert row.detail == {"invitation_id": body["id"], "role": "MEMBER", "sent": True}
     raw = world.mailer.token("invitation")
     check = await world.call("POST", "/auth/invitations/check", json={"token": raw})
     assert check.json()["email"] == "bob@example.com"
@@ -550,3 +550,28 @@ async def test_a_re_invitation_takes_the_new_request_s_language_note_and_inviter
             "a re-send keeps them"
         )
         assert first_admin.id != second_admin.id
+
+
+async def test_the_invitation_rows_record_whether_the_mail_went_after_it_was_sent(world: World) -> None:
+    """``invite`` and ``invite_resend`` log ``sent`` (0.32), as the admin's mails do: written
+    after the commit and the send, so the row says what happened."""
+    _, token = await admin_token(world)
+    logged_at_send: list[int] = []
+    send = world.mailer.send
+
+    async def sending(to: str, message: Any, *, kind: str = "other") -> bool:
+        logged_at_send.append(len(world.log.rows))
+        return await send(to, message, kind=kind)
+
+    world.mailer.send = sending  # type: ignore[method-assign]
+    made = (
+        await world.call("POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER"})
+    ).json()
+    world.mailer.works = False
+    resent = (await world.call("POST", f"/admin/invitations/{made['id']}/resend", token=token)).json()
+    assert (made["sent"], resent["sent"]) == (True, False)
+    assert [(row.action, row.detail) for row in world.log.rows] == [
+        ("invite", {"invitation_id": made["id"], "role": "MEMBER", "sent": True}),
+        ("invite_resend", {"invitation_id": made["id"], "role": "MEMBER", "sent": False}),
+    ]
+    assert logged_at_send == [0, 1], "each row is written after its mail"

@@ -24,6 +24,12 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Added
 
+* **auth (keksdose's move onto the admin's invitation routes):** the `invite` and
+  `invite_resend` rows record `sent`, whether the mail went out, after their other keys
+  (`invitation_id`, `role`, a caller's `team_role`, …), so ui-kit's log reader says "Mail not
+  sent". As the admin's mails log `{sent}`: the invitation is committed (`commit_now`), mailed,
+  and then its row written, in the request's transaction after that commit.
+
 * **auth (keksdose's move onto the admin's invitation routes): a re-invitation is the new
   request's.** With `reuse_open_invitations`, the address's re-used row (an expired one too) takes
   the new request's language (the body's, else the admin's, as a new one), its note, and the

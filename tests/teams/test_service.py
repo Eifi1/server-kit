@@ -264,7 +264,7 @@ async def test_an_address_with_no_account_is_invited_into_the_team_in_the_invite
     assert team.version == 2, "an invitation into the team moves its version"
     row = world.last()
     assert (row.action, row.target_email, row.target_group_id) == ("invite", "new@example.com", team.id)
-    assert row.detail == {"invitation_id": invitation.id, "role": "MEMBER", "team_role": "manager"}
+    assert row.detail == {"invitation_id": invitation.id, "role": "MEMBER", "team_role": "manager", "sent": True}
     (mail,) = world.mailer.sent
     assert mail.to == "new@example.com" and "Rig" in mail.message.text, "the mail names the team"
 

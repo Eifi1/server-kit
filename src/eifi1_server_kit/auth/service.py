@@ -1747,7 +1747,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         detail: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """``POST /admin/invitations`` (user-admin §5): an invitation to an address, in the
-        invitee's language, logged as ``invite``; the mail after the commit. ``show_link``:
+        invitee's language; the mail after the commit, then the ``invite`` row with ``sent``
+        (0.32, as the admin's mails log it). ``show_link``:
         the console transport's shown-once link (§12.5 item 11). A ``scope`` goes through the
         ``invitation_scope`` hook, else it is refused.
 
@@ -1793,8 +1794,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             )
         )
         group = await self._group_of(invitation)
-        await self._record(AdminAction.INVITE, admin, invitation, now, group, detail)
         link, sent = await self._mail_invitation(invitation, raw, group, admin)
+        await self._record(AdminAction.INVITE, admin, invitation, now, group, {**(detail or {}), "sent": sent})
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def _closed_or_found(self, invitation_id: int) -> InvT:
@@ -1815,8 +1816,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
     async def _send_again(
         self, admin: UserT, invitation: InvT, *, show_link: bool, renewed: Mapping[str, Any] | None = None
     ) -> dict[str, Any]:
-        """A new token and 14 more days for an unspent invitation, the old link dead, logged
-        as ``invite_resend``: the re-send, and a reused invitation (0.31), which takes the
+        """A new token and 14 more days for an unspent invitation, the old link dead, mailed
+        after the commit and then logged as ``invite_resend`` with ``sent`` (0.32): the re-send, and a reused invitation (0.31), which takes the
         ``renewed`` fields of its new request (0.32: ``locale``, ``note``,
         ``invited_by_user_id``); a re-send keeps the row's own. Charged by the caller."""
         now = self._now()
@@ -1825,8 +1826,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             invitation, token_hash=digest, expires_at=now + INVITE_TTL, **(renewed or {})
         )
         group = await self._group_of(invitation)
-        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group)
         link, sent = await self._mail_invitation(invitation, raw, group, admin)
+        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group, {"sent": sent})
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link, resent=True)
 
     async def revoke_invitation(self, admin: UserT, invitation_id: int) -> None:

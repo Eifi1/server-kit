@@ -158,11 +158,20 @@ async def test_an_invitation_may_come_with_its_scope_decided_and_more_detail_on_
     )
     invitation = world.invitations.rows[issued["id"]]
     assert invitation.scope == {"team_id": 3, "team_role": "manager"} and asked == []
-    assert world.log.rows[-1].detail == {"invitation_id": invitation.id, "role": "MEMBER", "team_role": "manager"}
+    assert world.log.rows[-1].detail == {
+        "invitation_id": invitation.id,
+        "role": "MEMBER",
+        "team_role": "manager",
+        "sent": True,
+    }
     await service.create_invitation(
         admin, InvitationCreate(email="two@example.com", role="MEMBER", scope=4), show_link=False
     )
-    assert asked == [4] and world.log.rows[-1].detail == {"invitation_id": invitation.id + 1, "role": "MEMBER"}
+    assert asked == [4] and world.log.rows[-1].detail == {
+        "invitation_id": invitation.id + 1,
+        "role": "MEMBER",
+        "sent": True,
+    }
     with pytest.raises(ValueError, match="scope"):
         await service.create_invitation(
             admin, InvitationCreate(email="three@example.com", role="MEMBER", scope=4), show_link=False, scope={}
