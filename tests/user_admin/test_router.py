@@ -3,7 +3,7 @@ roster, the four actions, the reviewer scope, the log, the overview, the mail ro
 operator's erasure, over HTTP (user-admin §3–§6, admin §2.4, §9.2)."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +12,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
 from eifi1_server_kit.auth import OneTimeTokenKind
+from eifi1_server_kit.auth.ports import TwoFactorState
 from eifi1_server_kit.auth.router import invitations_admin_router
 from eifi1_server_kit.auth.service import AuthHooks, SessionsEndedReason
 from eifi1_server_kit.user_admin import (
@@ -22,6 +23,7 @@ from eifi1_server_kit.user_admin import (
     admin_action_record,
 )
 from eifi1_server_kit.user_admin.service import AdminPolicy, UserAdminHooks
+from eifi1_server_kit.user_admin.testing import InMemoryRosterStore
 from tests.auth._world import PASSWORD
 from tests.auth_fakes import MemoryUser
 from tests.user_admin._admin_world import AdminWorld
@@ -93,6 +95,143 @@ async def test_an_app_draws_its_own_row() -> None:
         _, token = await world.admin_token()
         answer = (await world.call("GET", "/admin/users", token=token)).json()
         assert answer["users"][0]["plan"] == "pro"
+
+
+async def test_an_app_s_row_on_the_base_answers_the_names_without_a_display_name() -> None:
+    """keksdose's rule (auth §3.2): an answer about ANOTHER person carries first and last name
+    and no formatted ``display_name``; a row on ``AdminUserRowBase`` leaves it out of the
+    answer and the schema, and the kit's ``AdminUserRow`` still has it."""
+    from eifi1_server_kit.user_admin import AdminUserRowBase
+
+    class Row(AdminUserRowBase):
+        plan: str | None = None
+
+    world = AdminWorld(admin={"row_model": Row})
+    async with world.client:
+        _, token = await world.admin_token(first_name="Ada", last_name="")
+        (row,) = (await world.call("GET", "/admin/users", token=token)).json()["users"]
+        assert (row["first_name"], row["last_name"], row["name_incomplete"]) == ("Ada", "", True)
+        assert "display_name" not in row and "email_verified" in row and "totp_enabled" in row
+        schema = world.app.openapi()["components"]["schemas"]
+        assert "display_name" not in schema["Row"]["properties"]
+        assert "name_incomplete" in schema["Row"]["properties"]
+        changed = await world.call(
+            "POST",
+            f"/admin/users/{world.account().id}/role",
+            token=token,
+            json={"role": "MEMBER", "acknowledged": True},
+        )
+        assert changed.status_code == 200 and "display_name" not in changed.json()
+
+    plain = AdminWorld()
+    async with plain.client:
+        _, token = await plain.admin_token()
+        (row,) = (await plain.call("GET", "/admin/users", token=token)).json()["users"]
+        assert "display_name" in row
+        assert "display_name" in plain.app.openapi()["components"]["schemas"]["AdminUserRow"]["properties"]
+
+
+class KeksdoseSummary(BaseModel):
+    """keksdose's install-wide counts (a few of them), the kit's ``active_admins`` among them."""
+
+    active_admins: int
+    total: int
+    by_plan: dict[str, int]
+
+
+async def test_the_app_adds_its_own_counts_to_the_roster_s_summary_and_types_them() -> None:
+    """keksdose's roster summary: the app's install-wide counts beside the kit's, the kit's
+    ``active_admins`` never overridden, and the OpenAPI types them with ``summary_model``."""
+    world = AdminWorld(admin={"summary_model": KeksdoseSummary})
+    async with world.client:
+        asked: list[int] = []
+
+        async def summary(admin: MemoryUser) -> dict[str, Any]:
+            asked.append(admin.id)
+            return {"total": 7, "by_plan": {"free": 5, "pro": 2}, "active_admins": 99}
+
+        world.admin_hooks = UserAdminHooks(summary=summary)
+        admin, token = await world.admin_token()
+        answer = (await world.call("GET", "/admin/users?q=nobody", token=token)).json()
+        assert answer["summary"] == {"active_admins": 1, "total": 7, "by_plan": {"free": 5, "pro": 2}}
+        assert asked == [admin.id]
+        schema = world.app.openapi()["components"]["schemas"]
+        listed = next(name for name in schema if name.startswith("UserListResponse"))
+        summary_field = schema[listed]["properties"]["summary"]
+        assert {"$ref": "#/components/schemas/KeksdoseSummary"} in summary_field["anyOf"]
+
+    plain = AdminWorld()
+    async with plain.client:
+        _, token = await plain.admin_token()
+        assert (await plain.call("GET", "/admin/users", token=token)).json()["summary"] == {"active_admins": 1}
+
+
+def test_a_summary_model_without_the_kit_s_active_admins_is_refused() -> None:
+    class Counts(BaseModel):
+        total: int
+
+    with pytest.raises(ValueError, match="active_admins"):
+        AdminWorld(admin={"summary_model": Counts})
+
+
+class KeksdoseFilters(BaseModel):
+    """keksdose's roster filters beside the kit's query."""
+
+    plan: str | None = None
+    privacy_mode: str | None = None
+    created_from: date | None = None
+    created_to: date | None = None
+
+
+async def test_the_roster_takes_the_app_s_own_filters_and_hands_them_to_its_store() -> None:
+    """keksdose's plan, privacy mode and dates: ``roster_query_model`` adds them to ``GET
+    /admin/users`` alone, and the store's ``page`` gets them as ``filters``."""
+    seen: list[Any] = []
+
+    class FilteringRoster(InMemoryRosterStore):
+        async def page(self, query: Any, *, admin_role: str, reviewer_role: str | None, filters: Any = None) -> Any:
+            seen.append(filters)
+            rows, _ = await super().page(query, admin_role=admin_role, reviewer_role=reviewer_role, filters=filters)
+            kept = [row for row in rows if filters is None or filters.plan is None or row.first_name == filters.plan]
+            return kept, len(kept)
+
+    world = AdminWorld(admin={"roster_query_model": KeksdoseFilters})
+    world.roster = FilteringRoster(world.users.rows)
+    async with world.client:
+        _, token = await world.admin_token(first_name="free")
+        world.account(email="pro@example.com", first_name="pro")
+        response = await world.call(
+            "GET", "/admin/users?plan=pro&created_from=2026-11-01&sort=name&limit=10", token=token
+        )
+        assert response.status_code == 200, response.text
+        assert [row["email"] for row in response.json()["users"]] == ["pro@example.com"]
+        assert seen == [KeksdoseFilters(plan="pro", created_from=date(2026, 11, 1))]
+        bad = await world.call("GET", "/admin/users?created_from=soon", token=token)
+        assert bad.status_code == 422
+        paths = world.app.openapi()["paths"]
+        names = {param["name"] for param in paths["/api/v1/admin/users"]["get"]["parameters"]}
+        assert {"limit", "q", "role", "state", "plan", "privacy_mode", "created_from", "created_to"} <= names
+        attention = {param["name"] for param in paths["/api/v1/admin/attention"]["get"].get("parameters", [])}
+        assert "plan" not in attention, "only the roster's own route takes the filters"
+
+
+async def test_without_a_filter_model_a_store_without_filters_still_runs(world: AdminWorld) -> None:
+    class OldRoster(InMemoryRosterStore):
+        async def page(self, query: Any, *, admin_role: str, reviewer_role: str | None) -> Any:  # type: ignore[override]
+            return await super().page(query, admin_role=admin_role, reviewer_role=reviewer_role)
+
+    world.roster = OldRoster(world.users.rows)
+    _, token = await world.admin_token()
+    response = await world.call("GET", "/admin/users?plan=pro", token=token)
+    assert response.status_code == 200 and response.json()["total"] == 1
+
+
+def test_a_filter_model_naming_a_kit_parameter_is_refused() -> None:
+    class Clash(BaseModel):
+        q: str | None = None
+
+    with pytest.raises(ValueError, match="'q'"):
+        AdminWorld(admin={"roster_query_model": Clash})
 
 
 # ── deactivate and reactivate ───────────────────────────────────────────────
@@ -290,13 +429,22 @@ async def test_a_forced_password_change_ends_every_session_and_is_withdrawn(worl
     assert world.log.actions() == ["password_change_require", "password_change_withdraw"]
 
 
-async def test_a_deactivated_account_may_be_required_a_new_password_for_its_return(world: AdminWorld) -> None:
+async def test_a_deactivated_account_is_refused_a_forced_password_change(world: AdminWorld) -> None:
+    """keksdose (0.32): the admin's mails' refusal, ``account_inactive``; nothing changed or
+    logged, no session ended."""
     _, token = await world.admin_token()
     user = world.account(is_active=False)
+    ended: list[str] = []
+
+    async def sessions_ended(account: MemoryUser, reason: SessionsEndedReason) -> None:
+        ended.append(reason)
+
+    world.hooks = AuthHooks(sessions_ended=sessions_ended)
     response = await world.call(
         "POST", f"/admin/users/{user.id}/password-change", token=token, json={"acknowledged": True}
     )
-    assert response.status_code == 200 and user.password_change_required_at is not None
+    assert (response.status_code, code(response)) == (409, "account_inactive")
+    assert user.password_change_required_at is None and world.log.rows == [] and ended == []
 
 
 async def test_an_app_raises_a_level_for_an_account(world: AdminWorld) -> None:
@@ -404,14 +552,25 @@ async def test_the_reviewer_scope_sets_the_role_with_its_locales_and_takes_it_aw
     }
     assert (user.role, user.translation_review_locales) == ("REVIEWER", ["de-CH", "fr"])
     (row,) = world.log.rows
-    assert (row.action, row.detail) == ("reviewer", {"locales": ["de-CH", "fr"], "areas": ["feedback"]})
+    assert (row.action, row.detail) == (
+        "reviewer",
+        {"from": {"locales": [], "areas": None}, "to": {"locales": ["de-CH", "fr"], "areas": ["feedback"]}},
+    ), "the scope before and after (0.32)"
     await world.call("PUT", path, token=token, json={"locales": ["fr", "de-CH"], "areas": ["feedback"]})
     assert len(world.log.rows) == 1, "no change, no row"
     moved = await world.call("PUT", path, token=token, json={"locales": ["it"]})
     assert moved.json()["role"] == "REVIEWER" and moved.json()["areas"] is None and len(world.log.rows) == 2
+    assert world.log.rows[1].detail == {
+        "from": {"locales": ["de-CH", "fr"], "areas": ["feedback"]},
+        "to": {"locales": ["it"], "areas": None},
+    }
     gone = await world.call("PUT", path, token=token, json={"locales": [], "areas": ["auth"]})
     assert gone.json() == {"user_id": user.id, "role": "MEMBER", "locales": [], "areas": None}
     assert (user.translation_review_locales, user.translation_review_areas) == (None, None)
+    assert world.log.rows[2].detail == {
+        "from": {"locales": ["it"], "areas": None},
+        "to": {"locales": [], "areas": None},
+    }
 
 
 async def test_a_member_given_no_locales_stays_a_member_and_nothing_is_logged(world: AdminWorld) -> None:
@@ -757,3 +916,108 @@ async def test_the_admin_routes_share_the_account_routes_window(world: AdminWorl
     world.app.state.auth_limiters = AuthLimiters(requests=Budget(1, 60))
     assert (await world.call("GET", "/admin/users", token=token)).status_code == 200
     assert (await world.call("GET", "/admin/actions", token=token)).status_code == 429
+
+
+async def test_the_roster_asks_the_app_for_its_rows_in_one_batch(world: AdminWorld) -> None:
+    """Kurvenschmiede's G13 (0.32): ``to_rows`` answers a page's rows at once, so the app's
+    own columns (its subscriptions) are one query, not one per row; a single action's row is
+    a batch of one."""
+    batches: list[int] = []
+
+    async def to_rows(users: Any) -> list[AdminUserRow]:
+        batches.append(len(users))
+        return [
+            AdminUserRow.model_validate(user, from_attributes=True).model_copy(
+                update={"email_verified": user.email_verified_at is not None}
+            )
+            for user in users
+        ]
+
+    world.admin_hooks = UserAdminHooks(to_rows=to_rows)
+    _, token = await world.admin_token()
+    people = [world.account(email=f"p{n}@example.org") for n in range(3)]
+    listed = (await world.call("GET", "/admin/users?limit=50", token=token)).json()
+    assert batches == [len(listed["users"])] and len(listed["users"]) >= 3
+    await world.call("POST", f"/admin/users/{people[0].id}/password-change", token=token, json={"acknowledged": True})
+    assert batches[-1] == 1
+
+
+async def test_a_batch_that_answers_another_number_of_rows_is_refused(world: AdminWorld) -> None:
+    async def to_rows(users: Any) -> list[AdminUserRow]:
+        return []
+
+    world.admin_hooks = UserAdminHooks(to_rows=to_rows)
+    _, token = await world.admin_token()
+    with pytest.raises(ValueError, match="to_rows"):
+        await world.call("GET", "/admin/users", token=token)
+
+
+async def test_the_hooks_add_their_counts_to_the_rows_of_the_session_ends(world: AdminWorld) -> None:
+    """keksdose's KG-7 (0.32): what ``sessions_ended`` and ``activating`` answer joins the
+    deactivate, password-change and reactivate rows' detail (its API-token counts)."""
+    from eifi1_server_kit.user_admin.service import UserAdminHooks
+
+    _, token = await world.admin_token()
+    user = world.account(email="ada@example.com")
+
+    async def sessions_ended(account: MemoryUser, reason: SessionsEndedReason) -> dict[str, int]:
+        return {"revoked_api_token_count": 2} if reason == "deactivated" else {"live_api_token_count": 1}
+
+    async def activating(admin: MemoryUser, target: MemoryUser) -> dict[str, int]:
+        return {"resumed_subscriptions": 1}
+
+    world.hooks = AuthHooks(sessions_ended=sessions_ended)
+    world.admin_hooks = UserAdminHooks(activating=activating)
+    path = f"/admin/users/{user.id}/active"
+    await world.call("POST", path, token=token, json={"active": False, "confirm_email": "ada@example.com"})
+    await world.call("POST", path, token=token, json={"active": True, "acknowledged": True})
+    await world.call("POST", f"/admin/users/{user.id}/password-change", token=token, json={"acknowledged": True})
+    assert [(row.action, dict(row.detail)) for row in world.log.rows] == [
+        ("deactivate", {"sessions_ended": True, "revoked_api_token_count": 2}),
+        ("reactivate", {"resumed_subscriptions": 1}),
+        ("password_change_require", {"sessions_ended": True, "live_api_token_count": 1}),
+    ]
+
+
+# --- the second factor's reset (0.32, Marcel 2026-11-14) ------------------------------------------
+
+
+async def test_an_admin_switches_off_another_account_s_second_factor_and_it_is_told() -> None:
+    world = AdminWorld(two_factor=True)
+    async with world.client:
+        admin, token = await world.admin_token()
+        user = world.account()
+        world.two_factor_store.states[user.id] = TwoFactorState(
+            enabled=True, secret="enc:v1:x", last_step=1, backup_codes=("digest",)
+        )
+        rows = (await world.call("GET", "/admin/users", token=token)).json()["users"]
+        assert {row["id"]: row["totp_enabled"] for row in rows} == {admin.id: False, user.id: True}
+        path = f"/admin/users/{user.id}/two-factor-reset"
+        dropped = await world.call("POST", path, token=token)
+        assert (dropped.status_code, code(dropped)) == (409, "confirmation_required")
+        before = world.after.commits
+        response = await world.call("POST", path, token=token, json={"acknowledged": True})
+        assert response.status_code == 200 and response.json()["totp_enabled"] is False
+        assert world.two_factor_store.states[user.id] == TwoFactorState()
+        assert world.log.actions() == ["two_factor_reset"]
+        (mail,) = world.mailer.of("two_factor_reset_notice")
+        assert mail.to == user.email and mail.after_commits > before, "told after the commit"
+        # Off already: nothing changes, no row, no mail.
+        await world.call("POST", path, token=token, json={"acknowledged": True})
+        assert world.log.actions() == ["two_factor_reset"] and len(world.mailer.of("two_factor_reset_notice")) == 1
+        # Never one's own: settings or a backup code.
+        world.two_factor_store.states[admin.id] = TwoFactorState(enabled=True, secret="enc:v1:y")
+        own = await world.call(
+            "POST", f"/admin/users/{admin.id}/two-factor-reset", token=token, json={"acknowledged": True}
+        )
+        assert (own.status_code, code(own)) == (409, "self_action")
+        assert (await world.call("GET", "/admin/users", token=token)).json()["levels"][
+            "two_factor_reset"
+        ] == "acknowledge"
+
+
+async def test_without_the_second_factor_there_is_no_reset_route(world: AdminWorld) -> None:
+    _, token = await world.admin_token()
+    user = world.account()
+    path = f"/admin/users/{user.id}/two-factor-reset"
+    assert (await world.call("POST", path, token=token, json={"acknowledged": True})).status_code == 404

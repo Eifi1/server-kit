@@ -246,6 +246,27 @@ async def test_the_never_list_takes_the_app_s_demo_guard_and_the_service_s_own()
         assert response.status_code == 403 and code(response) == "demo_refused"
 
 
+async def test_the_demo_guard_covers_signing_out_everywhere_too() -> None:
+    """keksdose's KG-11 (0.32): a demo session may end itself (DELETE /sessions/current) but
+    not sign out everywhere; keksdose refuses it at /logout, as at the password, address,
+    passkey, deletion and export routes the guard already covers."""
+    world: World
+
+    def not_in_the_demo(what: str) -> Any:
+        async def check(user: Annotated[Any, Depends(current_user(world.deps))]) -> None:
+            refuse_demo(getattr(user, "is_demo", False), what)
+
+        return check
+
+    world = World(cutoff=True, demo_guard=not_in_the_demo)
+    async with world.client:
+        demo = world.account(is_demo=True)
+        token = await world.token_of(demo)
+        refused = await world.call("POST", "/auth/logout", token=token)
+        assert refused.status_code == 403 and code(refused) == "demo_refused"
+        assert (await world.call("DELETE", "/auth/sessions/current", token=token)).status_code == 204
+
+
 async def test_every_account_and_admin_route_shares_one_window_per_address() -> None:
     """0.31 (Staunlabor's pilot): /me, the sessions, the passkey sign-in's begin and the
     admin's lists had no window of their own; one per address now bounds them all."""
@@ -264,3 +285,35 @@ async def test_every_account_and_admin_route_shares_one_window_per_address() -> 
         world.app.state.auth_limiters = AuthLimiters(requests=None)
         for _ in range(5):
             assert (await world.call("GET", "/auth/me", token=token)).status_code == 200
+
+
+async def test_password_changing_may_refuse_with_the_app_s_own_code() -> None:
+    """keksdose's KG-6 (0.32): its private mode refuses a change with its own 409s
+    (``wrap_required``, ``wrap_unchanged``, ``no_wrap``), through its own error and handler;
+    the kit lets the hook's exception pass, and the extras ride on both answers (0.29)."""
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    class PrivateModeError(Exception):
+        def __init__(self, code: str) -> None:
+            self.code = code
+
+    world = World()
+
+    async def handler(request: Request, exc: Exception) -> JSONResponse:
+        assert isinstance(exc, PrivateModeError)
+        return JSONResponse({"detail": "Re-seal your key", "code": exc.code}, status_code=409)
+
+    world.app.add_exception_handler(PrivateModeError, handler)
+    async with world.client:
+        user = world.account()
+        token = await world.token_of(user)
+
+        async def password_changing(account: MemoryUser, body: Any) -> dict[str, Any]:
+            raise PrivateModeError("wrap_required")
+
+        world.hooks = AuthHooks(password_changing=password_changing)
+        body = {"current_password": PASSWORD, "new_password": "a new password"}
+        refused = await world.call("POST", "/auth/me/password", token=token, json=body)
+        assert (refused.status_code, refused.json()["code"]) == (409, "wrap_required")
+        assert user.password_hash == f"hashed:{PASSWORD}"

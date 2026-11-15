@@ -3,7 +3,9 @@ check passes on the stores, and each fails on a store that breaks one."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -26,6 +28,7 @@ from eifi1_server_kit.auth.ports import (
     PasswordHasher,
     SessionStore,
     TokenSigner,
+    TwoFactorState,
     UserStore,
 )
 from eifi1_server_kit.auth.testing import (
@@ -38,6 +41,7 @@ from eifi1_server_kit.auth.testing import (
     InMemoryOneTimeTokenStore,
     InMemoryPasskeyStore,
     InMemorySessionStore,
+    InMemoryTwoFactorStore,
     InMemoryUserStore,
     MemoryAccountRow,
     MemoryAdminActionRow,
@@ -54,7 +58,9 @@ from eifi1_server_kit.auth.testing import (
     check_one_time_token_store,
     check_passkey_store,
     check_session_store,
+    check_two_factor_store,
     check_user_store,
+    totp_code,
 )
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.clock import Clock
@@ -502,7 +508,7 @@ async def test_check_invitation_store_fails_on_an_open_for_that_keeps_revoked_on
 
 async def test_check_invitation_store_fails_on_a_listing_with_accepted_ones() -> None:
     class ListsAll(InMemoryInvitationStore):
-        async def listing(self) -> Sequence[MemoryInvitationRow]:
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
             return sorted(self.rows.values(), key=lambda row: (row.created_at, row.id), reverse=True)
 
     with pytest.raises(AssertionError, match="listing: not an accepted invitation"):
@@ -511,8 +517,8 @@ async def test_check_invitation_store_fails_on_a_listing_with_accepted_ones() ->
 
 async def test_check_invitation_store_fails_on_a_listing_that_hides_a_kept_revoked_one() -> None:
     class HidesRevoked(InMemoryInvitationStore):
-        async def listing(self) -> Sequence[MemoryInvitationRow]:
-            return [row for row in await super().listing() if row.revoked_at is None]
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+            return [row for row in await super().listing(accepted=accepted) if row.revoked_at is None]
 
     with pytest.raises(AssertionError, match="listing: a revoked invitation the store keeps is still listed"):
         await check_invitation_store(HidesRevoked(), inviter_id=1, user_id=2)
@@ -520,8 +526,8 @@ async def test_check_invitation_store_fails_on_a_listing_that_hides_a_kept_revok
 
 async def test_check_invitation_store_fails_on_a_listing_without_the_id_tie_break() -> None:
     class OldestFirst(InMemoryInvitationStore):
-        async def listing(self) -> Sequence[MemoryInvitationRow]:
-            return list(reversed(await super().listing()))
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+            return list(reversed(await super().listing(accepted=accepted)))
 
     with pytest.raises(AssertionError, match="listing: newest first, the higher id first on a tie"):
         await check_invitation_store(OldestFirst(now=fixed()), inviter_id=1, user_id=2)
@@ -530,13 +536,46 @@ async def test_check_invitation_store_fails_on_a_listing_without_the_id_tie_brea
 async def test_check_invitation_store_fails_on_a_remint_that_keeps_the_old_link() -> None:
     class KeepsLink(InMemoryInvitationStore):
         async def remint(
-            self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime
+            self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime, **fields: Any
         ) -> MemoryInvitationRow:
             invitation.expires_at = expires_at
             return invitation
 
     with pytest.raises(AssertionError, match="remint: the new token_hash and expires_at read back"):
         await check_invitation_store(KeepsLink(), inviter_id=1, user_id=2)
+
+
+async def test_check_invitation_store_fails_on_a_listing_that_never_shows_accepted_ones() -> None:
+    """0.32: a store whose listing takes ``accepted`` answers the accepted ones with it."""
+
+    class NeverAccepted(InMemoryInvitationStore):
+        async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+            return await super().listing()
+
+    with pytest.raises(AssertionError, match="listing\\(accepted=True\\): the accepted invitation"):
+        await check_invitation_store(NeverAccepted(), inviter_id=1, user_id=2)
+
+
+async def test_check_invitation_store_fails_on_a_remint_that_drops_the_new_fields() -> None:
+    """0.32: a store whose remint takes the re-used invitation's fields writes them."""
+
+    from eifi1_server_kit.auth.ports import UNCHANGED
+
+    class DropsFields(InMemoryInvitationStore):
+        async def remint(
+            self,
+            invitation: MemoryInvitationRow,
+            *,
+            token_hash: str,
+            expires_at: datetime,
+            locale: Any = UNCHANGED,
+            note: Any = UNCHANGED,
+            invited_by_user_id: Any = UNCHANGED,
+        ) -> MemoryInvitationRow:
+            return await super().remint(invitation, token_hash=token_hash, expires_at=expires_at)
+
+    with pytest.raises(AssertionError, match="remint: locale, note"):
+        await check_invitation_store(DropsFields(), inviter_id=1, user_id=2)
 
 
 # ── Passkeys ────────────────────────────────────────────────────────────────
@@ -549,6 +588,35 @@ async def test_check_passkey_store_passes_on_the_memory_store_beside_other_passk
         await check_passkey_store(store, user_id=1, other_user_id=2)
         assert [row.credential_id for row in store.rows.values()] == [b"theirs"]
         assert len(store.spent) == 4
+
+
+# ── The second factor (0.32) ────────────────────────────────────────────────
+
+
+async def test_check_two_factor_store_passes_on_the_memory_store_and_puts_states_back() -> None:
+    store = InMemoryTwoFactorStore()
+    own = TwoFactorState(enabled=True, secret="enc:v1:own", last_step=7)
+    await store.save(1, own)
+    await check_two_factor_store(store, user_id=1, other_user_id=2)
+    assert store.states == {1: own, 2: TwoFactorState()}
+    assert store.locked == [1]
+
+
+async def test_check_two_factor_store_names_a_store_that_drops_a_field() -> None:
+    class Forgetful(InMemoryTwoFactorStore):
+        async def save(self, user_id: int, state: TwoFactorState) -> None:
+            await super().save(user_id, dataclasses.replace(state, pending_secret=None))
+
+    with pytest.raises(AssertionError, match="save: every field reads back"):
+        await check_two_factor_store(Forgetful(), user_id=1, other_user_id=2)
+
+
+def test_totp_code_is_what_an_authenticator_shows() -> None:
+    """RFC 6238 Appendix B's SHA-1 vectors, the last six digits of each."""
+    secret = base64.b32encode(b"12345678901234567890").decode()
+    assert totp_code(secret, now=59) == "287082"
+    assert totp_code(secret, now=1111111109) == "081804"
+    assert totp_code(secret, now=datetime(2033, 5, 18, 3, 33, 20, tzinfo=UTC)) == "279037"
 
 
 async def test_a_credential_id_is_registered_once() -> None:
@@ -884,3 +952,21 @@ async def test_check_session_store_fails_on_a_session_that_starts_idle() -> None
 async def test_check_user_store_runs_with_one_role_only() -> None:
     """An app with a single role passes it as both; the role-change check then has nothing to say."""
     await check_user_store(InMemoryUserStore(), role="member", other_role="member")
+
+
+async def test_check_invitation_store_passes_a_store_on_0_31_s_signatures() -> None:
+    """A store written for 0.31 — ``listing()`` without ``accepted``, ``remint`` without the
+    re-used invitation's fields — still passes: the kit asks those only of a store that takes
+    them (``list_accepted_invitations``, ``reuse_open_invitations``)."""
+
+    class Old(InMemoryInvitationStore):
+        async def listing(self) -> Sequence[MemoryInvitationRow]:  # type: ignore[override]
+            return await super().listing()
+
+        async def remint(  # type: ignore[override]
+            self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime
+        ) -> MemoryInvitationRow:
+            return await super().remint(invitation, token_hash=token_hash, expires_at=expires_at)
+
+    # The port's 0.32 signatures are wider; at run time the check asks only what Old takes.
+    await check_invitation_store(Old(), inviter_id=1, user_id=2)  # type: ignore[arg-type]

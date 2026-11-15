@@ -19,6 +19,8 @@ app writes the same nine tables again, and the copies drift the way the routes d
   budget) and opaque to the kit.
 * :class:`PasskeyColumns` and :class:`SpentChallengeColumns`: WebAuthn credentials, and the
   challenges already answered, so that each is accepted once.
+* :class:`TwoFactorColumns` (0.32): the second factor's four columns on the account row,
+  keksdose's ``users.totp_*``, for an app with two-factor sign-in.
 * :class:`AdminActionColumns`: the activity log, the fields
   :func:`~eifi1_server_kit.user_admin.admin_action_record` returns, plus ``scope``.
 
@@ -30,8 +32,9 @@ of the invitations table as it is.
 **The stores** implement :mod:`~eifi1_server_kit.auth.ports` over models built from these
 mixins, on the request's ``AsyncSession``: :class:`SqlUserStore`, :class:`SqlSessionStore`,
 :class:`SqlOneTimeTokenStore`, :class:`SqlInvitationStore`, :class:`SqlPasskeyStore`,
-:class:`SqlAdminActionLog`, and :class:`SqlAfterCommit` for the work that waits for the
-commit; and since 0.30 :class:`SqlRosterStore`. Every write flushes and none commits, but :meth:`SqlAfterCommit.commit_now`, the one
+the second factor's :class:`SqlTwoFactorStore` (0.32), :class:`SqlAdminActionLog`, and
+:class:`SqlAfterCommit` for the work that waits for the commit; and since 0.30
+:class:`SqlRosterStore`. Every write flushes and none commits, but :meth:`SqlAfterCommit.commit_now`, the one
 place the port allows it. A store sets only mapped attributes: a value for a column the
 model lacks (a kastlan ``company_id`` on a log without one) is a :class:`ValueError`, never
 a plain attribute the flush silently leaves out.
@@ -58,6 +61,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal, cast
+
+from pydantic import BaseModel
 
 try:
     from sqlalchemy import (
@@ -97,7 +102,16 @@ except ImportError as exc:
         "eifi1_server_kit.auth.sql needs SQLAlchemy: install the kit with its sql extra, eifi1-server-kit[sql]."
     ) from exc
 
-from eifi1_server_kit.auth.ports import ACCOUNT_FIELDS, NewAccount, NewInvitation, NewPasskey, NewSession
+from eifi1_server_kit.auth.ports import (
+    ACCOUNT_FIELDS,
+    UNCHANGED,
+    NewAccount,
+    NewInvitation,
+    NewPasskey,
+    NewSession,
+    TwoFactorState,
+    Unchanged,
+)
 from eifi1_server_kit.auth.schemas import MAX_NAME_LENGTH, MAX_ZONE_LENGTH
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 from eifi1_server_kit.clock import utc_now
@@ -125,7 +139,9 @@ __all__ = [
     "SqlPasskeyStore",
     "SqlRosterStore",
     "SqlSessionStore",
+    "SqlTwoFactorStore",
     "SqlUserStore",
+    "TwoFactorColumns",
     "UtcDateTime",
     "alembic_render_item",
     "prune_account_rows",
@@ -153,7 +169,10 @@ _SID_WIDTH = 64
 
 #: JSON, stored as JSONB on PostgreSQL (indexable, compared by value) and as JSON anywhere
 #: else, so the same model runs the app's tests on SQLite.
-_JSON = JSON().with_variant(JSONB(), "postgresql")
+#: ``None`` is SQL ``NULL``, not JSON ``null`` (0.32, keksdose's finding on dev3): an app's
+#: ``scope IS NULL`` — an RLS policy, a filter — must find the kit's own rows. As
+#: :mod:`eifi1_server_kit.feedback.sql` has it.
+_JSON = JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
 
 
 class UtcDateTime(TypeDecorator[datetime]):
@@ -257,6 +276,23 @@ class SessionCutoffColumn:
     server-kit 0.27's session rows. A new app does without: it ends the rows."""
 
     sessions_invalid_before: Mapped[datetime | None] = mapped_column(_aware(), nullable=True)
+
+
+class TwoFactorColumns:
+    """The second factor on the account row (0.32, keksdose's KG-1 and its ``users.totp_*``):
+    on, the live secret, the pending one, the last accepted step and (0.32) the backup codes'
+    digests (:class:`~eifi1_server_kit.auth.ports.TwoFactorState`). The secrets hold what the app's
+    :class:`~eifi1_server_kit.auth.ports.SecretSeal` makes — never the plaintext — with room
+    for :class:`~eifi1_server_kit.auth.seal.SecretBox`'s 87 characters. The step is a
+    ``BIGINT``, as a count of 30-second steps since 1970. Placed beside :class:`AccountColumns`
+    on the app's account model; :class:`SqlTwoFactorStore` reads and writes them."""
+
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    totp_pending_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    totp_last_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: The backup codes left, each a digest (0.32): a JSON list, ``None`` read as none.
+    totp_backup_codes: Mapped[list[str] | None] = mapped_column(_JSON, nullable=True)
 
 
 class SessionColumns(_PointsAtAccounts):
@@ -519,6 +555,43 @@ class SqlUserStore[UserT: AccountColumns]:
         await self._session.flush()
 
 
+class SqlTwoFactorStore[UserT: TwoFactorColumns]:
+    """:class:`~eifi1_server_kit.auth.ports.TwoFactorStore` over the account model with
+    :class:`TwoFactorColumns` (0.32). ``lock`` reads the row ``FOR UPDATE`` and again from the
+    database (a no-op lock on SQLite, which locks the whole file on a write). An account that
+    does not exist has the empty state, and saving one is a :class:`LookupError`."""
+
+    def __init__(self, session: AsyncSession, model: type[UserT]) -> None:
+        self._session = session
+        self._model = model
+
+    async def state(self, user_id: int, *, lock: bool = False) -> TwoFactorState:
+        if lock:
+            row = await self._session.get(self._model, user_id, with_for_update=True, populate_existing=True)
+        else:
+            row = await self._session.get(self._model, user_id)
+        if row is None:
+            return TwoFactorState()
+        return TwoFactorState(
+            enabled=row.totp_enabled,
+            secret=row.totp_secret,
+            pending_secret=row.totp_pending_secret,
+            last_step=row.totp_last_step,
+            backup_codes=tuple(row.totp_backup_codes or ()),
+        )
+
+    async def save(self, user_id: int, state: TwoFactorState) -> None:
+        row = await self._session.get(self._model, user_id)
+        if row is None:
+            raise LookupError(f"no account {user_id} to save a second factor on")
+        row.totp_enabled = state.enabled
+        row.totp_secret = state.secret
+        row.totp_pending_secret = state.pending_secret
+        row.totp_last_step = state.last_step
+        row.totp_backup_codes = list(state.backup_codes) or None
+        await self._session.flush()
+
+
 class SqlSessionStore[SessionT: SessionColumns]:
     """:class:`~eifi1_server_kit.auth.ports.SessionStore` over a model built from
     :class:`SessionColumns`."""
@@ -666,19 +739,19 @@ class SqlInvitationStore[InvT: InvitationColumns]:
         )
         return list(rows)
 
-    async def listing(self) -> Sequence[InvT]:
+    async def listing(self, *, accepted: bool = False) -> Sequence[InvT]:
         model = self._model
-        rows = await self._session.scalars(
-            select(model).where(model.accepted_at.is_(None)).order_by(model.created_at.desc(), model.id.desc())
-        )
+        query = select(model) if accepted else select(model).where(model.accepted_at.is_(None))
+        rows = await self._session.scalars(query.order_by(model.created_at.desc(), model.id.desc()))
         return list(rows)
 
     async def prune(self, *, before: datetime, now: datetime | None = None) -> int:
         """Delete the invitations that were never accepted and expired or were revoked before
         ``before``, and answer how many. They leave the admin's list (which shows expired and
         revoked ones, :meth:`listing`): one pruned cannot be re-sent, a new one is. An
-        accepted invitation stays, whatever its dates (it records how its account came in),
-        and so does an allow-list entry carried over, which has no expiry. Not on the port;
+        accepted invitation stays, whatever its dates (it records how its account came in, and
+        the list shows it with ``listing(accepted=True)``, 0.32), and so does an allow-list
+        entry carried over, which has no expiry. Not on the port;
         see :func:`prune_account_rows`. Flushes first, commits nothing; ``before`` must have
         passed by ``now`` (``utc_now()`` unless given)."""
         model = self._model
@@ -695,9 +768,24 @@ class SqlInvitationStore[InvT: InvitationColumns]:
         await self._session.flush()
         return row
 
-    async def remint(self, invitation: InvT, *, token_hash: str, expires_at: datetime) -> InvT:
+    async def remint(
+        self,
+        invitation: InvT,
+        *,
+        token_hash: str,
+        expires_at: datetime,
+        locale: str | Literal[Unchanged.UNCHANGED] = UNCHANGED,
+        note: str | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+        invited_by_user_id: int | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+    ) -> InvT:
         invitation.token_hash = token_hash
         invitation.expires_at = expires_at
+        if locale is not UNCHANGED:
+            invitation.locale = locale
+        if note is not UNCHANGED:
+            invitation.note = note
+        if invited_by_user_id is not UNCHANGED:
+            invitation.invited_by_user_id = invited_by_user_id
         await self._session.flush()
         return invitation
 
@@ -728,7 +816,8 @@ class SqlRosterStore[UserT: AccountColumns]:
     erasure job's candidates, people only — ``is_demo`` accounts left out where the model has
     :class:`DemoAccountColumn`; an app with a system account of its own subclasses and narrows
     :meth:`people`, as with :class:`SqlUserStore`. An app that sorts by a column of its own
-    (keksdose's ``plan``) subclasses and widens :meth:`sort_columns`."""
+    (keksdose's ``plan``) subclasses and widens :meth:`sort_columns`, and one with filters of
+    its own (0.32, ``UserAdminDeps.roster_query_model``) answers them in :meth:`filter_clause`."""
 
     def __init__(self, session: AsyncSession, model: type[UserT]) -> None:
         self._session = session
@@ -749,6 +838,13 @@ class SqlRosterStore[UserT: AccountColumns]:
             "created": (model.created_at,),
             "last_login": (model.last_login_at,),
         }
+
+    def filter_clause(self, filters: BaseModel) -> ColumnElement[bool] | None:
+        """The ``WHERE`` clause of the app's own filters (0.32, an instance of
+        ``UserAdminDeps.roster_query_model``: keksdose's plan, privacy mode and dates), AND-ed
+        with the kit's; ``None``, here, for none: the kit's store takes them and ignores them."""
+        del filters
+        return None
 
     def _where(self, *clauses: ColumnElement[bool] | None) -> list[ColumnElement[bool]]:
         return [clause for clause in (self.people(), *clauses) if clause is not None]
@@ -783,7 +879,7 @@ class SqlRosterStore[UserT: AccountColumns]:
         return or_(*(column.ilike(pattern, escape=LIKE_ESCAPE) for column in columns))
 
     async def page(
-        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None
+        self, query: UserListQuery, *, admin_role: str, reviewer_role: str | None, filters: BaseModel | None = None
     ) -> tuple[Sequence[UserT], int]:
         model = self._model
         columns = self.sort_columns()
@@ -794,6 +890,7 @@ class SqlRosterStore[UserT: AccountColumns]:
             None if pattern is None else self._search(pattern),
             model.role.in_(query.role) if query.role else None,
             or_(*(self._state(token, admin_role, reviewer_role) for token in query.state)) if query.state else None,
+            None if filters is None else self.filter_clause(filters),
         )
         total = await self._session.scalar(select(func.count()).select_from(model).where(*where))
         order = [
@@ -951,6 +1048,21 @@ class SqlAdminActionLog[ActionT: AdminActionColumns]:
             .values(target_email=None)
             .execution_options(synchronize_session="fetch")
         )
+
+    async def deleted_group_names(self, group_ids: Sequence[int]) -> Mapping[int, str]:
+        """0.32's :class:`~eifi1_server_kit.user_admin.ports.DeletedGroupNames`: the names the
+        ``group_delete`` rows of these groups kept, in one query."""
+        if not group_ids:
+            return {}
+        model = self._model
+        rows = await self._session.execute(
+            select(model.target_group_id, model.target_group_name).where(
+                model.action == "group_delete",
+                model.target_group_id.in_(list(group_ids)),
+                model.target_group_name.is_not(None),
+            )
+        )
+        return {group_id: name for group_id, name in rows.all() if group_id is not None and name is not None}
 
 
 # ── After the commit ────────────────────────────────────────────────────────

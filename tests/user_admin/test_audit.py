@@ -61,6 +61,7 @@ def test_the_actions_are_the_contracts() -> None:
         "membership_role",
         "group_deactivate",
         "group_reactivate",
+        "two_factor_reset",
     ]
 
 
@@ -369,3 +370,20 @@ def test_group_name_problem_refuses_a_new_name_at_the_edge(name: str, problem: s
     assert group_name_problem(name) == problem
     if problem is None:  # a name the rule accepts is logged as written, stripped
         assert audit_detail({"to": name}, action="group_rename") == {"to": " ".join(name.split())}
+
+
+def test_a_reviewer_row_s_scope_before_and_after_fits_the_detail_at_its_largest() -> None:
+    """0.32: the reviewer row logs ``{from: {locales, areas}, to: {locales, areas}}``; the
+    largest grant (``MAX_REVIEWER_ENTRIES`` long tags each way) stays within the detail's
+    depth and size."""
+    from eifi1_server_kit.user_admin import MAX_REVIEWER_ENTRIES
+
+    scope = {
+        "locales": [f"zh-Hans-{n:02d}" for n in range(MAX_REVIEWER_ENTRIES)],
+        "areas": [f"translation_area_{n:02d}" for n in range(MAX_REVIEWER_ENTRIES)],
+    }
+    detail = {"from": scope, "to": {"locales": [], "areas": None}}
+    record = admin_action_record(
+        AdminAction.REVIEWER, actor_id=1, target_user_id=2, target_email=None, detail=detail, now=NOW
+    )
+    assert record["detail"] == detail

@@ -973,6 +973,28 @@ class SqlAttachmentStorage[UploadT: FeedbackAttachmentColumns]:
             return None
         return StoredAttachment(data=data, media_type=row.media_type, filename=row.filename)
 
+    async def keys_in_use(self, keys: Collection[str]) -> set[str]:
+        """The ``keys`` an upload row of a living account still holds (0.32, Kurvenschmiede).
+
+        **Why.** An erasure's keys (``ErasedFeedback.keys``, the ``AuthHooks.purge_files``
+        hook's) count what the reports name, not the uploads: the same bytes uploaded by
+        somebody else and not filed yet (the prune's day of waiting) are the same
+        content-addressed object. An erased person's own rows hold nothing, their ``user_id``
+        gone with the account. In the hook, after the commit, on a session of its own::
+
+            async def purge_files(keys: Sequence[str]) -> None:
+                async with sessions() as session:
+                    held = await storage_on(session).keys_in_use(keys)
+                await purge_objects(store, [k for k in keys if k not in held], object_key=...)
+
+        Flushes first, commits nothing."""
+        if not keys:
+            return set()
+        await self._session.flush()
+        model = self._model
+        statement = select(model.key).where(model.key.in_(list(keys)), model.user_id.is_not(None))
+        return set(await self._session.scalars(statement))
+
     async def prune(self, *, before: datetime, now: datetime | None = None) -> UploadPrune:
         """Delete the uploads made before ``before`` that no report, entry or comment names,
         and answer how many, with the keys no row holds any more.

@@ -32,6 +32,7 @@ from eifi1_server_kit.legal import LegalNoticeError
 from eifi1_server_kit.limiter import ThrottledError
 from eifi1_server_kit.notifications import NotificationError
 from eifi1_server_kit.settings import PatchNullError
+from eifi1_server_kit.teams import TeamError
 from eifi1_server_kit.tours import TourProgressError
 from eifi1_server_kit.translation_review import TranslationAccessError, TranslationAreaError, TranslationLocaleError
 from eifi1_server_kit.uploads import (
@@ -200,6 +201,7 @@ def test_the_registered_classes_are_every_kit_refusal_with_a_status() -> None:
         TourProgressError,
         LegalNoticeError,
         ThrottledError,
+        TeamError,
     }
     for error in CONTRACT_ERRORS:
         assert isinstance(getattr(error, "status_code", None), int), error

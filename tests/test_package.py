@@ -35,6 +35,7 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.auth.passkeys",
         "eifi1_server_kit.auth.ports",
         "eifi1_server_kit.auth.router",
+        "eifi1_server_kit.auth.seal",
         "eifi1_server_kit.auth.service",
         "eifi1_server_kit.billing",
         "eifi1_server_kit.billing.testing",
@@ -59,6 +60,11 @@ def test_every_exported_name_exists() -> None:
         "eifi1_server_kit.sync",
         "eifi1_server_kit.sync.scopes",
         "eifi1_server_kit.sync.testing",
+        "eifi1_server_kit.teams",
+        "eifi1_server_kit.teams.router",
+        "eifi1_server_kit.teams.service",
+        "eifi1_server_kit.teams.sql",
+        "eifi1_server_kit.teams.testing",
         "eifi1_server_kit.tours",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.tours.testing",
@@ -87,6 +93,28 @@ def test_feedback_layer_2_loads_no_web_framework() -> None:
     assert loaded.strip() == "[]"
 
 
+def test_the_teams_load_no_web_framework_and_no_database() -> None:
+    """The refusals, the shapes, the port, the service and ``teams.testing`` run without FastAPI,
+    httpx or SQLAlchemy: an app that mounts neither teams router and uses no table of theirs
+    takes nothing in with them. A fresh interpreter."""
+    probe = (
+        "import sys, eifi1_server_kit.teams, eifi1_server_kit.teams.testing;"
+        "print(sorted({name.split('.')[0] for name in sys.modules} & {'fastapi', 'httpx', 'sqlalchemy'}))"
+    )
+    loaded = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout
+    assert loaded.strip() == "[]"
+
+
+def test_the_teams_router_names_its_extra_without_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "eifi1_server_kit.teams.router", raising=False)
+    monkeypatch.setitem(sys.modules, "fastapi", None)
+    with pytest.raises(
+        ImportError,
+        match=r"teams\.router needs FastAPI: install the kit with its fastapi extra, eifi1-server-kit\[fastapi\]",
+    ):
+        importlib.import_module("eifi1_server_kit.teams.router")
+
+
 def test_the_feedback_router_names_its_extra_without_fastapi(monkeypatch: pytest.MonkeyPatch) -> None:
     """``None`` in ``sys.modules`` makes ``import fastapi`` fail as if it were not installed."""
     monkeypatch.delitem(sys.modules, "eifi1_server_kit.feedback.router", raising=False)
@@ -99,11 +127,12 @@ def test_the_account_layer_loads_no_web_framework_and_no_webauthn() -> None:
     """The ports, the service, the mails and the passkey helpers run without FastAPI, httpx,
     SQLAlchemy or py_webauthn (auth §12.3): a command-line tool builds an ``AccountService``,
     and an app without passkeys installs no ``passkeys`` extra. Nor PyJWT or bcrypt (0.30):
-    an app with its own signer and hasher installs neither extra. A fresh interpreter."""
+    an app with its own signer and hasher installs neither extra, nor cryptography (0.32) an app
+    with its own seal. A fresh interpreter."""
     probe = (
         "import sys, eifi1_server_kit.auth.ports, eifi1_server_kit.auth.service, eifi1_server_kit.auth.mails;"
         "print(sorted({name.split('.')[0] for name in sys.modules}"
-        " & {'bcrypt', 'fastapi', 'httpx', 'jwt', 'sqlalchemy', 'webauthn'}))"
+        " & {'bcrypt', 'cryptography', 'fastapi', 'httpx', 'jwt', 'sqlalchemy', 'webauthn'}))"
     )
     loaded = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout
     assert loaded.strip() == "[]"

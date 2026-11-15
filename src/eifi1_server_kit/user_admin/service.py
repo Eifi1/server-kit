@@ -25,7 +25,8 @@ No FastAPI: :mod:`eifi1_server_kit.user_admin.router` builds one per request.
   deletion first (``deletion_cancel``, then ``reactivate``: Kurvenschmiede's and kastlan's
   two rows).
 * **A forced password change ends every session** (keksdose, Kurvenschmiede; §12.5 item 7),
-  is allowed on a deactivated account (it waits for the return) and on oneself.
+  is allowed on oneself, and refuses a deactivated account (``account_inactive``, 0.32,
+  keksdose's: the admin's mails' refusal).
 * **The admin's mail** refuses a deactivated account (``account_inactive``) and a verified
   address's verification (``email_already_verified``), is charged to the recipient's public
   window, commits its link before it mails it, and logs ``{sent}``; its link is answered only
@@ -67,6 +68,7 @@ from eifi1_server_kit.user_admin.schemas import (
     ActionConfirmation,
     AdminActionRow,
     AdminUserRow,
+    AdminUserRowBase,
     GroupRef,
     InvitationStatus,
     MailKind,
@@ -188,6 +190,10 @@ class UserAdminHooks[UserT: AccountRow = Any]:
     #: Seam 6: one roster row as the app's ``row_model`` (keksdose's plan and key custody,
     #: Kurvenschmiede's owned counts, kastlan's roles); without it the row from the account.
     to_row: Callable[[UserT], Awaitable[BaseModel]] | None = None
+    #: The same for a page at once (0.32, Kurvenschmiede's G13): one row per account, in
+    #: their order, so the app reads its own columns (Kurvenschmiede's subscriptions) in one
+    #: query. It wins over ``to_row``; a single action's row is a batch of one.
+    to_rows: Callable[[Sequence[UserT]], Awaitable[Sequence[BaseModel]]] | None = None
     #: ``GET /admin/attention`` (admin §2.4): the app's counts — ``feedback_waiting`` and its
     #: ``extra`` tiles — over the kit's, which it may replace (kastlan's ``None``).
     attention: Callable[[UserT], Awaitable[_Extras]] | None = None
@@ -200,10 +206,15 @@ class UserAdminHooks[UserT: AccountRow = Any]:
     role_changing: Callable[[UserT, UserT, frozenset[str], frozenset[str]], Awaitable[None]] | None = None
     #: A reactivation, before it is written: ``(admin, target)``; refuse to refuse it
     #: (kastlan's seats again).
-    activating: Callable[[UserT, UserT], Awaitable[None]] | None = None
+    #: It may answer a mapping (0.32, keksdose's KG-7): the reactivate row's detail.
+    activating: Callable[[UserT, UserT], Awaitable[_Extras | None]] | None = None
     #: The log's groups: their names by id (Kurvenschmiede's teams, kastlan's companies), a
     #: deleted one's from its ``group_delete`` row.
     group_names: Callable[[Sequence[int]], Awaitable[Mapping[int, str | None]]] | None = None
+    #: ``GET /admin/users``' ``summary``: the app's counts beside the kit's ``active_admins``,
+    #: which always wins (0.32, keksdose's install-wide ``total``, ``by_plan``, …); type it with
+    #: ``UserAdminDeps.summary_model``. Asked with the admin, whatever the page and filter.
+    summary: Callable[[UserT], Awaitable[_Extras]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +282,7 @@ class UserAdminService[UserT: AccountRow]:
         hooks: UserAdminHooks[UserT] | None = None,
         feedback: FeedbackService[Any] | None = None,
         role_sets: bool = False,
-        row_model: type[AdminUserRow] = AdminUserRow,
+        row_model: type[AdminUserRowBase] = AdminUserRow,
         action_row_model: type[AdminActionRow] = AdminActionRow,
         now: Clock = utc_now,
     ) -> None:
@@ -304,16 +315,36 @@ class UserAdminService[UserT: AccountRow]:
         return user
 
     async def row(self, user: UserT) -> BaseModel:
-        """The account as one roster row: the ``to_row`` hook, else ``row_model`` from the
-        account with ``email_verified`` from ``email_verified_at``."""
+        """The account as one roster row: the ``to_rows`` hook with a batch of one, the
+        ``to_row`` hook, else ``row_model`` from the account with ``email_verified`` from
+        ``email_verified_at``."""
+        if self._hooks.to_rows is not None:
+            return (await self.rows([user]))[0]
         if self._hooks.to_row is not None:
             return await self._hooks.to_row(user)
         row = self._row_model.model_validate(user, from_attributes=True)
-        return row.model_copy(update={"email_verified": user.email_verified_at is not None})
+        return row.model_copy(
+            update={
+                "email_verified": user.email_verified_at is not None,
+                "totp_enabled": await self.accounts.two_factor_enabled(user),
+            }
+        )
+
+    async def rows(self, users: Sequence[UserT]) -> list[BaseModel]:
+        """A page's rows: the ``to_rows`` hook at once (:class:`ValueError` unless it answers
+        one row per account), else :meth:`row` each."""
+        if self._hooks.to_rows is None:
+            return [await self.row(user) for user in users]
+        answered = list(await self._hooks.to_rows(users))
+        if len(answered) != len(users):
+            raise ValueError(f"the to_rows hook answered {len(answered)} rows for {len(users)} accounts")
+        return answered
 
     def levels(self) -> dict[str, ConfirmationLevel]:
-        """The level of each action the router takes (§3.1, §4.2), the contract's floor."""
-        actions = (*ADMIN_ACTIONS, *self._erase_actions(), *self._policy.app_actions)
+        """The level of each action the router takes (§3.1, §4.2), the contract's floor — the
+        second factor's reset where the account layer has a second factor (0.32)."""
+        reset = (AdminAction.TWO_FACTOR_RESET,) if self.accounts.has_two_factor else ()
+        actions = (*ADMIN_ACTIONS, *self._erase_actions(), *reset, *self._policy.app_actions)
         return {str(action): confirmation_level(action) for action in actions}
 
     def _erase_actions(self) -> tuple[AdminAction, ...]:
@@ -341,22 +372,35 @@ class UserAdminService[UserT: AccountRow]:
 
     # --- the roster ------------------------------------------------------------------------
 
-    async def roster(self, **raw: Any) -> dict[str, Any]:
+    async def roster(
+        self, admin: UserT | None = None, *, filters: BaseModel | None = None, **raw: Any
+    ) -> dict[str, Any]:
         """``GET /admin/users`` (§3.1): the query parsed (``422`` for a bad one), one page of
-        the scope's people as rows, the total, the transport, the active admins and the
-        levels."""
+        the scope's people as rows, the total, the transport, the summary and the levels.
+
+        ``filters`` (0.32, ``UserAdminDeps.roster_query_model``) is the app's own query, handed
+        to the scope's roster only when given, so a roster without the parameter still runs.
+        The summary is the ``summary`` hook's counts, asked with ``admin``, under the kit's
+        ``active_admins``, which an app cannot override."""
         query = parse_roster_query(
             **raw,
             sort_keys=self._policy.sort_keys,
             accepted_states=self._policy.states,
             roles=self._policy.roles,
         )
-        rows, total = await self.scope.roster(query)
+        if filters is None:
+            rows, total = await self.scope.roster(query)
+        else:
+            rows, total = await self.scope.roster(query, filters=filters)
+        summary: dict[str, Any] = {}
+        if admin is not None and self._hooks.summary is not None:
+            summary.update(await self._hooks.summary(admin))
+        summary[SUMMARY_ACTIVE_ADMINS] = await self.scope.active_admins()
         return {
-            "users": [await self.row(user) for user in rows],
+            "users": await self.rows(rows),
             "total": total,
             "mail_backend": self._backend,
-            "summary": {SUMMARY_ACTIVE_ADMINS: await self.scope.active_admins()},
+            "summary": summary,
             "levels": self.levels(),
         }
 
@@ -376,20 +420,21 @@ class UserAdminService[UserT: AccountRow]:
         await self.scope.refuse_last_admin(target)
         await self._confirm(AdminAction.DEACTIVATE, target, body)
         target = await self._users.apply(target, {"is_active": False})
-        await self.accounts.end_sessions(target, SessionsEndedReason.DEACTIVATED)
-        await self._record(AdminAction.DEACTIVATE, admin, target, {"sessions_ended": True})
+        _, extras = await self.accounts.end_sessions_noting(target, SessionsEndedReason.DEACTIVATED)
+        await self._record(AdminAction.DEACTIVATE, admin, target, {"sessions_ended": True, **extras})
         return target
 
     async def _reactivate(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:
         await self.scope.refuse_account_wide(target, AdminAction.REACTIVATE)
         await self._confirm(AdminAction.REACTIVATE, target, body)
+        extras: _Extras = {}
         if self._hooks.activating is not None:
-            await self._hooks.activating(admin, target)
+            extras = await self._hooks.activating(admin, target) or {}
         if target.deletion_requested_at is not None:
             target = await self.accounts.withdraw_deletion(target, actor_id=admin.id)
         else:
             target = await self._users.apply(target, {"is_active": True})
-        await self._record(AdminAction.REACTIVATE, admin, target)
+        await self._record(AdminAction.REACTIVATE, admin, target, dict(extras) or None)
         return target
 
     # --- the role --------------------------------------------------------------------------
@@ -426,16 +471,19 @@ class UserAdminService[UserT: AccountRow]:
     # --- the forced password change ------------------------------------------------------------
 
     async def require_password_change(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:
-        """``POST /admin/users/{id}/password-change`` (§4.1): the scope's account-wide refusal,
-        acknowledged; the next sign-in asks for a new password, and every session ends now
-        (§12.5 item 7)."""
+        """``POST /admin/users/{id}/password-change`` (§4.1): ``account_inactive`` for a
+        deactivated account (0.32, keksdose's; the admin's mails' refusal), the scope's
+        account-wide refusal, acknowledged; the next sign-in asks for a new password, and every
+        session ends now (§12.5 item 7)."""
+        if not target.is_active:
+            raise AccountError(AccountErrorCode.ACCOUNT_INACTIVE)
         if target.password_change_required_at is not None:
             return target
         await self.scope.refuse_account_wide(target, AdminAction.PASSWORD_CHANGE_REQUIRE)
         await self._confirm(AdminAction.PASSWORD_CHANGE_REQUIRE, target, body)
         target = await self._users.apply(target, {"password_change_required_at": self._now()})
-        await self.accounts.end_sessions(target, SessionsEndedReason.PASSWORD_CHANGE_REQUIRED)
-        await self._record(AdminAction.PASSWORD_CHANGE_REQUIRE, admin, target, {"sessions_ended": True})
+        _, extras = await self.accounts.end_sessions_noting(target, SessionsEndedReason.PASSWORD_CHANGE_REQUIRED)
+        await self._record(AdminAction.PASSWORD_CHANGE_REQUIRE, admin, target, {"sessions_ended": True, **extras})
         return target
 
     async def withdraw_password_change(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:
@@ -447,6 +495,20 @@ class UserAdminService[UserT: AccountRow]:
         await self._confirm(AdminAction.PASSWORD_CHANGE_WITHDRAW, target, body)
         target = await self._users.apply(target, {"password_change_required_at": None})
         await self._record(AdminAction.PASSWORD_CHANGE_WITHDRAW, admin, target)
+        return target
+
+    async def reset_two_factor(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:
+        """``POST /admin/users/{id}/two-factor-reset`` (0.32, Marcel 2026-11-14): another
+        account's second factor off — never one's own (``self_action``: one's own goes through
+        the settings or a backup code) — the scope's account-wide refusal, acknowledged; every
+        field cleared, its row logged, the account told by mail. Off already: nothing."""
+        refuse_self(admin.id, target.id)
+        await self.scope.refuse_account_wide(target, AdminAction.TWO_FACTOR_RESET)
+        if not await self.accounts.two_factor_enabled(target):
+            return target
+        await self._confirm(AdminAction.TWO_FACTOR_RESET, target, body)
+        await self.accounts.reset_two_factor(target)
+        await self._record(AdminAction.TWO_FACTOR_RESET, admin, target)
         return target
 
     # --- the mails -------------------------------------------------------------------------
@@ -491,7 +553,9 @@ class UserAdminService[UserT: AccountRow]:
         (``reviewer_is_admin``: they review every locale, and taking the admin role away is the
         role change's); the locales and areas checked against the app's (``422``). Locales give
         the reviewer role (with ``AdminPolicy.reviewer_role``), none take it away again; the
-        areas count only with locales. No confirmation (``none``)."""
+        areas count only with locales. No confirmation (``none``). Logged ``{from: {locales,
+        areas}, to: {locales, areas}}``, the account's scope before and after (0.32; before,
+        ``{locales, areas}``, the new scope alone)."""
         roles = await self.scope.roles_of(target)
         if self._accounts_policy.admin_role in roles:
             raise AccountError(AccountErrorCode.REVIEWER_IS_ADMIN)
@@ -499,16 +563,16 @@ class UserAdminService[UserT: AccountRow]:
         areas = normalize_areas(body.areas, self._policy.review_areas) if locales else None
         wanted = self._reviewer_roles(roles, given=bool(locales))
         scope = {"translation_review_locales": locales or None, "translation_review_areas": areas}
-        unchanged = (
-            wanted == roles
-            and list(target.translation_review_locales or []) == locales
-            and (None if target.translation_review_areas is None else list(target.translation_review_areas)) == areas
-        )
-        if not unchanged:
+        before = {
+            "locales": list(target.translation_review_locales or []),
+            "areas": None if target.translation_review_areas is None else list(target.translation_review_areas),
+        }
+        after = {"locales": locales, "areas": areas}
+        if wanted != roles or before != after:
             if wanted != roles:
                 await self._roles(admin, target, roles, wanted)
             target = await self._users.apply(target, scope)
-            await self._record(AdminAction.REVIEWER, admin, target, {"locales": locales, "areas": areas})
+            await self._record(AdminAction.REVIEWER, admin, target, {"from": before, "to": after})
         return ReviewerResult(user_id=target.id, role=target.role, locales=locales, areas=areas)
 
     def _reviewer_roles(self, roles: frozenset[str], *, given: bool) -> frozenset[str]:

@@ -288,3 +288,23 @@ def test_the_2fa_challenge_carries_the_shared_computer_choice() -> None:
     assert not two_factor_challenge_is_spent(claims, 12)
     normal = two_factor_challenge_claims(7, last_step=12, now=NOW)
     assert SHARED_DEVICE_CLAIM not in normal and shared_device_of(normal) is False
+
+
+def test_backup_codes_are_made_kept_as_digests_and_spent_once() -> None:
+    from eifi1_server_kit.auth.totp import (
+        BACKUP_CODE_ALPHABET,
+        backup_code_digest,
+        backup_code_spent,
+        new_backup_codes,
+    )
+
+    codes = new_backup_codes(3)
+    assert len(codes) == 3 and all(
+        len(code) == 19 and set(code.replace("-", "")) <= set(BACKUP_CODE_ALPHABET) for code in codes
+    )
+    digests = tuple(backup_code_digest(code) or "" for code in codes)
+    assert backup_code_digest(f" {codes[0].lower().replace('-', '‐')} ") == digests[0]
+    assert backup_code_digest("123456") is None and backup_code_digest("IIII-IIII-IIII-IIII") is None
+    assert backup_code_spent(codes[1], digests) == (digests[0], digests[2])
+    assert backup_code_spent("123456", digests) is None
+    assert backup_code_spent(new_backup_codes(1)[0], digests) is None

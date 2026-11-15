@@ -260,6 +260,7 @@ def erasure_identifiers(
     first: str | None,
     last: str | None,
     old_display_name: str | None = None,
+    extra: Iterable[str] = (),
 ) -> list[str]:
     """A person's own strings, for :func:`eifi1_server_kit.feedback.anonymise_feedback`'s
     ``identifiers`` (§8, §10.6).
@@ -276,8 +277,12 @@ def erasure_identifiers(
     :func:`~eifi1_server_kit.feedback.scrub_text` replaces needles one after another: an
     old display name "Ada Lovelace" replaced before "Ada Lovelace-Byron" would leave
     "[erased]-Byron" behind.
+
+    ``extra`` (0.32): the app's own strings for the person (keksdose's whole name from
+    before its first/last split), under the same rules; never a bare first or last name
+    there either.
     """
-    candidates: list[str | None] = [email, old_display_name]
+    candidates: list[str | None] = [email, old_display_name, *extra]
     if (first or "").strip() and (last or "").strip():
         candidates += [full_name(first, last, locale) for locale in _NAME_ORDER_LOCALES]
     seen: set[str] = set()

@@ -10,6 +10,269 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ## [Unreleased]
 
+## [0.32.0] (2026-11-15)
+
+server-kit 0.32.0: the account layer that keksdose, Kurvenschmiede and Staunlabor move onto
+together. keksdose's last gaps (KG-1 to KG-11): **two-factor sign-in** on its rules, its secret
+sealed (`auth.seal`, the new `seal` extra), with **backup codes and an admin reset**; the app's
+hooks on the signed-out paths, the deletion and the invitation. Kurvenschmiede's teams as the
+**opt-in** `eifi1_server_kit.teams` (its tables column for column), and its gaps: the
+placeholders for import-time routers (`install_account_layer`), the group invitation's own mail,
+the roster's rows in one batch. A **minor** with **no breaking change**: every new port, hook and
+argument is optional, and an app that leaves them out runs as on 0.31. The `[sql]` account model
+gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it in.
+
+### Added
+
+* **user_admin, auth (keksdose's rule, auth §3.2): `AdminUserRowBase`**, the roster's row
+  without the formatted `display_name`: an answer about another person carries `first_name` and
+  `last_name` (and `name_incomplete`), and only the signed-in user's own `UserResponse` keeps
+  `display_name`. `UserAdminDeps.row_model` (and `UserAdminService(row_model=)`) takes an
+  `AdminUserRowBase` subclass beside an `AdminUserRow` one; its answers and its OpenAPI schema
+  have no `display_name`. `AdminUserRow` is `AdminUserRowBase` plus `UserResponse`, its answers
+  and schema byte for byte as before. For it, `auth.UserCore` holds `UserResponse`'s fields and
+  `name_completion_exempt()` without the derived names; `UserResponse` is `UserCore` plus
+  `display_name` and `name_incomplete`, unchanged.
+
+* **auth (keksdose's move onto the admin's invitation routes):** the `invite` and
+  `invite_resend` rows record `sent`, whether the mail went out, after their other keys
+  (`invitation_id`, `role`, a caller's `team_role`, …), so ui-kit's log reader says "Mail not
+  sent". As the admin's mails log `{sent}`: the invitation is committed (`commit_now`), mailed,
+  and then its row written, in the request's transaction after that commit.
+
+* **auth (keksdose's move onto the admin's invitation routes): a re-invitation is the new
+  request's.** With `reuse_open_invitations`, the address's re-used row (an expired one too) takes
+  the new request's language (the body's, else the admin's, as a new one), its note, and the
+  admin re-inviting as `invited_by_user_id`. `InvitationStore.remint` gains the keywords
+  `locale`, `note` and `invited_by_user_id`, each defaulting to the new `auth.ports.UNCHANGED`
+  (`Unchanged`), so `POST /admin/invitations/{id}/resend` keeps the row's own; the kit gives them
+  only on a re-use, so a store without them works while `reuse_open_invitations` is off (an app's
+  own store with it on adds them; `SqlInvitationStore`, `InMemoryInvitationStore` and
+  `check_invitation_store`, for a store that takes them, do). `InvitationIssued.resent` (default
+  `False`) is true when `POST /admin/invitations` re-used a row and on every
+  `…/{id}/resend`.
+
+* **auth (keksdose's move onto the admin's invitation routes):**
+  `AccountPolicy.list_accepted_invitations` (default `False`): `GET /admin/invitations` lists the
+  accepted invitations too, status `accepted`, in the same order (newest first, the higher id
+  first on a tie). `InvitationStore.listing(*, accepted=False)` answers them with
+  `accepted=True`, which the kit asks only with the policy on, so a store without the parameter
+  keeps working; `SqlInvitationStore`, `InMemoryInvitationStore` and `check_invitation_store` (for
+  a store whose `listing` takes it) do. Re-sending or withdrawing a listed accepted one is still
+  `invitation_closed`.
+
+* **user_admin (keksdose's move onto the admin router): the roster's summary and filters are the
+  app's too.** `UserAdminHooks.summary(admin)` answers the app's counts for `GET /admin/users`'
+  `summary` (keksdose's install-wide `total`, `by_plan`, `by_privacy_mode`, …), merged under the
+  kit's `active_admins`, which an app cannot override; `UserAdminDeps.summary_model` types the
+  summary in the OpenAPI (it declares `active_admins`, else a `ValueError` when the router is
+  built). `UserAdminDeps.roster_query_model` adds the app's own filters (keksdose's plan, privacy
+  mode, created and last-login ranges) to `GET /admin/users` alone, as query parameters, and
+  hands the instance to `RosterStore.page(…, filters=)` through `AdminScope.roster(…,
+  filters=)`; a model naming a kit parameter (`limit`, `q`, …) is a `ValueError`. `filters` is
+  passed only where the app has the model, so a store or scope without the parameter keeps
+  working; `SqlRosterStore` and `InMemoryRosterStore` take it and ignore it, and a
+  `SqlRosterStore` subclass applies it in `filter_clause(filters)`. Without them the summary is
+  `{active_admins}` and the query the kit's, as before.
+
+* **auth (keksdose's erasure):** `AuthHooks.erasure_identifiers(user)` adds the app's own strings
+  for the person to the kit's when an erasure anonymises the feedback (keksdose's
+  `legacy_display_name`, which older report stamps hold); `erasure_identifiers(…, extra=)` takes
+  them under the same rules. `purge_files` says its keys are bare (`object_key(key)` is the path).
+
+* **auth (keksdose's KG-5):** `AccountPolicy.mail_date` (`(day, locale) -> str`, default
+  `mail_date`) writes a mail's `{date}`, the deletion mail's erasure day: keksdose writes it as a
+  sentence does ("6. November 2026"), never numerically.
+
+* **auth (Kurvenschmiede's review of 0.32.0.dev3):** an app's `mail_texts` table for `invitation`
+  or `group_invitation` stands for `invitation_account` or `group_invitation_account` too, unless
+  the app names that kind itself; before, the existing account's invitation kept the kit's words.
+
+* **auth (keksdose's KG-1): two-factor sign-in**, keksdose's rules exactly. With
+  `AuthDeps(two_factor=…, secret_seal=…)` (one without the other is a `ValueError`) the router
+  mounts `POST /auth/login/2fa {challenge_token, code}` and `POST /auth/me/2fa/setup {password}`,
+  `/enable {code}` and `/disable {password, code}`. `/login` answers an account with 2FA on
+  with `{requires_2fa: true, challenge_token}` before a forced password change; the code step
+  checks active, still on, readable, unspent, the code (its step spent under the row's lock),
+  then the forced change, then the session on the shared computer the sign-in chose. The setup
+  takes the password every time and keeps the new secret pending beside the live one until a
+  code confirms it (charged to the password-check window); switching off takes the password and
+  a live code, or the password alone for a secret this server cannot open. A passkey sign-in
+  counts as both factors; `/auth/me` answers `totp_enabled` from the store. The ports
+  `TwoFactorState`, `TwoFactorStore` (`state(user_id, *, lock=False)`, `save`) and `SecretSeal`;
+  `AccountService(two_factor=, secret_seal=)` with `login_two_factor`, `begin_two_factor`,
+  `enable_two_factor` and `disable_two_factor`; the result `TwoFactorChallengeIssued`; the
+  bodies `TwoFactorLogin`, `TwoFactorSetupRequest`, `TwoFactorConfirm`,
+  `TwoFactorDisableRequest` and the answer `TwoFactorSetup {secret, otpauth_url}`; the codes
+  `two_factor_invalid` (400: wrong, malformed and replayed alike), `two_factor_unavailable`
+  (503: a key missing or no longer opening the secret) and `two_factor_not_pending` (404).
+* **auth, user_admin (Marcel 2026-11-14): backup codes and an admin reset** for the second
+  factor. Switching it on answers ten backup codes once (`TwoFactorEnabled {backup_codes}`), kept
+  as digests in `TwoFactorState.backup_codes` (`TwoFactorColumns.totp_backup_codes`, JSON); each
+  signs in once at `/auth/login/2fa` in the same `code` field (up to 32 characters now), spending
+  its challenge too. `GET /auth/me/2fa` answers `{enabled, backup_codes_left}`; `POST
+  /auth/me/2fa/backup-codes {password}` makes a new set (`409 two_factor_not_enabled` while off).
+  `POST /admin/users/{id}/two-factor-reset` (with the store): another account's second factor
+  off, acknowledged, never one's own (`self_action`), logged as `AdminAction.TWO_FACTOR_RESET`,
+  the account told by `AccountMailText.TWO_FACTOR_RESET_NOTICE` (`two_factor_reset_notice`, seven
+  languages); the roster's `totp_enabled` reads the store. Helpers `new_backup_codes`,
+  `backup_code_digest`, `backup_code_spent`, `BACKUP_CODE_COUNT`, `BACKUP_CODE_ALPHABET`.
+* **auth.seal (the `seal` extra, `cryptography>=42`):** `SecretBox(keys, *, label=…)`, keksdose's
+  `secret_box` lifted: AES-256-GCM, `enc:v1:` values bound to their row by the AAD
+  (`totp_secret_aad`, `totp_pending_secret_aad`, keksdose's bytes), several keys newest first,
+  never a plaintext fallback; `SecretKeyMissingError` and `SecretUnreadableError` under
+  `SecretSealError`. keksdose's stored values open with `label=b"keksdose.secret_box.v1"`.
+* **auth (0.32):** `new_totp_secret()`, `totp_uri(secret, *, account, issuer)` (pyotp's
+  `provisioning_uri` byte for byte) and `totp_code(secret, *, now)`, the code an authenticator
+  shows, for tests.
+* **auth.sql:** `TwoFactorColumns` (`totp_enabled`, `totp_secret`, `totp_pending_secret`,
+  `totp_last_step`) on the account model and `SqlTwoFactorStore`, which locks the row `FOR
+  UPDATE` where the kit asks. **auth.testing:** `InMemoryTwoFactorStore`,
+  `check_two_factor_store` and `totp_code`.
+
+* **auth.router (Kurvenschmiede's gap 1):** `install_account_layer(app, deps)` and the
+  placeholders `app_current_user`, `app_admin` and `app_account_service` (the first two take the
+  kit's bearer scheme, so an app's route on them declares it in `app.openapi()`). An app's own routers
+  are made when their module is imported, before its `AuthDeps` exist, so they could not call
+  `current_user(deps)`; they depend on the placeholders, and the install binds them through the
+  app's `dependency_overrides` (and keeps `deps` on `app.state.account_deps`). Unbound, a
+  placeholder raises a `RuntimeError` naming the missing call.
+* **auth.router (Staunlabor's feedback pilot):** `app_feedback_actor`, the signed-in account as
+  the feedback router's `FeedbackActor` (admin by `policy.admin_role`, the name by `full_name`):
+  `FeedbackDeps(actor=app_feedback_actor)`. A module-level dependency, where a closure over
+  `current_user(deps)` under `from __future__ import annotations` silently dropped the feedback
+  routes from `app.openapi()`; the README says so.
+* **user_admin (Kurvenschmiede's G13):** `UserAdminHooks.to_rows(users)`, a page's roster rows at
+  once (one per account, in order; a `ValueError` otherwise), so the app reads its own columns in
+  one query instead of one per row. It wins over `to_row`; a single action's row is a batch of
+  one.
+* **auth (Kurvenschmiede's gap 2):** `AccountMailText.GROUP_INVITATION` (`group_invitation`, sent
+  under the `invitation` kind): an invitation whose `invitation_group` answers a name is mailed
+  in the kit's own words naming the group, in seven languages; one without a group gets the
+  general invitation as before.
+* **objects (keksdose):** `purge_objects(..., object_key=None)`: the keys are the app's names for
+  its files (keksdose's `s3://bucket/<key>` locators, a local path) and `object_key` maps each to
+  the store's key; what the purge answers and logs stays in the app's names.
+* **auth (Kurvenschmiede's ui-kit dev.2 run):** `InvitationAccepted.group` (`InvitationGroup`:
+  `id`, `name`), what `invitation_group` names, in `POST /auth/invitations/accept`'s answer, so
+  ui-kit 0.65's page says what the account joined; `None` without the hook or a group.
+* **auth, user_admin (keksdose's KG-7):** `AuthHooks.sessions_ended` and
+  `UserAdminHooks.activating` may answer a mapping: its counts join the detail of the admin's
+  `deactivate`, `password_change_require` and `reactivate` rows (keksdose's
+  `revoked_api_token_count`, `live_api_token_count`). `AccountService.end_sessions_noting(user,
+  reason)` answers the count and the hook's mapping; `end_sessions` still answers the count.
+* **auth (keksdose's KG-8):** `AuthHooks.deletion_requesting(user)`, after the kit's own checks and
+  before a deletion request changes anything: a kit refusal it raises (keksdose's
+  `household_has_members`) refuses the request with nothing deactivated, ended, mailed or logged.
+* **auth (keksdose's KG-2):** `AuthHooks.bind_anonymous(user)`, the app's binding on a signed-out
+  path that names an account (a reset, a verification or an address change's link, the forced
+  change's challenge, and the sign-in itself, by password or passkey, before the challenge's
+  `challenge_extras`), called as soon as the account is loaded and before any other hook reads
+  under it (keksdose's key wraps are FORCE row-level security on the current user).
+* **auth (keksdose's KG-4):** `AuthHooks.invitation_accepting(user, invitation)`, before an existing
+  account's accept spends anything: a kit refusal refuses it (keksdose refuses a registration
+  invitation for an existing account, a budget invitation passes). Which invitations the admin's
+  list shows stays the app's store's: `listing()` answers the kinds the admin manages.
+* **auth (keksdose's KG-5):** the invitation mails fill `{inviter}` (who invited, in the invitee's
+  language's name order); an address that already has an account gets the `invitation_account` or
+  `group_invitation_account` kind ("join" where a new address reads "register"), whose kit words
+  are the general ones and which an app's own table words apart; the deletion mails fill
+  `{privacy}`, `AccountLinks.privacy`'s link (default `/privacy`).
+* **teams (Marcel 2026-11-14; Kurvenschmiede's teams, lifted): the opt-in teams module.** An
+  app that mounts neither router and uses no mixin sees no change. `eifi1_server_kit.teams`:
+  `TeamRole` and Kurvenschmiede's wire shapes field for field (`TeamOut`, `AdminTeamOut` with
+  `grant_count`, `AdminTeamsResponse {teams, levels}`, `TeamMemberOut`, `TeamInvitationOut`,
+  `TeamInvited`, `TeamIn`, `TeamMemberIn`, `TeamMemberRoleIn`); the port `TeamStore`, its rows
+  and `team_scope` (a team invitation is the account layer's own, `{"team_id", "team_role"}` in
+  its scope); `TeamsService` on Kurvenschmiede's rules (the version, a re-add as a role change,
+  no row for no change, the manager's one-query reach, the system team a 404 everywhere, an
+  unknown address invited into the team through `AccountService.create_invitation` and its
+  open invitation sent again instead); `TeamHooks(deleting, member_added, billing_gate,
+  refuse_address)`; `TeamAccountHooks` (`on_register`, `on_invitation_redeemed`,
+  `invitation_group`, `invitation_scope`, `describe_invitation`, `group_names`), `join_team` (the
+  invitee's `membership_add`) and `add_system_member` for a demo.
+* **teams: the coded refusals** `TeamError(TeamErrorCode)`: `team_not_found` (404),
+  `team_name_taken` (`name`), `team_changed` (`name`), `manager_named_by_admin`,
+  `manager_kept_by_admin` (`email`), `manager_removed_by_admin` (409), in `CONTRACT_ERRORS`.
+* **teams.router (the `fastapi` extra):** `teams_router(TeamsDeps)` at `/teams` — `GET`, and a
+  manager's `POST /{id}/members`, `DELETE /{id}/members/{user_id}`, `POST
+  /{id}/invitations/{inv}/resend`, `DELETE /{id}/invitations/{inv}` behind the app's
+  `demo_guard("teams")` — and `teams_admin_router(TeamsDeps)` at `/admin/teams` — `GET` with the
+  levels, `POST` (201), `PATCH` (`If-Match` optional), `DELETE` (204, an optional
+  `ActionConfirmation` body), and `POST`, `PATCH`, `DELETE` on members.
+* **teams.sql (the `sql` extra):** `TeamColumns`, `TeamMemberColumns` and `TeamInvitationColumns`,
+  Kurvenschmiede's tables column for column (Alembic's comparison finds no change);
+  `SqlTeamStore`; `SqlTeamInvitationStore`, which writes a scope's team into `team_id` and
+  `team_role` (Kurvenschmiede's `TeamInvitations`, lifted). **teams.testing:**
+  `InMemoryTeamStore` and `check_team_store`.
+* **auth (for the teams):** `AccountService.create_invitation(…, scope=, detail=)`: a scope the
+  caller decided, stored past the `invitation_scope` hook, and more detail on the `invite` row;
+  without them nothing changes. **user_admin.ports:** `DeletedGroupNames`
+  (`deleted_group_names(ids)`, the name a `group_delete` row kept), on `SqlAdminActionLog` and
+  `InMemoryAdminActionLog`.
+
+* **feedback.sql (Kurvenschmiede's review of 0.32.0.dev4):** `SqlAttachmentStorage.keys_in_use(keys)`,
+  the keys an upload row of a living account still holds. An erasure's keys count what the
+  reports name, not the uploads, so the same bytes another person uploaded and has not filed
+  yet would lose their content-addressed object; an app's `AuthHooks.purge_files` asks it
+  before `purge_objects` (README, "Adopting the feedback and translation review tables").
+
+* **auth (keksdose's review of 0.32.0.dev4): `AuthHooks.observe(event, outcome)`**, so an app
+  counts its sign-in funnel again (keksdose's `keksdose_auth_events_total(event, outcome)` and
+  its Grafana panel): the answers fold reasons into one code on purpose, and the other hooks
+  never see a refusal. The service tells the observer every decision of the signed-out flows
+  and the refresh, once, at the flow's end: the new `AuthEvent` (`eifi1_server_kit.auth`, a
+  `StrEnum`: `register`, `login`, `login_2fa`, `login_set_password`, `passkey_login`,
+  `refresh`, `password_reset_request`, `password_reset_check`, `password_reset_confirm`,
+  `email_verify`, `email_change_confirm`, `invitation_check`, `invitation_accept`) and a short
+  stable outcome — `ok`, the internal reason where the answer is one code (`unknown_email`,
+  `bad_password`, `inactive_user`; `invalid_code`, `replayed_code`, `backup_code`; `sent`,
+  `send_failed`, the reset request's only trace of a failed mail), otherwise the refusal's code
+  (`throttled` for a 429) — never an address, an id or a token. Synchronous, as a metric
+  counter is; whatever it raises is logged at WARNING on `eifi1_server_kit.auth`, naming the
+  event, and changes no answer. The reset request tells it after its floor on every path. The
+  README's table lists every event's outcomes. Without it nothing changes.
+
+### Changed
+
+* **user_admin (keksdose's move onto the admin router):** `POST
+  /admin/users/{id}/password-change` refuses a deactivated account with `409 account_inactive`,
+  the admin mails' refusal, before anything else: nothing changes, no session ends, no row is
+  logged. It allowed it before (the requirement waited for the return); keksdose refuses it.
+
+* **user_admin (keksdose's move onto the admin router):** the `reviewer` row's detail is the
+  account's scope before and after, `{"from": {"locales", "areas"}, "to": {"locales", "areas"}}`
+  (`locales` a list, `[]` for none; `areas` a list or `None`), where it was `{"locales",
+  "areas"}`, the new scope alone. Rows written before keep the old shape; ui-kit 0.65's log reader
+  reads both.
+
+* **auth (keksdose's KG-11):** `POST /auth/logout` carries the app's `demo_guard` ("signing out
+  everywhere"), as the password, address, passkey, deletion and export routes do; a demo still
+  ends its own session (`DELETE /auth/sessions/current`).
+* **auth:** 0.31's `{group}` in an app's own `invitation` table: a group invitation is its own
+  mail now, so an app that words it itself names `group_invitation` in `AuthDeps.mail_texts`.
+* **auth (Kurvenschmiede):** an admin's invitation whose body names no `locale` is written in
+  the inviting admin's language, not the schema's `de-CH`; a body that names one wins, and an
+  admin with no language of their own still gets the default.
+
+### Fixed
+
+* **auth (Staunlabor's review of 0.32.0.dev4):** an erasure that leaves stored files and finds
+  no `AuthHooks.purge_files` logs a **WARNING** naming the hook, where it logged INFO: an app
+  with feedback files and no hook kept the erased person's files without noticing. Set the hook
+  (`objects.purge_objects`) wherever the account layer runs beside feedback attachments.
+
+* **auth.sql (keksdose's review of 0.32.0.dev3):** every nullable JSON column of `auth.sql`, and
+  so of `teams.sql`, writes `None` as SQL `NULL` rather than JSON `null`, as `feedback.sql`'s
+  already did: an invitation without a scope was stored as JSON `null`, so an app's
+  `scope IS NULL` (its RLS policy) missed the kit's own rows.
+
+### Documentation
+
+* **README (keksdose's KG-6):** `password_changing`'s extras ride on both the voluntary and the forced
+  change's answer, and the hook may refuse with the app's own exception, which the app's handler
+  answers (keksdose's `wrap_required`); a test pins it.
+
 ## [0.31.0] (2026-11-14)
 
 server-kit 0.31.0: what the first two apps on the account layer found (Kurvenschmiede's move
@@ -469,6 +732,12 @@ legal audit of 2026-11-11. A **minor**: it adds one public name, and **nothing b
 server-kit 0.24 section.
 
 ### Fixed
+
+* **auth.sql (keksdose's finding on 0.32.0.dev3):** a JSON column left empty (an invitation's or a
+  log row's `scope`, the review scope, the backup codes) is written as SQL `NULL`, not JSON `null`,
+  so an app's `scope IS NULL` (an RLS policy, a filter) finds the kit's rows. Existing JSON-`null`
+  values read back as `None` as before; an app that filters on `IS NULL` updates them once
+  (`UPDATE … SET scope = NULL WHERE scope = 'null'::jsonb`).
 
 * **feedback:** an erased crash report's body loses the person's diagnostics. `crash_body`
   writes them into the body as text, and `anonymise_feedback` replaced only the person's name

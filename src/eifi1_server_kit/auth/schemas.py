@@ -303,19 +303,13 @@ class PasswordChangeChallenge(BaseModel):
     challenge_token: str
 
 
-class UserResponse(BaseModel):
-    """``GET /auth/me`` (§6.1): the core every app answers; subclass to add its own.
-
-    ``display_name`` and ``name_incomplete`` are DERIVED and read-only: computed from
-    ``first_name`` / ``last_name`` on every serialisation, never accepted as input. The
-    display name is written in the user's own ``locale`` — this is the user reading about
-    themselves; the kit formats from first and last name on screen, in the reader's
-    language, and uses ``display_name`` only as a fallback (§3.2).
-
-    ``role`` is the app's vocabulary; narrow it to the app's enum in the subclass. Since
-    0.21 it may be ``None`` — always answered, ``null`` for an account that holds no role:
-    a kastlan user in no company (its ``MeResponse.role``). An app whose every account has
-    one narrows it as before (``role: UserRole``, keksdose), and its answer stays a string.
+class UserCore(BaseModel):
+    """The account's fields every answer about a person shares (0.32): :class:`UserResponse`
+    without its derived names. :class:`UserResponse` adds ``display_name`` and
+    ``name_incomplete``; ``user_admin.AdminUserRowBase`` adds ``name_incomplete`` alone, for
+    an answer about ANOTHER person, which carries first and last name and no formatted
+    ``display_name`` (§3.2, keksdose's rule). Subclass :class:`UserResponse`, not this, for
+    ``/auth/me``.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -351,6 +345,27 @@ class UserResponse(BaseModel):
     #: only (amended 2026-10-20), ``None`` = the app's (``effective_zone``).
     device_timezone: str | None = None
 
+    def name_completion_exempt(self) -> bool:
+        """Override to exempt an account from completing its name — keksdose's demo
+        session (``return self.is_demo``, §3.3)."""
+        return False
+
+
+class UserResponse(UserCore):
+    """``GET /auth/me`` (§6.1): the core every app answers; subclass to add its own.
+
+    ``display_name`` and ``name_incomplete`` are DERIVED and read-only: computed from
+    ``first_name`` / ``last_name`` on every serialisation, never accepted as input. The
+    display name is written in the user's own ``locale`` — this is the user reading about
+    themselves; the kit formats from first and last name on screen, in the reader's
+    language, and uses ``display_name`` only as a fallback (§3.2).
+
+    ``role`` is the app's vocabulary; narrow it to the app's enum in the subclass. Since
+    0.21 it may be ``None`` — always answered, ``null`` for an account that holds no role:
+    a kastlan user in no company (its ``MeResponse.role``). An app whose every account has
+    one narrows it as before (``role: UserRole``, keksdose), and its answer stays a string.
+    """
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def display_name(self) -> str:
@@ -362,11 +377,6 @@ class UserResponse(BaseModel):
     def name_incomplete(self) -> bool:
         """Either part empty — the app shows ``CompleteNameDialog`` after sign-in (§3.3)."""
         return name_incomplete(self.first_name, self.last_name, is_demo=self.name_completion_exempt())
-
-    def name_completion_exempt(self) -> bool:
-        """Override to exempt an account from completing its name — keksdose's demo
-        session (``return self.is_demo``, §3.3)."""
-        return False
 
 
 #: The fields of :class:`ProfileUpdate` that a PATCH may leave out but never null. The
@@ -502,6 +512,87 @@ class SetPasswordRequest(BaseModel):
     new_password: NewPassword
 
 
+#: A second factor's code as typed: six digits from the authenticator (with room for
+#: "123 456"), or a backup code (0.32: ``ABCD-EFGH-JKLM-NPQR``, spaces or dashes as typed). The
+#: kit tells them apart by shape; anything that is neither is the route's ``two_factor_invalid``,
+#: not a 422.
+TwoFactorCodeText = Annotated[str, Field(min_length=6, max_length=32)]
+
+
+class TwoFactorLogin(BaseModel):
+    """``POST /auth/login/2fa {challenge_token, code}`` (§5.1, 0.32; keksdose
+    ``TwoFactorVerifyRequest``, whose field was ``totp_code``): the sign-in's second step."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: _ChallengeToken
+    code: TwoFactorCodeText
+
+
+class TwoFactorSetupRequest(BaseModel):
+    """``POST /auth/me/2fa/setup {password}`` (0.32; keksdose ``TwoFactorSetupRequest``): the
+    account's password on EVERY setup, a first one as much as a replacement. A bearer token
+    alone must not change how the account signs in: a factor added from a stolen session
+    pairs the thief's authenticator, and the owner's next sign-in asks a code they do not have
+    (keksdose's AU-3). The password is also the way back from a lost authenticator: a new
+    setup replaces the secret without the old one's code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: ExistingPassword
+
+
+class TwoFactorSetup(BaseModel):
+    """The setup's answer: the new secret (base32, for typing in) and its ``otpauth://`` URI,
+    which the page draws as a QR code (ui-kit's own encoder; keksdose's ``qr_svg`` is the
+    kit's front's). PENDING until a code from it confirms it: what signs in now keeps doing so."""
+
+    secret: str
+    otpauth_url: str
+
+
+class TwoFactorConfirm(BaseModel):
+    """``POST /auth/me/2fa/enable {code}`` (0.32; keksdose ``TwoFactorEnableRequest``): a code
+    from the pending secret makes it the factor that signs in."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: TwoFactorCodeText
+
+
+class TwoFactorEnabled(BaseModel):
+    """Two-factor sign-in is on (0.32): the backup codes, shown once — the server keeps their
+    digests only. ``POST /auth/me/2fa/enable`` and ``POST /auth/me/2fa/backup-codes`` answer it."""
+
+    backup_codes: list[str]
+
+
+class TwoFactorStatus(BaseModel):
+    """``GET /auth/me/2fa`` (0.32): whether two-factor sign-in is on, and how many backup codes
+    are left (``0`` while it is off)."""
+
+    enabled: bool
+    backup_codes_left: int
+
+
+class TwoFactorBackupCodesRequest(BaseModel):
+    """``POST /auth/me/2fa/backup-codes {password}`` (0.32): a new set, the old one gone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: ExistingPassword
+
+
+class TwoFactorDisableRequest(BaseModel):
+    """``POST /auth/me/2fa/disable {password, code}`` (0.32; keksdose's): the password and a
+    live code. A secret this server cannot open is switched off by the password alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: ExistingPassword
+    code: TwoFactorCodeText
+
+
 class PasswordChangeRequest(BaseModel):
     """``POST /auth/me/password {current_password, new_password}`` (§6.3; keksdose
     ``SignInPasswordChangeRequest``, which adds its key wrap in a subclass)."""
@@ -586,14 +677,24 @@ class InvitationCheck(BaseModel):
     role: str | None = None
 
 
+class InvitationGroup(BaseModel):
+    """The group an accepted invitation joined (0.32), as ``AuthHooks.invitation_group``
+    names it: a team, a company, a budget."""
+
+    id: int | None = None
+    name: str | None = None
+
+
 class InvitationAccepted(BaseModel):
     """``POST /auth/invitations/accept {token}``: the invitation an existing account took up
     (§4.4). What it attached is the app's (``on_invitation_redeemed``), and the words for it
     ride in a subclass through ``describe_invitation`` (Kurvenschmiede's team name, keksdose's
-    budget)."""
+    budget). ``group`` (0.32): what ``invitation_group`` names, so a page says what the account
+    joined; ``None`` without the hook or a group."""
 
     email: str
     role: str | None = None
+    group: InvitationGroup | None = None
 
 
 class SessionInfo(BaseModel):

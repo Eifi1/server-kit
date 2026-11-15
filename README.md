@@ -26,7 +26,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 - Distribution `eifi1-server-kit`, import package `eifi1_server_kit`, Python ≥ 3.14.
 - Dependencies: `pydantic>=2.10`, `starlette>=0.40` — both already in every app through
   FastAPI, with no ceilings to fight an app's own pins (keksdose holds FastAPI < 0.137).
-  Eleven optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
+  Twelve optional extras: `images` (`pillow>=11`) for `uploads.ensure_decodable_image` only,
   `mail` (`httpx>=0.28`) for `mail.ResendClient` only, `billing` (`httpx>=0.28`) for
   `billing.PaddleClient` only, `fastapi` (`fastapi>=0.115`, `python-multipart>=0.0.18`)
   for the routers only, `sync` (`sqlalchemy>=2.0`) for `sync.mixin` only, `gcs`
@@ -34,21 +34,21 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
   `objects.S3ObjectStore` only (0.26), `sql` (`sqlalchemy[asyncio]>=2.0`) for `auth.sql` and
   `passkeys` (`webauthn>=2.0`) for `auth.passkeys`' ceremonies (0.29), and `jwt`
   (`pyjwt>=2.10`) for `auth.jwt_signer` and `bcrypt` (`bcrypt>=4.0`) for
-  `auth.bcrypt_hasher` only (0.30). No JWT library in the core: the kit builds and checks
+  `auth.bcrypt_hasher` only (0.30), and `seal` (`cryptography>=42`) for `auth.seal.SecretBox`
+  only (0.32). No JWT library in the core: the kit builds and checks
   claims, and each app signs with its own or with the `jwt` extra's `JwtSigner`.
 - Typed (`py.typed`, mypy `--strict`), 100 % line and branch coverage.
 
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.31 ↔ ui-kit 0.63**: that ui-kit
-release is tested against server-kit 0.29's API export, and its `@eifi1/ui-kit/accounts` reads
-0.29's account routes; 0.30 adds the admin half (`user_admin_router`), which ui-kit 0.64's
-admin pages will read, and 0.31 its fixes, the daily jobs and the feedback tables (the ui-kit
-showcase's Server kit pages
-and its vocabulary test, `showcase/src/__tests__/server-kit-vocabularies.test.ts`, which
-checks the vocabularies the ui-kit writes a second time in TypeScript against
-`server-kit-api.json`).
+package with its own version and changelog. **server-kit 0.32 ↔ ui-kit 0.65**: that ui-kit
+release is tested against server-kit 0.32's API export, and its `@eifi1/ui-kit/accounts` reads
+the account routes (0.29), the admin half (`user_admin_router`, 0.30), the daily jobs and the
+feedback tables (0.31), and the two-factor sign-in with its backup codes and the opt-in teams
+(0.32). The ui-kit showcase's Server kit pages and its vocabulary test,
+`showcase/src/__tests__/server-kit-vocabularies.test.ts`, check the vocabularies the ui-kit
+writes a second time in TypeScript against `server-kit-api.json`.
 
 ## Layering
 
@@ -460,8 +460,8 @@ Sign-in, sign-up and the account (auth contract §3–§6, §8). keksdose is the
 | Session claims | `access_claims(sub, now=, lifetime=, extra=)`, `refresh_claims(…)`, `challenge_claims(sub, ChallengeKind, now=, extra=)` (`{sub, type, iat, exp}`, `iat` fractional; `extra` may not override those nor carry a name, email or locale; a challenge's `extra` since 0.21: a passkey ceremony's `challenge`, the 2FA step's `totp_step`); `ChallengeKind` `2fa_challenge` (5 min), `password_change` (10 min), and since 0.21 the passkey ceremonies `webauthn_register` and `webauthn_auth` (5 min each, keksdose's and kastlan's strings; `CHALLENGE_LIFETIMES`); (0.27) `challenge_claims(…, shared_device=True)` carries the sign-in's "This is a shared computer" to the step that starts the session (`SHARED_DEVICE_CLAIM` `"shared_device"`, written only when ticked), `shared_device_of(claims)` reads it back (missing, `null` or `false` is a normal session; anything else, shared); `token_is_revoked(iat, sessions_invalid_before)`; `ACCESS_TOKEN_LIFETIME` 24 h, `REFRESH_TOKEN_LIFETIME` 30 d (also `*_EXPIRE_MINUTES`) |
 | Limits | `AuthLimiters(clock=)`: `login` (30 / 5 min per IP), `challenge` (20 / 5 min per IP), `challenge_subject` (10 / 15 min per user), `register` (5 / 5 min per IP), `reset_ip` (10 / h), `reset_address` (3 / h), `verification_resend` (10 / h per recipient), `login_failures` (`LoginFailureThrottle`); each a `Budget` an app may replace |
 | Sessions (0.27) | `SessionPolicy(access_lifetime=24 h, refresh_lifetime=30 d, shared_idle=15 min, shared_absolute=4 h, shared_access_lifetime=5 min)` (frozen; one per app, the two normal lifetimes its settings; a shared access token as long as the idle limit is refused); `session_expired(policy, *, shared, started_at, last_active, now)` (shared: `shared_idle` since the last refresh or `shared_absolute` since the start; normal: `refresh_lifetime` since the last refresh, never for its age; ended AT the limit; a `now` behind either instant ends nothing), `session_expires_at(policy, *, shared, started_at, last_active)` (the `expires_at` column), `refresh_lifetime(policy, *, shared, started_at, now)` (shared: `shared_idle`, never past the absolute end, zero there), `access_lifetime(…)` (shared: at most `shared_access_lifetime`, never past the end); `SHARED_IDLE`, `SHARED_ABSOLUTE`, `SHARED_ACCESS_LIFETIME` |
-| Schemas | `RegisterRequest`, `LoginRequest` (`shared_device`, `false` when left out, since 0.27; from the mixin `SharedDeviceChoice`, which an app adds to its passkey finish), `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserResponse` (computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `role` may be `null` since 0.21 — always answered, `null` for an account with no role, a kastlan user in no company; a subclass that narrows it to the app's enum keeps it a string; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
-| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `two_factor_challenge_claims(sub, *, last_step, now, shared_device=False)` (the 2FA challenge, five minutes, the last accepted step under `TOTP_STEP_CLAIM` `"totp_step"`; the shared-computer choice since 0.27) and `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was minted: one challenge, one sign-in); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1 |
+| Schemas | `RegisterRequest`, `LoginRequest` (`shared_device`, `false` when left out, since 0.27; from the mixin `SharedDeviceChoice`, which an app adds to its passkey finish), `RefreshRequest` (`{refresh_token}`, any text: an empty one is the route's 401), `TokenResponse[UserT]` (`expires_at`, set for a demo), `TwoFactorChallenge`, `PasswordChangeChallenge`, `UserCore` (0.32: `UserResponse`'s fields and `name_completion_exempt()` without the derived names, the base of `user_admin.AdminUserRowBase`), `UserResponse` (on `UserCore`, its answers and schema unchanged; computed `display_name`, `name_incomplete`, the `name_completion_exempt()` hook; `role` may be `null` since 0.21 — always answered, `null` for an account with no role, a kastlan user in no company; a subclass that narrows it to the app's enum keeps it a string; `demo_expires_at`; `text_size` and `contrast`, `None` = never chosen), `ProfileUpdate` (the `offered_locales` knob, settings §6.2; `text_size` and `contrast`, never `null`); (0.16, notifications §10.3, automatic only) the zone on the account: `UserResponse.device_timezone` and `ProfileUpdate.device_timezone` (the device's report, never `null`; one this server doesn't know is dropped — left unset, never written — as at sign-up, 0.17.0; no pick: a `timezone` is a 422 from 0.18, as any unknown field — ignored in 0.16 and 0.17; breaking for a stale ≤0.45 bundle only), a `ZoneName` (an IANA zone `zoneinfo` knows, `MAX_ZONE_LENGTH` 64), `RegisterRequest.device_timezone` (an unknown one dropped, never a 422), `apply_zone_update(user, patch, *, is_demo)` (nothing for a demo; pass `skip=PROFILE_ZONE_FIELDS` to `apply_patch`); `TEXT_SIZES` (`normal`, `large`, `xlarge`) and `CONTRAST_MODES` (`system`, `standard`, `more`), with their types `TextSize` and `ContrastMode` (text-size §6, §10.6); the types `Email`, `NewPassword` (8 characters, 72 bytes), `ExistingPassword`, `PersonName` (1–120 trimmed), `LocaleTag`, `UtcDateTime` (always ISO-8601 in UTC; a naive value is read as UTC) |
+| The second factor (0.21) | `totp_matched_step(secret, code, *, now, window=1)` → the time step the code matches, one either side of now, the latest match winning, every step compared in constant time (stdlib `hmac`, no pyotp; a malformed code or a backup code is `None`; an empty or non-base32 secret raises); `totp_step_accepted(matched, last_step)` → only a step AFTER the account's last accepted one (RFC 6238 §5.2, keksdose AU-10); `two_factor_challenge_claims(sub, *, last_step, now, shared_device=False)` (the 2FA challenge, five minutes, the last accepted step under `TOTP_STEP_CLAIM` `"totp_step"`; the shared-computer choice since 0.27) and `two_factor_challenge_is_spent(claims, last_step)` (a code was accepted since it was minted: one challenge, one sign-in); `TOTP_DIGITS` 6, `TOTP_STEP_SECONDS` 30, `TOTP_WINDOW` 1; (0.32) `new_totp_secret()` (160 random bits, 32 base32 characters), `totp_uri(secret, *, account, issuer)` (pyotp's `provisioning_uri`, byte for byte) and `totp_code(secret, *, now)` (the code an authenticator shows, for tests) |
 | Sign-in timing | `absent_account_check(hash_password, verify_password, *, cost=None)` → the check for an address with no account: one verify against a dummy hash of a random secret (`ABSENT_ACCOUNT_SECRET_BYTES` 32), built lazily and again when `cost()` changes, through the app's own `verify_password`; answers `False`, always (§5.2) |
 | Refusals | `AuthErrorCode` (`invalid_credentials` 401, `registration_closed` 403, `email_taken` 409, `invitation_invalid` / `invitation_expired` / `token_invalid` / `token_expired` 400, `session_ended` 401 — every definitive refusal of `/auth/refresh`, auth §11), `AuthError(code, detail=None)` |
 
@@ -614,9 +614,9 @@ were. The ports (`auth.ports`), the service (`auth.service`), the mails (`auth.m
 the passkey helpers (`auth.passkeys`) need no FastAPI; the routes are `auth.router`, behind
 the `fastapi` extra, and the passkey routes need the `passkeys` extra (py_webauthn) too.
 The admin half, `user_admin_router` with its scope, came in 0.30 (below), with
-`AccountService.start_session` for an app's demo route. Not in the kit yet: the 2FA routes and
-a company scope (kastlan writes its own `AdminScope`); the hooks are generic so they can come
-later.
+`AccountService.start_session` for an app's demo route, and two-factor sign-in in 0.32
+(below). Not in the kit yet: a company scope (kastlan writes its own `AdminScope`); the hooks
+are generic so it can come later.
 
 **Mounting it**, once per app, beside the app's own routers:
 
@@ -663,21 +663,23 @@ review's reviewer: a mapping from that user, never a second bearer check), and
 
 | Area | Names |
 |---|---|
-| Ports (`auth.ports`) | `AccountRow` (read-only; `is_demo` and the `iat` cut-off `sessions_invalid_before` optional), `UserStore[UserT]` (`get`, `by_email`, `by_emails`, `count_people`, `count_active(role=)` (0.29), `add(NewAccount)`, `apply(row, changes)` with `ACCOUNT_FIELDS` keys only, `delete`); `SessionRow`, `SessionStore` (`start(NewSession)`, `get`, `touch`, `end`, `end_all(user_id, keep=)`, `live`); `OneTimeTokenRow`, `OneTimeTokenStore` (`put`, `take`, `pending`, `drop`); `InvitationRow`, `InvitationStore` (`get`, `by_token_hash`, `open_for`, `listing`, `add(NewInvitation)`, `remint`, `accept`, `revoke`); `PasskeyRow`, `PasskeyStore` (`for_user`, `by_credential_id`, `add(NewPasskey)`, `used`, `rename`, `remove`, `spend_challenge`); `AdminActionLog`; `AfterCommit` (`later`, `commit_now`); `TokenSigner` (`sign`, `verify`); `PasswordHasher` (`hash`, `verify`) |
-| Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep, timer=time.monotonic)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", invitable_roles=None, bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…, answer_floor=timedelta(seconds=3))`; `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
+| Ports (`auth.ports`) | `AccountRow` (read-only; `is_demo` and the `iat` cut-off `sessions_invalid_before` optional), `UserStore[UserT]` (`get`, `by_email`, `by_emails`, `count_people`, `count_active(role=)` (0.29), `add(NewAccount)`, `apply(row, changes)` with `ACCOUNT_FIELDS` keys only, `delete`); `SessionRow`, `SessionStore` (`start(NewSession)`, `get`, `touch`, `end`, `end_all(user_id, keep=)`, `live`); `OneTimeTokenRow`, `OneTimeTokenStore` (`put`, `take`, `pending`, `drop`); `InvitationRow`, `InvitationStore` (`get`, `by_token_hash`, `open_for`, `listing(*, accepted=False)` (0.32: `accepted`), `add(NewInvitation)`, `remint(invitation, *, token_hash, expires_at, locale=UNCHANGED, note=UNCHANGED, invited_by_user_id=UNCHANGED)` (0.32: the fields a re-used invitation takes, `UNCHANGED` / `Unchanged` keep the row's), `accept`, `revoke`); `PasskeyRow`, `PasskeyStore` (`for_user`, `by_credential_id`, `add(NewPasskey)`, `used`, `rename`, `remove`, `spend_challenge`); `AdminActionLog`; `AfterCommit` (`later`, `commit_now`); `TokenSigner` (`sign`, `verify`); `PasswordHasher` (`hash`, `verify`); (0.32) `TwoFactorState(enabled, secret, pending_secret, last_step, backup_codes)`, `TwoFactorStore` (`state(user_id, *, lock=False)`, `save(user_id, state)`), `SecretSeal` (`seal(plaintext, *, aad)`, `unseal(sealed, *, aad)`) |
+| Service (`auth.service`) | `AccountService(*, users, sessions, tokens, invitations, log, after_commit, signer, hasher, mailer, policy, limiters, hooks=None, passkeys=None, relying_party=None, two_factor=None, secret_seal=None, mail_texts=…, absent_check=None, now=utc_now, sleep=asyncio.sleep, timer=time.monotonic)`, one per request; `AccountPolicy(app, app_name, links, contact, admin_role="ADMIN", default_role="MEMBER", invitable_roles=None, reuse_open_invitations=False, list_accepted_invitations=False, bootstrap=None, sessions=SessionPolicy(), deletion_mode=AFTER_DAYS, deletion_days=30, retention=…, answer_floor=timedelta(seconds=3), mail_date=mail_date)` — `mail_date` writes a mail's `{date}` (0.32: keksdose's day as a sentence), `list_accepted_invitations` adds the accepted invitations to the admin's list (0.32, keksdose's); `AccountLinks(base_url, reset_password="/reset-password", verify_email="/verify-email", confirm_email="/confirm-email", register="/register", settings="/settings", home="/")`; `AuthHooks`; `SessionsEndedReason`; the results `IssuedSession`, `ChallengeIssued`, `TwoFactorChallengeIssued` (0.32), `SignedIn`, `IssuedInvitation`; `AUTH_THROTTLED` (the 429 sentences); `withdraw_deletion(user, *, actor_id)` for 0.30's admin route |
 | Routes (`auth.router`) | `AuthDeps` (below), `auth_router(deps, *, prefix="/auth", tags=("auth",))`, `invitations_admin_router(deps, *, prefix="/admin/invitations", tags=("admin",), guard=None)`, `current_user(deps)`, `admin_guard(deps)`, `account_service(deps)`, `app_state_limiters`, `peer_address`, `no_hooks` |
 | Mails (`auth.mails`) | `AccountMailText` (`password_reset`, `verification`, `email_change`, `email_change_notice`, `invitation`, `account_deletion`, `account_deletion_operator`, `passkey_added_notice`), `ACCOUNT_MAIL_TEXTS` (seven languages each, `de-CH` formal with "ss"), `ACCOUNT_MAIL_KINDS` (the `kind` each is sent under), `ACCOUNT_MAIL_VALUES` (the placeholders each fills), `account_mail_texts(overrides)`, `mail_date(when, locale)` |
 | Passkeys (`auth.passkeys`) | `RelyingParty(rp_id, rp_name, origins)` (0.30: an origin that does not fit the RP id is logged once as a WARNING naming it; the construction stands), `rp_id_fits(rp_id, origin)` (0.30: the origin's host or a suffix of it at a dot, the browser's rule), `registration_options`, `authentication_options`, `verify_registration` → `VerifiedPasskey`, `verify_authentication`, `credential_id_of`, `user_handle_of`, `PasskeyCheckError`, `DEFAULT_PASSKEY_NAME`, `base64url_encode` / `_decode`; py_webauthn imported only here, lazily |
-| Tables and stores (`auth.sql`, the `sql` extra) | the mixins `AccountColumns` (with `DemoAccountColumn`, `SessionCutoffColumn`), `SessionColumns`, `OneTimeTokenColumns`, `InvitationColumns`, `PasskeyColumns`, `SpentChallengeColumns`, `AdminActionColumns`; the stores `SqlUserStore`, `SqlSessionStore`, `SqlOneTimeTokenStore`, `SqlInvitationStore`, `SqlPasskeyStore`, `SqlAdminActionLog`, `SqlAfterCommit`; `UtcDateTime` (public in 0.30, `_UtcDateTime` still answers); `alembic_render_item` (0.30); `prune(*, before, now=None)` on the session, link, invitation and passkey stores and `prune_account_rows(*, before, now=None, sessions=, passkeys=, links=, invitations=)` → `AccountPrune` (0.30; `before` must have passed by `now`, the kit's clock unless a test hands its frozen one) |
+| Tables and stores (`auth.sql`, the `sql` extra) | the mixins `AccountColumns` (with `DemoAccountColumn`, `SessionCutoffColumn`), `SessionColumns`, `OneTimeTokenColumns`, `InvitationColumns`, `PasskeyColumns`, `SpentChallengeColumns`, `AdminActionColumns`, `TwoFactorColumns` (0.32: `totp_enabled`, `totp_secret`, `totp_pending_secret`, `totp_last_step` on the account model); the stores `SqlUserStore`, `SqlSessionStore`, `SqlOneTimeTokenStore`, `SqlInvitationStore`, `SqlPasskeyStore`, `SqlTwoFactorStore` (0.32), `SqlAdminActionLog`, `SqlAfterCommit`; `UtcDateTime` (public in 0.30, `_UtcDateTime` still answers); `alembic_render_item` (0.30); `prune(*, before, now=None)` on the session, link, invitation and passkey stores and `prune_account_rows(*, before, now=None, sessions=, passkeys=, links=, invitations=)` → `AccountPrune` (0.30; `before` must have passed by `now`, the kit's clock unless a test hands its frozen one) |
+| Seal (0.32) | `SecretBox(keys, *, label=DEFAULT_SEAL_LABEL)` (`auth.seal`, the `seal` extra: keksdose's `secret_box`, AES-256-GCM, `enc:v1:` values, several keys newest first as a sequence or one string split at whitespace and commas, `key_is_configured`); `SecretSealError` with `SecretKeyMissingError` and `SecretUnreadableError`; `totp_secret_aad(user_id)` and `totp_pending_secret_aad(user_id)` (keksdose's bytes: its values open with `label=b"keksdose.secret_box.v1"`); `SEALED_PREFIX` |
 | Signer and hasher (0.30) | `JwtSigner(secret)` (`auth.jwt_signer`, the `jwt` extra: HS256 pinned, `exp` required, `None` for any fault; `JWT_ALGORITHM`), `BcryptHasher(rounds=DEFAULT_BCRYPT_ROUNDS)` (`auth.bcrypt_hasher`, the `bcrypt` extra: 4–31 rounds, past 72 bytes or a malformed hash is no match, never an exception) |
-| Wire shapes (`auth`, 0.29) | `SetPasswordRequest`, `PasswordChangeRequest`, `TokenRequest`, `PasswordResetRequest` / `Confirm` / `State`, `EmailVerificationStatus`, `EmailChangeState`, `EmailChangeConfirmed`, `InvitationCheck`, `InvitationAccepted`, `SessionInfo`, `DeletionTerms`, `DeletionResult`, `PasskeyOptions`, `PasskeyRegistrationBegin` / `Finish`, `PasskeyLoginFinish`, `PasskeyRename`, `PasskeyResponse`; `user_admin.InvitationIssued` |
+| Wire shapes (`auth`, 0.29) | `SetPasswordRequest`, `PasswordChangeRequest`, `TokenRequest`, `PasswordResetRequest` / `Confirm` / `State`, `EmailVerificationStatus`, `EmailChangeState`, `EmailChangeConfirmed`, `InvitationCheck`, `InvitationAccepted`, `SessionInfo`, `DeletionTerms`, `DeletionResult`, `PasskeyOptions`, `PasskeyRegistrationBegin` / `Finish`, `PasskeyLoginFinish`, `PasskeyRename`, `PasskeyResponse`; `user_admin.InvitationIssued` (0.32: `resent`, true when the invitation was sent again); (0.32) `TwoFactorLogin`, `TwoFactorSetupRequest`, `TwoFactorSetup`, `TwoFactorConfirm`, `TwoFactorDisableRequest`, `TwoFactorCodeText` |
 | Limits (0.29) | `AuthLimiters(…, redeem=REDEEM_PER_IP, refresh=REFRESH_PER_IP, password_check=PASSWORD_CHECK_PER_ACCOUNT, email_change=EMAIL_CHANGE_PER_ACCOUNT, export=EXPORT_PER_ACCOUNT)`; the old windows as they were |
 
 **`AuthDeps`** (frozen, compared by identity): the dependencies `users`, `sessions`, `tokens`,
-`invitations`, `log`, `after_commit`, `hooks` (default `no_hooks`) and `passkeys` (mounts the
-passkey routes, with `relying_party`; one without the other is a `ValueError`); the objects
-`signer`, `hasher`, `mailer`, `mail_backend` (an admin's answer carries a link only while it
-is `"console"`), `policy`, `relying_party`; `demo_guard` (the app's factory for the
+`invitations`, `log`, `after_commit`, `hooks` (default `no_hooks`), `passkeys` (mounts the
+passkey routes, with `relying_party`; one without the other is a `ValueError`) and
+`two_factor` (0.32: mounts the two-factor routes, with `secret_seal`; the same rule); the
+objects `signer`, `hasher`, `mailer`, `mail_backend` (an admin's answer carries a link only
+while it is `"console"`), `policy`, `relying_party`, `secret_seal`; `demo_guard` (the app's factory for the
 never-list routes, as `FeedbackDeps` takes it); the app's bodies `register_model`,
 `profile_model`, `password_change_model`, `set_password_model`, `email_change_model`,
 `deletion_model`, `invitation_create_model`, `passkey_login_model`; the app's answers
@@ -689,10 +691,40 @@ the router is built), `client_address`, `limiters`, `now`, `sleep` and `timer` (
 monotonic clock the reset request's floor is measured on; a test passes a fake one with a fake
 `sleep`).
 
+**Two-factor sign-in** (0.32, keksdose's KG-1, its rules exactly): with
+`two_factor=two_factor_store, secret_seal=SecretBox(settings.totp_keys)` the router mounts
+
+| Route | What it does |
+|---|---|
+| `POST /auth/login` | an account with 2FA on answers `{requires_2fa: true, challenge_token}` (five minutes, the last accepted step and the shared-computer choice in it); no session, no `last_login_at` yet |
+| `POST /auth/login/2fa {challenge_token, code}` | the per-IP and per-account challenge windows, then: active, 2FA still on, the secret readable, the challenge unspent, the code (its step spent, the row locked) — or a backup code in the same field, spent, its challenge with it — then a forced password change's challenge, then the session; a dead challenge is `token_invalid` |
+| `POST /auth/me/2fa/setup {password}` | the password every time; a new secret, sealed as the PENDING one beside the live one, answered as `{secret, otpauth_url}` (the page draws the QR); nothing signs in differently yet |
+| `POST /auth/me/2fa/enable {code}` | a code from the pending secret, charged to the password-check window: it becomes the live secret and its step is spent; answers ten backup codes once (`{backup_codes}`); `404 two_factor_not_pending` without a setup |
+| `GET /auth/me/2fa` | `{enabled, backup_codes_left}` |
+| `POST /auth/me/2fa/backup-codes {password}` | a new set of ten, the old ones dead; `409 two_factor_not_enabled` while off |
+| `POST /auth/me/2fa/disable {password, code}` | the password and a live code, then every field cleared; a secret this server cannot open goes by the password alone |
+
+A wrong, malformed or replayed code is `400 two_factor_invalid` (never a 401: two of the routes
+are signed in); a secret no key opens, or a setup without a key, is `503
+two_factor_unavailable`, and the sign-in says so at `/login`, before a code is typed. A
+passkey sign-in counts as both factors. **Backup codes and an admin reset** (Marcel
+2026-11-14, over keksdose's "none": a lost phone with no passkey locked the account out for
+good): ten codes `ABCD-EFGH-JKLM-NPQR` (no I, O, 0, 1) when it is switched on, kept as digests
+(`TwoFactorState.backup_codes`, `TwoFactorColumns.totp_backup_codes`), each good once in place of
+the code; and `user_admin_router`'s `POST /admin/users/{id}/two-factor-reset` (mounted with the
+store: acknowledged, never one's own, logged as `two_factor_reset`, the account told by the
+`two_factor_reset_notice` mail; the roster's `totp_enabled` reads the store). A password reset
+leaves 2FA on, and a new setup from a signed-in session is the way back from a lost
+authenticator too. `/auth/me` answers `totp_enabled` from the store. The setup, the
+confirmation and switching off are behind the app's `demo_guard`, and the service refuses a
+demo itself. `auth.testing` has `InMemoryTwoFactorStore`, `check_two_factor_store` and
+`totp_code`.
+
 **`AuthHooks`** — what differs between the apps (§12.2's six seams), every member an optional
-coroutine; the `hooks` dependency answers them per request, on the request's own session, so a
-hook writes in the request's transaction. Each may raise a kit refusal; a mapping it answers
-rides on the route's answer, which the app's answer model declares.
+coroutine but `observe`, a plain function (0.32); the `hooks` dependency answers them per
+request, on the request's own session, so a hook writes in the request's transaction. Each may
+raise a kit refusal; a mapping it answers rides on the route's answer, which the app's answer
+model declares.
 
 | Hook | Called | Seam |
 |---|---|---|
@@ -703,7 +735,7 @@ rides on the route's answer, which the app's answer model declares.
 | `invitation_scope(admin, scope)` → stored mapping | an admin's `scope`; without it a scope is `invitation_scope_invalid` | 1 |
 | `claims(user, session)` → extra claims | every access token minted; may refuse a refresh | 2 |
 | `bind(user, claims)` | every signed-in request, after the kit's checks; may refuse | 2 |
-| `password_changing(user, body)` → extras | before a voluntary or forced change (keksdose's key wrap) | 3 |
+| `password_changing(user, body)` → extras | before a voluntary or forced change (keksdose's key wrap); the extras ride on both answers, and the hook may refuse with a kit refusal or the app's own exception, which its own handler answers (keksdose's `wrap_required` 409) | 3 |
 | `challenge_extras(user)` → extras | the forced change's challenge (keksdose's `encrypted`) | 3 |
 | `reset_extras(user, confirmed)` → extras | the reset's check (`False`) and confirm (`True`) | 3 |
 | `passkey_extensions(user \| None, ceremony)` → extensions | both ceremonies' options (keksdose's `prf`) | 3 |
@@ -714,8 +746,43 @@ rides on the route's answer, which the app's answer model declares.
 | `on_deletion_withdrawn(user)` → extras | `withdraw_deletion` (0.30's admin); the extras are the `deletion_cancel` row's detail (0.31) | 5 |
 | `export_data(user)` → `data` | the export's `data` | 5 |
 | `erase(user, *, actor_id)` → extras | the erasure (0.30; the actor since 0.31: the admin, `None` for the job) | 5 |
-| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30) | 5 |
+| `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30), as bare keys (the store's path is the attachment storage's `object_key(key)`); an app with feedback files sets it, since without it they stay in the store and the erasure logs a WARNING (0.32) | 5 |
+| `erasure_identifiers(user)` | an erasure that anonymises the feedback: the app's own strings for the person, added to the kit's `erasure_identifiers` (0.32; keksdose's `legacy_display_name`); never a bare first or last name | 5 |
 | `to_me(user)` → the app's `me_model` | `/auth/me` and every token answer's user | 6 |
+| `observe(event, outcome)`, synchronous | every decision of the signed-out flows and the refresh (0.32, keksdose's review of 0.32.0.dev4): an `AuthEvent` and a short stable outcome (the table below); an exception it raises is logged at WARNING and changes no answer | — |
+
+**What an app counts** (`AuthHooks.observe`, 0.32; keksdose's review of 0.32.0.dev4). The
+answers fold reasons into one code on purpose (`invalid_credentials` for an unknown address, a
+wrong password and a deactivated account), and the other hooks never see a refusal, so the
+service tells the observer each decision as `(event, outcome)`: an `AuthEvent` (a `StrEnum`,
+exported by `eifi1_server_kit.auth`) and a short stable string, never an address, an id or a
+token. The outcome is `ok` on success; the internal reason where the answer is one code for
+several (or a success with more to say); otherwise the refusal's own code. Every event may also
+be `throttled` (its `429`), and a kit refusal raised by one of the app's hooks (`claims` at a
+refresh, `invitation_accepting`, `on_register`) is told by its code. A fault, or an exception
+without a code (the app's own), is no decision and is told nothing. The observer runs at the
+end of the flow, once; the reset request tells it after its floor on every path, so it adds the
+same time account or not. Map the pairs onto the app's own counter:
+
+```python
+AuthHooks(observe=lambda event, outcome: AUTH_EVENTS.labels(event, outcome).inc())
+```
+
+| `AuthEvent` | Route | Outcomes besides `throttled` |
+|---|---|---|
+| `register` | `POST /auth/register` | `ok`; the invitation's `invalid` (unknown or spent), `expired`, `email_mismatch` (for another address) — all `invitation_invalid` but `expired`; `registration_closed`, `email_taken` |
+| `login` | `POST /auth/login` | `ok`; `totp_required` (the code's challenge), `password_change_required` (the forced change's challenge); `unknown_email`, `bad_password`, `inactive_user` (all `invalid_credentials`); `secret_unreadable` (`503 two_factor_unavailable`) |
+| `login_2fa` | `POST /auth/login/2fa` | `ok` (an authenticator's code), `backup_code` (a backup code), either way also when a forced change follows (`login_set_password` tells it); `invalid_code`, `replayed_code` (both `two_factor_invalid`); `secret_unreadable`; the dead challenge's `challenge_invalid`, `inactive_user`, `two_factor_off`, `challenge_spent` (all `token_invalid`) |
+| `login_set_password` | `POST /auth/login/set-password` | `ok`; `challenge_invalid`, `inactive_user` (both `token_invalid`); `password_change_not_required`, `password_unchanged` |
+| `passkey_login` | `POST /auth/passkey/login/finish` | `ok`, `password_change_required`; `challenge_invalid`, `unknown_passkey` (a malformed credential id too), `user_handle_mismatch`, `not_verified` (the assertion: signature, origin, user verification), `challenge_spent`, `inactive_user` (all `passkey_refused`) |
+| `refresh` | `POST /auth/refresh` | `ok`; `invalid_token` (not this app's refresh token), `session_ended` (the row ended, gone or someone else's), `session_expired`, `inactive_user`, `revoked` (the cut-off), `password_change_required` (all `session_ended`) |
+| `password_reset_request` | `POST /auth/password-reset/request` | `sent`, `send_failed` (the mail failed or was cut at the floor), `unknown_email`, `inactive_user`, `demo_user` — all `204` |
+| `password_reset_check` | `POST /auth/password-reset/check` | `ok`; `invalid` (`token_invalid`: unknown, spent, or its account gone), `expired` (`token_expired`); `inactive_user`, `email_changed` (both `token_invalid`) |
+| `password_reset_confirm` | `POST /auth/password-reset/confirm` | as the check |
+| `email_verify` | `POST /auth/verify-email` | `ok`; `invalid`, `expired`, `email_changed` |
+| `email_change_confirm` | `POST /auth/me/email/confirm` | `ok`; `invalid`, `expired`, `inactive_user`; `email_taken` |
+| `invitation_check` | `POST /auth/invitations/check` | `ok`; `invalid`, `expired` |
+| `invitation_accept` | `POST /auth/invitations/accept` | `ok`; `invalid`, `expired`, `email_mismatch`; `demo_refused` |
 
 **The work after the commit** (`AfterCommit`, §12.5 item 2): the kit never commits but where
 a route's answer says whether its mail went out (an address change and its re-send, the
@@ -775,8 +842,8 @@ a link's secret.
 | `POST /auth/passkey/login/begin` | `PasskeyOptions` | — | — |
 | `POST /auth/passkey/login/finish` | `token_model` or `challenge_model` | `passkey_refused` (401) | `login` (IP) |
 | `GET /auth/passkeys`, `PATCH` / `DELETE /auth/passkeys/{passkey_id}` | `[PasskeyResponse]`, `PasskeyResponse`, 204 | `passkey_not_found` | — |
-| `GET /admin/invitations` | `[invitation_row_model]` | `admin_required` | — |
-| `POST /admin/invitations`, `POST /admin/invitations/{id}/resend` | 201 / 200 `invitation_issued_model` (`link` on the console only) | `invitation_scope_invalid`, `invitation_not_found`, `invitation_closed` | `verification_resend` (recipient) |
+| `GET /admin/invitations` | `[invitation_row_model]`, the accepted ones too with `list_accepted_invitations` (0.32) | `admin_required` | — |
+| `POST /admin/invitations`, `POST /admin/invitations/{id}/resend` | 201 / 200 `invitation_issued_model` (`link` on the console only; `resent` on a re-send and where `reuse_open_invitations` re-used the address's row, which then takes the new request's language, note and inviter, 0.32); logged `invite` / `invite_resend` with `sent` after the commit and the mail (0.32), as the admin's mails are | `invitation_scope_invalid`, `invitation_not_found`, `invitation_closed` | `verification_resend` (recipient) |
 | `DELETE /admin/invitations/{id}` | 204 (also when revoked before) | `invitation_not_found`, `invitation_closed` | — |
 
 "Bearer" is `401 not_signed_in` (with `WWW-Authenticate: Bearer`) without a usable access
@@ -842,10 +909,10 @@ under `prefix="/platform"`.
 
 | Route | Answer | Codes | Limit |
 |---|---|---|---|
-| `GET /admin/users?limit&offset&sort&q&role&state` | `UserListResponse[row_model]` with `summary.active_admins` and `levels` | 422 (`RosterQueryError`) | — |
+| `GET /admin/users?limit&offset&sort&q&role&state` (and `roster_query_model`'s fields, 0.32) | `UserListResponse[row_model]` with `summary.active_admins` (and the `summary` hook's counts, typed by `summary_model`, 0.32) and `levels` | 422 (`RosterQueryError`, the app's filter model) | — |
 | `POST /admin/users/{id}/active {active, confirm_email?}` | the row | `user_not_found`, `demo_refused`, `self_action`, `other_companies` (a scope's), `last_admin`, `confirmation_required`, `confirmation_mismatch`, the `activating` hook's | — |
 | `POST /admin/users/{id}/role {role}` (`role_sets`: `PUT …/roles {roles}`) | the row | `role_not_grantable` (422), `self_action`, `last_admin`, `confirmation_*`, the `role_changing` hook's | — |
-| `POST` / `DELETE /admin/users/{id}/password-change` | the row | `other_companies`, `confirmation_*` (a body a proxy dropped fails closed) | — |
+| `POST` / `DELETE /admin/users/{id}/password-change` | the row | `account_inactive` (`POST`, 0.32), `other_companies`, `confirmation_*` (a body a proxy dropped fails closed) | — |
 | `POST /admin/users/{id}/mail {kind}` | `MailResult` (`link` on the console only) | `account_inactive`, `email_already_verified`, `confirmation_*` (an app's raised level) | `verification_resend` / `reset_address` (recipient) |
 | `PUT /admin/users/{id}/reviewer {locales, areas}` (with `review_locales`) | `ReviewerResult` | `reviewer_is_admin`, 422 (unknown locale or area) | — |
 | `POST /admin/users/{id}/erase {confirm_email}` (`operator` mode only) | `erasure_result_model` | `self_action`, `other_companies`, `deletion_not_requested`, `confirmation_*` | — |
@@ -855,7 +922,7 @@ under `prefix="/platform"`.
 | `POST /admin/mail/test` | `MailTestResult` | `demo_refused` | `mail_test` (3 in 10 minutes per admin) |
 
 Every route is behind the guard: `401 not_signed_in` / `session_ended`, `403 admin_required`.
-**New codes for the ui-kit's words (ui-kit 0.64):** `user_not_found` (404),
+**New codes for the ui-kit's words (ui-kit 0.65):** `user_not_found` (404),
 `role_not_grantable` (422), `reviewer_is_admin`, `email_already_verified`,
 `deletion_not_requested` (409), and `account_inactive` (409, already in the ui-kit's union) as
 the admin mail's answer.
@@ -876,13 +943,15 @@ the admin mail's answer.
   invitations), never takes your own admin role away nor the last active admin's, is
   acknowledged, logs `{from, to}` (`{added, removed}` for sets), clears the review scope with
   the role, and keeps the sessions.
-- **A forced password change** ends every session (`PASSWORD_CHANGE_REQUIRED`), also on a
-  deactivated account (it waits for the return) and on oneself; withdrawing it keeps them ended.
+- **A forced password change** ends every session (`PASSWORD_CHANGE_REQUIRED`), also on
+  oneself, and refuses a deactivated account with the admin mails' `account_inactive` (0.32,
+  keksdose's; nothing changed or logged); withdrawing it keeps them ended.
 - **The admin's mail** refuses a deactivated account and a verified address's verification,
   is charged to the recipient's public window, commits its link before mailing it, and logs
   `{sent}` after.
 - **The reviewer scope** gives the reviewer role with the locales (the app's, `normalize_locales`)
-  and takes it away with none (the default role); an admin is refused.
+  and takes it away with none (the default role); an admin is refused. Logged `{from: {locales,
+  areas}, to: {locales, areas}}`, the scope before and after (0.32; `{locales, areas}` before).
 - **The overview** counts the people, the new ones of seven days and the open invitations; the
   deletion requests only in `operator` mode; the app's `attention` hook adds `feedback_waiting`
   and its `extra` tiles; a demo admin sees no count.
@@ -925,10 +994,10 @@ the app's (Kurvenschmiede's `demo_router`, keksdose's demo).
 
 | Area | Names |
 |---|---|
-| Ports (`user_admin.ports`) | `RosterStore` (`page(query, *, admin_role, reviewer_role)`, `counts(*, since)` → `RosterCounts(people, new, deletion_requests)`, `deletion_requested()`), `AcceptedInvitations` (`forget_accepted(user_id)`, optional, runtime-checkable), `AccountLogScrub` (`scrub_account(user_id)`, optional, runtime-checkable; 0.31) |
-| Scope (`user_admin.scope`) | `AdminScope` (`find`, `roster`, `counts`, `roles_of`, `grantable_roles`, `set_roles`, `active_admins`, `refuse_last_admin`, `refuse_account_wide`, `record_fields`), `GlobalScope` |
-| Service (`user_admin.service`) | `UserAdminService`, `AdminPolicy(roles, grantable, reviewer_role, review_locales, review_areas, states, sort_keys, app_actions)`, `UserAdminHooks(to_row, attention, confirmation, role_changing, activating, group_names)`, `ADMIN_ACTIONS`, `erase_due_accounts`, `ErasureRun` |
-| Routes (`user_admin.router`) | `UserAdminDeps(auth, roster, scope, hooks, feedback, guard, policy, role_sets, row_model, action_row_model, attention_model, erasure_result_model, active_change_model, role_change_model, roles_change_model, mail_request_model)`, `user_admin_router(deps, *, prefix="/admin", tags=("admin",))`, `no_admin_hooks` |
+| Ports (`user_admin.ports`) | `RosterStore` (`page(query, *, admin_role, reviewer_role, filters=None)` — `filters` passed only where the app has a `roster_query_model`, 0.32; `SqlRosterStore.filter_clause(filters)` applies them in a subclass —, `counts(*, since)` → `RosterCounts(people, new, deletion_requests)`, `deletion_requested()`), `AcceptedInvitations` (`forget_accepted(user_id)`, optional, runtime-checkable), `AccountLogScrub` (`scrub_account(user_id)`, optional, runtime-checkable; 0.31) |
+| Scope (`user_admin.scope`) | `AdminScope` (`find`, `roster(query, *, filters=None)`, `counts`, `roles_of`, `grantable_roles`, `set_roles`, `active_admins`, `refuse_last_admin`, `refuse_account_wide`, `record_fields`), `GlobalScope` |
+| Service (`user_admin.service`) | `UserAdminService`, `AdminPolicy(roles, grantable, reviewer_role, review_locales, review_areas, states, sort_keys, app_actions)`, `UserAdminHooks(to_row, to_rows, attention, confirmation, role_changing, activating, group_names, summary)` (0.32: `summary(admin)` → the roster summary's app counts, under the kit's `active_admins`), `ADMIN_ACTIONS`, `erase_due_accounts`, `ErasureRun` |
+| Routes (`user_admin.router`) | `UserAdminDeps(auth, roster, scope, hooks, feedback, guard, policy, role_sets, row_model, action_row_model, attention_model, erasure_result_model, active_change_model, role_change_model, roles_change_model, mail_request_model, summary_model, roster_query_model)` (0.32: the roster summary's model, with `active_admins`; the app's own roster filters, `GET /admin/users` alone, never naming the kit's parameters; a `row_model` on `AdminUserRowBase`, without `display_name`), `user_admin_router(deps, *, prefix="/admin", tags=("admin",))`, `no_admin_hooks` |
 | Account layer (0.30) | `AccountService.start_session`, `end_sessions`, `send_account_mail`, `erase`, `erase_if_due`; `StartedSession`; `AuthHooks.erase`, `purge_files`; `SessionsEndedReason.PASSWORD_CHANGE_REQUIRED`; `AccountPolicy.invitable_roles`; `AuthDeps.offered_locales`; `AuthLimiters(mail_test=MAIL_TEST_PER_ACCOUNT)` |
 | Answers (`user_admin`) | `AdminActionPage[RowT]`, `AdminActionRow.target`, `ReviewerResult`, `MailBackendInfo`, `ErasureResult`; `AccountErrorCode` `user_not_found`, `role_not_grantable`, `reviewer_is_admin`, `account_inactive`, `email_already_verified`, `deletion_not_requested` |
 | Testing (`user_admin.testing`) | `InMemoryRosterStore(rows)`, `check_roster_store(roster, users, *, admin_role, member_role, reviewer_role, add_demo=None)`, `check_accepted_invitations(store, *, inviter_id, user_id, other_user_id)`, `check_account_log_scrub(log, *, actor_id, user_id, other_user_id)` (0.31) |
@@ -945,7 +1014,7 @@ method.
 
 **Stays app-side:** what an erasure deletes or hands over (the `erase` hook), keksdose's API
 tokens and push devices at a deactivation (the `sessions_ended` hook), plans and billing,
-Kurvenschmiede's transfer and teams, keksdose's health, jobs, metrics, push, legal changes,
+Kurvenschmiede's transfer (its teams: the opt-in `eifi1_server_kit.teams`, 0.32), keksdose's health, jobs, metrics, push, legal changes,
 support, demo budget and user message routes, kastlan's company routes (membership removal,
 the user PATCH) and its RLS, the demo routes, the scheduler's wiring of the job, and a row lock
 for the job (the port has none; keksdose's `with_for_update` is its own).
@@ -963,7 +1032,7 @@ holds stay in the app.
 | Actions and levels | `AdminAction` (the §4.3 list: `deactivate`, `reactivate`, `role`, `membership_remove`, `password_change_require` / `_withdraw`, `mail_verification` / `mail_reset`, `reviewer`, `invite`, `invite_resend`, `invite_revoke`, `transfer`, `deletion_request`, `deletion_cancel`, `erase`, billing §6's `plan` at `acknowledge`, and §11's group words `group_create`, `group_rename`, `group_delete` (at `acknowledge`), `membership_add`, `membership_role`, and (0.15) `group_deactivate`, `group_reactivate` (a whole company switched off and on); a team's `group_rename` detail is `{}`, a company's `{from, to}`); `ConfirmationLevel` (`none` / `acknowledge` / `type_email`), `CONFIRMATION_LEVELS`, `confirmation_level(action, at_least=)` |
 | User list | `parse_roster_query(limit=, offset=, sort=, q=, role=, state=, sort_keys=, accepted_states=, roles=)` → `UserListQuery` (`.search_pattern` for `LIKE`), `parse_sort`, `parse_tokens`, `RosterSort`, `SORT_KEYS`, `STATE_TOKENS`, `DEFAULT_ROSTER_SORT` (newest first), `DEFAULT_PAGE_SIZE` 25, `MAX_PAGE_SIZE` 200 (each with its `value` in the API export since 0.21, for a TypeScript pager to be held to), `RosterQueryError` (422), `LIKE_ESCAPE`; the sort grammar is keksdose's `key[.asc\|.desc]` (a bare trailing dot ascending, since 0.21) plus the contract's `-key` |
 | Audit | `admin_action_record(action, actor_id=, target_user_id=, target_email=, detail=, company_id=, target_group_id=, target_group_name=, now=)` → the row's fields (`target_group_name` on a `group_delete` row only) (an `AdminAction`, or the app's own action kept as written); `audit_detail(detail, action=)` (ids, roles, flags and counts only; 0.16: a `group_rename`'s top-level `from` / `to` are names, free text cleaned to at most `DETAIL_NAME_MAX_LENGTH` 200, never refused), `group_name_problem(name)` → `GroupNameProblem` (`blank` / `too_long` / `control_character` / `secret_shaped`) or `None`, the same rule for the app's request schema (0.16), `AuditDetailError`, `DETAIL_TOKEN_MAX_LENGTH` 64, `DETAIL_MAX_BYTES` 2048, `DETAIL_MAX_DEPTH` 3 |
-| Schemas | `AdminUserRow` (never the person's `device_timezone`, 0.17.0), `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
+| Schemas | `AdminUserRow` (never the person's `device_timezone`, 0.17.0), `AdminUserRowBase` (0.32: the same row without `display_name`, keksdose's rule that an answer about another person carries first and last name only; `AdminUserRow` is it plus `UserResponse`'s `display_name`, unchanged; `UserAdminDeps.row_model` takes either), `UserListResponse[RowT]`, `ActionConfirmation` → `ActiveChange`, `RoleChange`, `RolesChange`, `MailRequest` (`MailKind`); `MailResult` (a link only on the console, `MAIL_BACKEND_CONSOLE`); `InvitationCreate`, `InvitationRow`, `InvitationStatus`, `invitation_status(…)`; `ReviewerUpdate`; `PersonRef`; `GroupRef`; `AdminActionRow` (`target_group_id`, `target_group`); `EmailChangeRequest`, `EmailChangeConfirm`, `DeletionRequest` |
 | Deletion | `DeletionMode` (`after_days`, `operator`), `deletion_schedule(now, mode, days=30)`, `deletion_due(requested_at, days, now, scheduled_at=)`, `deletion_mail_retention_note(backup_days=7, log_days=30)` → `RetentionNote` |
 | Export | `export_envelope(app, account, data, now)` (`"format": "eifi1-account-export"`, `"version": 1`), `export_filename`, `EXPORT_PER_USER` (once a minute), `NEVER_EXPORT`; `assert_no_secrets(obj, allow=)` / `secret_paths` → `ExportSecretError`; `looks_secret`, `looks_secret_key`, `looks_secret_value` |
 | Attention | `AdminAttention` (`GET /admin/attention`: `feedback_waiting` = OPEN, crashes included, in the admin's scope; `deletion_requests`, `invitations_pending`, `users_total`, `users_new_7d`, `extra`; each `AttentionCount` = `int ≥ 0` or `None` for "no such thing here"; demo accounts never count), `AdminAttention.of(…, demo=)` (every count passed in), `AdminAttention.for_demo(*extra_keys)` (all `None`) |
@@ -1053,6 +1122,134 @@ re-checks `deletion_due(…, scheduled_at=row.deletion_scheduled_at)` on the loc
 `operator` mode an operator erases from the platform. The email change's link lives
 `auth.EMAIL_CHANGE_TTL` (48 h) as a `OneTimeTokenKind.EMAIL_CHANGE` row holding the new
 address.
+
+### `eifi1_server_kit.teams` — Teams (opt-in)
+
+Kurvenschmiede's teams, lifted (0.32, Marcel 2026-11-14; user-admin §11): named groups of
+accounts, the managers an admin names in each, and invitations into them — with
+Kurvenschmiede's tables column for column and its wire shapes field for field, so the app adopts
+them with no data migration and no change on the wire. **Opt-in**: an app that mounts neither
+router and uses no mixin of `teams.sql` sees nothing change; the account layer and the admin's
+routes behave as before unless teams are given. The refusals, the shapes, the port and the
+service need no FastAPI or SQLAlchemy; the routes are `teams.router` (the `fastapi` extra), the
+tables `teams.sql` (the `sql` extra), the in-memory store and its suite `teams.testing`.
+
+**Mounting it**, beside the account layer's routers and on its `AuthDeps`:
+
+```python
+from eifi1_server_kit.teams.router import TeamsDeps, teams_admin_router, teams_router
+from eifi1_server_kit.teams.service import TeamAccountHooks, TeamHooks
+from eifi1_server_kit.teams.sql import SqlTeamInvitationStore, SqlTeamStore
+
+
+async def team_store(session: AsyncSession = Depends(db_session)) -> SqlTeamStore[Team, TeamMember]:
+    return SqlTeamStore(session, Team, TeamMember, users=User, invitations=Invitation)
+
+
+async def team_hooks(session: AsyncSession = Depends(db_session)) -> TeamHooks[User]:
+    return TeamHooks(
+        deleting=lambda ids: grant_counts(session, ids),  # {team_id: grants}, in one call
+        member_added=lambda actor, team, user: tell_team_added(session, actor, team, user),
+        billing_gate=lambda manager, what: refuse_unpaid(session, manager, what),  # "add" | "resend"
+        refuse_address=refuse_demo_address,  # by shape, before the lookup
+    )
+
+
+teams = TeamsDeps(auth=deps, teams=team_store, hooks=team_hooks)  # the app's AuthDeps
+app.include_router(teams_router(teams), prefix="/api/v1")
+app.include_router(teams_admin_router(teams), prefix="/api/v1")
+```
+
+The invitation store is `SqlTeamInvitationStore(session, Invitation, teams=Team)` (an
+invitation whose scope names a team gets its `team_id` and `team_role` columns too), and the
+joins and the admin log's team names are the ready `TeamAccountHooks`, wired into the app's
+hooks:
+
+```python
+async def account_hooks(session: AsyncSession = Depends(db_session)) -> AuthHooks[User, Invitation]:
+    teams = TeamAccountHooks(team_store_on(session), SqlAdminActionLog(session, AdminActionRecord))
+    return AuthHooks(
+        on_register=teams.on_register,  # a sign-up through a team invitation joins the team
+        on_invitation_redeemed=teams.on_invitation_redeemed,  # /invitations/accept, an address confirmation
+        invitation_group=teams.invitation_group,  # the team on the invitation's log rows and in its mail
+        invitation_scope=teams.invitation_scope,  # an admin's scope on POST /admin/invitations: a team
+        describe_invitation=teams.describe_invitation,  # {scope, team_name, team_role}
+    )
+
+
+# and UserAdminHooks(group_names=teams.group_names): the live name, else the group_delete row's
+```
+
+| Route | Answer | Codes | Guard |
+|---|---|---|---|
+| `GET /teams` | `list[TeamOut]`, the caller's teams by name; the invitations only where they manage | — | signed in (no demo guard) |
+| `POST /teams/{id}/members {email, locale?, role}` (`If-Match` optional) | `TeamOut` (`invited` when the address had no account) | `team_not_found` (404), `team_changed`, `manager_named_by_admin`, `manager_kept_by_admin` (`email`), the `billing_gate`'s, the `refuse_address`' | a manager of the team; `demo_guard("teams")` |
+| `DELETE /teams/{id}/members/{user_id}` (`If-Match` optional) | `TeamOut` | `team_not_found`, `team_changed`, `manager_removed_by_admin` | the same |
+| `POST /teams/{id}/invitations/{inv}/resend` | `TeamOut` with `invited` | `team_not_found`, `invitation_closed`, the `billing_gate`'s | the same |
+| `DELETE /teams/{id}/invitations/{inv}` | `TeamOut` | `team_not_found`, `invitation_closed` | the same |
+| `GET /admin/teams` | `AdminTeamsResponse {teams, levels}`: each `AdminTeamOut` with its `grant_count`, the levels `CONFIRMATION_LEVELS`' | — | `admin_guard` or `TeamsDeps.guard` |
+| `POST /admin/teams {name}` | `TeamOut`, `201` | `team_name_taken` (`name`), 422 (blank) | the same |
+| `PATCH /admin/teams/{id} {name}` (`If-Match` optional) | `TeamOut` | `team_not_found`, `team_changed` (`name`), `team_name_taken` | the same |
+| `DELETE /admin/teams/{id}` (body `ActionConfirmation`, optional) | `204` | `team_not_found`, `confirmation_required` (a body a proxy dropped fails closed) | the same |
+| `POST /admin/teams/{id}/members {email, locale?, role}` | `TeamOut` (`invited` when it invited) | `team_not_found`, the `refuse_address`' | the same |
+| `PATCH /admin/teams/{id}/members/{user_id} {role}` | `TeamOut` | `team_not_found` | the same |
+| `DELETE /admin/teams/{id}/members/{user_id}` | `TeamOut` | `team_not_found` | the same |
+
+Every answer to a change is the whole team again. **New codes for the ui-kit's words:** a
+team's own family, `TeamError(TeamErrorCode)` — `team_not_found` (404; Kurvenschmiede answered
+it uncoded), `team_name_taken`, `team_changed`, `manager_named_by_admin`,
+`manager_kept_by_admin`, `manager_removed_by_admin` (409) — Kurvenschmiede's spellings, in
+`CONTRACT_ERRORS`.
+
+**The rules** (Kurvenschmiede's review of the plan):
+- **The version** moves with a rename and every change of who is in the team: an add, a role
+  change, a removal, an invitation into it, a join by one. `If-Match` (`3`, `"3"`, `W/"3"`) is
+  checked when sent and never demanded; one that names no number is `team_changed`.
+- **A re-add is a role change** (`membership_role`); the role a member has, or a team's own name,
+  changes nothing and **writes no row**.
+- **A manager's reach** is one query: a team they manage, never a system team. They add members
+  only, never change or remove a manager, and are asked through the `billing_gate` before an add
+  or a re-send (never a removal, a withdrawal or an admin's).
+- **An address** is trimmed and lower-cased and offered to `refuse_address` before it is looked
+  up. One with no account is **invited into the team** through the account layer
+  (`AccountService.create_invitation` with the team in its `scope`, `team_scope(team_id, role)`:
+  `{"team_id", "team_role"}`), in the language picked or the inviter's; an open invitation of
+  the address into the same team is sent again instead (`invite_resend`), in the role asked for.
+  The link is answered only while mail goes to the console.
+- **The log** names the team as `target_group_id`: `group_create` and `group_rename` (`{}`),
+  `group_delete` (`{members, grants, invitations}` — the open ones — and `target_group_name`),
+  `membership_add` (`{role}`), `membership_role` (`{from, to}`), `membership_remove` (`{role}`),
+  `invite` (`{invitation_id, role, team_role}`). A join by invitation is a `membership_add`
+  whose actor is the invitee; an account already in the team changes nothing.
+- **The views**: teams by name; members by last name, first name, id, each with
+  `display_name` in the viewer's language; the invitations neither accepted nor withdrawn,
+  oldest first, `open` or `expired`, for an admin and the team's managers only; an admin's
+  `my_role` is `null`.
+- **The system team** (`is_system`, a demo's) is a 404 everywhere and never listed; a demo is put
+  in it with `add_system_member(teams, team, user)`: no row, no notice, no new version. No
+  self-join and no leave.
+
+| Area | Names |
+|---|---|
+| Refusals and shapes (`teams`) | `TeamError`, `TeamErrorCode`, `TEAM_ERROR_STATUS`, `TEAM_ERROR_DETAIL`; `TeamRole`, `TeamOut`, `AdminTeamOut`, `AdminTeamsResponse`, `TeamMemberOut`, `TeamInvitationOut`, `TeamInvited`, `TeamIn`, `TeamMemberIn`, `TeamMemberRoleIn`, `MAX_TEAM_NAME_LENGTH` |
+| Port (`teams.ports`) | `TeamStore` (`get`, `names`, `name_taken`, `listing`, `of_user`, `managed`, `add`, `rename`, `bump`, `delete`, `members`, `membership`, `add_member`, `set_member_role`, `remove_member`, `open_invitations`, `set_invitation_role`), `TeamRow`, `TeamMemberRow`, `NewTeam`, `Membership`, `team_scope`, `invitation_team`, `invitation_team_role` |
+| Service (`teams.service`) | `TeamsService`, `TeamHooks(deleting, member_added, billing_gate, refuse_address)`, `TeamGate`, `TeamView`, `TeamInvitationSent`, `TeamAccountHooks`, `join_team`, `add_system_member` |
+| Routes (`teams.router`) | `TeamsDeps(auth, teams, hooks, guard)`, `teams_router(deps, *, prefix="/teams", tags=("teams",))`, `teams_admin_router(deps, *, prefix="/admin/teams", tags=("admin",))`, `team_out`, `if_match_version`, `no_team_hooks` |
+| Tables (`teams.sql`) | `TeamColumns`, `TeamMemberColumns`, `TeamInvitationColumns`, `team_role_type`, `TEAMS_TABLE` (`__teams_table__`), `SqlTeamStore(session, model, members, *, users, invitations)`, `SqlTeamInvitationStore(session, model, *, teams)` |
+| Testing (`teams.testing`) | `InMemoryTeamStore(users, invitations=None, *, now)`, `MemoryTeamRow`, `MemoryTeamMemberRow`, `check_team_store(store, invitations, *, user_id, other_user_id)` |
+| Account layer (0.32, additive) | `AccountService.create_invitation(…, scope=, detail=)`; `user_admin.ports.DeletedGroupNames` (`deleted_group_names(ids)`), on `SqlAdminActionLog` and `InMemoryAdminActionLog` |
+
+**On `[sql]`:** `class Team(TeamColumns, Base)`, `class TeamMember(TeamMemberColumns, Base)` and
+`TeamInvitationColumns` beside `InvitationColumns` on the invitation model. The app names the
+tables, as with every mixin: `__tablename__ = "teams"` and `"team_members"` for Kurvenschmiede's
+(the foreign keys point at `teams` unless `__teams_table__` says another name). They are Kurvenschmiede's
+tables as its migrations made them, so its autogenerate finds no change; a new app writes their
+migration with its own. Run `check_team_store(SqlTeamStore(…), SqlTeamInvitationStore(…), …)`
+beside the account layer's suites, on a database that enforces foreign keys.
+
+**Stays app-side:** what a team is for — Kurvenschmiede's grants to a team and who holds them
+(`access.held_by`), the share mails, a team in the export — the `team_added` notice itself, the
+billing rule behind the gate, the demo's addresses, and the system team's seed.
 
 ### `eifi1_server_kit.settings`
 
@@ -2043,17 +2240,17 @@ Apps depend on a **published** version — the wheel attached to a tagged GitHub
 never on a path outside their repository (a build must not need anything beside it):
 
 ```sh
-uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.31.0/eifi1_server_kit-0.31.0-py3-none-any.whl"
+uv add "eifi1-server-kit @ https://github.com/Eifi1/server-kit/releases/download/v0.32.0/eifi1_server_kit-0.32.0-py3-none-any.whl"
 ```
 
-With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15), a cloud object store (`[gcs]`, `[s3]`, 0.26) the account layer's passkeys and ready tables (`[passkeys]`, `[sql]`, 0.29, with `[fastapi]`) or its ready signer and hasher (`[jwt]`, `[bcrypt]`, 0.30), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
+With the image guard, the Resend client, the Paddle client, a router, the sync stamping (`[sync]`, 0.15), a cloud object store (`[gcs]`, `[s3]`, 0.26) the account layer's passkeys and ready tables (`[passkeys]`, `[sql]`, 0.29, with `[fastapi]`) its ready signer and hasher (`[jwt]`, `[bcrypt]`, 0.30) or its two-factor seal (`[seal]`, 0.32), name the extra: `"eifi1-server-kit[billing,fastapi,images,mail] @ https://…/eifi1_server_kit-<version>-py3-none-any.whl"` (kastlan `[billing,fastapi,images,mail,sync]`, keksdose `[billing,fastapi,images]`, Kurvenschmiede `[billing,fastapi,mail]`). uv writes the two halves apart: the dependency with its extras in `[project] dependencies`, the wheel's URL in `[tool.uv.sources]`:
 
 ```toml
 [project]
 dependencies = ["eifi1-server-kit[billing,fastapi,images]"]
 
 [tool.uv.sources]
-eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.31.0/eifi1_server_kit-0.31.0-py3-none-any.whl" }
+eifi1-server-kit = { url = "https://github.com/Eifi1/server-kit/releases/download/v0.32.0/eifi1_server_kit-0.32.0-py3-none-any.whl" }
 ```
 
 **Moving to a new release** (kastlan's 0.51 adoption): edit the URL in `[tool.uv.sources]` —
@@ -2400,9 +2597,24 @@ deps = AuthDeps(
 budget = [Depends(limit_account_request)]  # the app's own per-address budget, below
 app.include_router(auth_router(deps), prefix="/api/v1", dependencies=budget)
 app.include_router(invitations_admin_router(deps), prefix="/api/v1", dependencies=budget)
+install_account_layer(app, deps)  # 0.32: the app's own import-time routers' account
 app.state.auth_limiters = AuthLimiters()
 install_contract_error_handlers(app)
 ```
+
+An app's own routers are made when their module is imported, before `deps` exist, so they
+cannot call `current_user(deps)`. They depend on the kit's placeholders instead —
+`Annotated[User, Depends(app_current_user)]`, `app_admin`, `app_account_service` — which
+`install_account_layer(app, deps)` binds (0.32). The feedback router's actor is one of them:
+`FeedbackDeps(actor=app_feedback_actor, …)`. Write it that way, not as a closure over
+`current_user(deps)` in a factory: under `from __future__ import annotations` FastAPI resolves
+a route's annotations in the module's globals, the closure's dependency is not there, and the
+routes drop out of `app.openapi()` without a word (Staunlabor's pilot). The placeholders take
+the kit's bearer scheme themselves, so a route on them declares it in `app.openapi()` as the
+kit's routes do (Kurvenschmiede's S1). The install binds them through the app's
+`dependency_overrides`: a test guard that asserts the shared app carries no overrides compares
+against the install's own (`app.dependency_overrides` right after `install_account_layer`),
+not an empty mapping (Kurvenschmiede's S2).
 
 Run `auth.testing`'s contract suites (`check_user_store`, `check_session_store`, …) once
 against the stores on the test database.
@@ -2543,6 +2755,20 @@ recipe is the account layer's:
 4. **The checks**: run `feedback.testing`'s and `translation_review.testing`'s contract suites
    against your stores, as `tests/sql_tables.py` does here; on PostgreSQL too if you can, as
    `tests/test_sql_on_postgresql.py` shows (opt-in through `EIFI1_TEST_POSTGRES_URL`).
+
+5. **The erasure's files** (0.32): set `AuthHooks.purge_files`, or an erased person's files
+   stay in the store (the erasure logs a WARNING). The keys it is handed count what the
+   reports name, not the uploads: ask `SqlAttachmentStorage.keys_in_use(keys)` on a session
+   of its own (the hook runs after the commit) and purge the rest, so the same bytes another
+   person uploaded and has not filed yet keep their object:
+
+   ```python
+   async def purge_files(keys: Sequence[str]) -> None:
+       async with sessions() as session:
+           storage = SqlAttachmentStorage(session, Upload, objects=store, reports=Feedback)
+           held = await storage.keys_in_use(keys)
+       await purge_objects(store, [storage.object_key(k) for k in keys if k not in held], reason="erasure")
+   ```
 
 What stays the app's: sealing a column (override it with your own type), a tenant's row
 filter, and the mails a reply or a comment sends (the stores fire the ports' notices; the app's

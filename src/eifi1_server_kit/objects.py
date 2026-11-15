@@ -658,6 +658,7 @@ async def purge_objects(
     concurrency: int = PURGE_CONCURRENCY,
     spare_written_within: timedelta | None = PURGE_SPARE_RECENT,
     now: datetime | None = None,
+    object_key: Callable[[str], str] | None = None,
 ) -> list[str]:
     """Remove many objects; return the keys left behind, in the order given (keksdose
     ``purge_objects``, ``invoice_file_store.py:404``).
@@ -685,6 +686,10 @@ async def purge_objects(
     the key), one more round trip per key; a key whose age it cannot ask is one it left.
     ``None`` removes at once, as before 0.31 — for keys no two rows share (kastlan's
     ``<uuid>_<sha12>``) or a store that cannot list.
+
+    **``object_key``** (0.32, keksdose's locators): ``keys`` are the app's names for its files
+    (``s3://bucket/<key>``, a local path), and this maps each to the store's key; what the
+    purge answers and logs stays in the app's names. ``None``: the names are the keys.
     """
     if concurrency < 1:
         raise ValueError("purge_objects needs a concurrency of at least 1")
@@ -696,18 +701,19 @@ async def purge_objects(
     spared: set[str] = set()
     cutoff = None if spare_written_within is None else (now or datetime.now(UTC)) - spare_written_within
 
-    async def remove(key: str) -> None:
+    async def remove(name: str) -> None:
         async with limit:
             try:
+                key = name if object_key is None else object_key(name)
                 if cutoff is not None:
                     written = [found.modified for found in await store.list_objects(key) if found.key == key]
                     if written and written[0] > cutoff:
-                        spared.add(key)
+                        spared.add(name)
                         return
                 await store.remove(key)
             except Exception:
-                failed.add(key)
-                logger.error("purge (%s): could not remove %r", reason, key, exc_info=True)
+                failed.add(name)
+                logger.error("purge (%s): could not remove %r", reason, name, exc_info=True)
 
     await asyncio.gather(*(remove(key) for key in wanted))
     left = [key for key in wanted if key in failed]

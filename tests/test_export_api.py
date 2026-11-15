@@ -136,6 +136,8 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         # The ports' ready signer and hasher (0.30), behind the `jwt` and `bcrypt` extras.
         "eifi1_server_kit.auth.bcrypt_hasher",
         "eifi1_server_kit.auth.jwt_signer",
+        # The ports' ready seal for the TOTP secret (0.32), behind the `seal` extra.
+        "eifi1_server_kit.auth.seal",
         # The admin half (0.30): its ports, scope and service, beside its routes.
         "eifi1_server_kit.user_admin.ports",
         "eifi1_server_kit.user_admin.router",
@@ -146,6 +148,9 @@ def test_every_public_module_is_exported_with_its_contract(data: dict[str, Any])
         "eifi1_server_kit.feedback.sql",
         "eifi1_server_kit.translation_review.sql",
         "eifi1_server_kit.notifications.router",
+        # The teams' routes (0.32), behind the `fastapi` extra, and their tables, behind `sql`.
+        "eifi1_server_kit.teams.router",
+        "eifi1_server_kit.teams.sql",
         "eifi1_server_kit.tours.router",
         "eifi1_server_kit.translation_review.router",
     }
@@ -277,7 +282,7 @@ def test_members_are_described_by_kind(data: dict[str, Any]) -> None:
     assert members["eifi1_server_kit.objects", "purge_objects"]["signature"] == (
         "async purge_objects(store: ObjectStore, keys: Iterable[str], *, reason: str, "
         "concurrency: int = PURGE_CONCURRENCY, spare_written_within: timedelta | None = PURGE_SPARE_RECENT, "
-        "now: datetime | None = None) -> list[str]"
+        "now: datetime | None = None, object_key: Callable[[str], str] | None = None) -> list[str]"
     )
     assert members["eifi1_server_kit.objects", "MAX_KEY_BYTES"]["value"] == 1024
     assert members["eifi1_server_kit.objects", "ObjectNotFoundError"]["signature"] == (

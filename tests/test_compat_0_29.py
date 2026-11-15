@@ -24,7 +24,7 @@ def test_the_models_and_dataclasses_build_with_0_29_s_arguments() -> None:
     AuthLimiters()
     assert AuthLimiters().mail_test.max_hits == 3
     hooks = AuthHooks()
-    assert hooks.erase is None and hooks.purge_files is None
+    assert hooks.erase is None and hooks.purge_files is None and hooks.observe is None
     policy = AccountPolicy(
         app="staunlabor", app_name="Staunlabor", contact="s@x.example", links=AccountLinks(base_url="https://x.example")
     )

@@ -87,6 +87,9 @@ class AdminAction(enum.StrEnum):
     GROUP_DEACTIVATE = "group_deactivate"
     #: The group was switched on again (admin §9.1.3).
     GROUP_REACTIVATE = "group_reactivate"
+    #: An administrator switched another account's two-factor sign-in off (0.32, Marcel
+    #: 2026-11-14): a phone lost with no backup code and no passkey. Never one's own.
+    TWO_FACTOR_RESET = "two_factor_reset"
 
 
 class ConfirmationLevel(enum.StrEnum):
@@ -138,6 +141,7 @@ CONFIRMATION_LEVELS: Mapping[AdminAction, ConfirmationLevel] = {
     AdminAction.GROUP_CREATE: ConfirmationLevel.NONE,
     AdminAction.GROUP_RENAME: ConfirmationLevel.NONE,
     AdminAction.GROUP_DELETE: ConfirmationLevel.ACKNOWLEDGE,
+    AdminAction.TWO_FACTOR_RESET: ConfirmationLevel.ACKNOWLEDGE,
     AdminAction.MEMBERSHIP_ADD: ConfirmationLevel.NONE,
     AdminAction.MEMBERSHIP_ROLE: ConfirmationLevel.NONE,
     AdminAction.GROUP_DEACTIVATE: ConfirmationLevel.NONE,

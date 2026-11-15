@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -200,3 +200,70 @@ async def test_a_demo_neither_deletes_nor_exports(cutoff_world: World) -> None:
         "POST", "/auth/me/deletion", token=token, json={"password": PASSWORD, "confirm_email": demo.email}
     )
     assert code(response) == "demo_refused"
+
+
+async def test_the_app_may_refuse_a_deletion_before_anything_changes() -> None:
+    """keksdose's KG-8 (0.32): ``household_has_members`` refuses before the account is
+    deactivated, its sessions end or a mail goes, not by a rollback after."""
+    from eifi1_server_kit.user_admin.errors import AccountError, AccountErrorCode
+
+    asked: list[int] = []
+
+    async def deletion_requesting(account: MemoryUser) -> None:
+        asked.append(account.id)
+        raise AccountError(AccountErrorCode.HOUSEHOLD_HAS_MEMBERS)
+
+    world = World()
+    async with world.client:
+        user = world.account()
+        token = await world.token_of(user)
+        world.hooks = AuthHooks(deletion_requesting=deletion_requesting)
+        body = {"password": PASSWORD, "confirm_email": user.email}
+        refused = await world.call("POST", "/auth/me/deletion", token=token, json=body)
+        assert (refused.status_code, code(refused)) == (409, "household_has_members")
+        assert asked == [user.id] and user.is_active and user.deletion_requested_at is None
+        assert world.log.rows == [] and not world.mailer.of("account_deletion")
+        assert (await world.call("GET", "/auth/me", token=token)).status_code == 200
+
+
+async def test_the_deletion_mail_may_link_the_privacy_page() -> None:
+    """keksdose's KG-5 (0.32): its deletion mail links the privacy page (``{privacy}``)."""
+    from eifi1_server_kit.mail import MailText
+
+    own = {
+        "en": MailText(
+            subject="{app}",
+            intro="Hello {name},",
+            body="Deleted on {date}. What we keep: {privacy}",
+            cta="Open",
+            outro="{contact} {backup_days} {log_days}",
+        )
+    }
+    world = World(mail_texts={"account_deletion": own})
+    async with world.client:
+        user = world.account(locale="en")
+        token = await world.token_of(user)
+        body = {"password": PASSWORD, "confirm_email": user.email}
+        assert (await world.call("POST", "/auth/me/deletion", token=token, json=body)).status_code == 202
+        (mail,) = world.mailer.of("account_deletion")
+        assert "What we keep: https://staunlabor.example/privacy" in mail.message.text
+
+
+async def test_an_app_writes_the_deletion_mail_s_day_itself() -> None:
+    """keksdose's KG-5 (0.32): its deletion mail writes the day as a sentence does
+    ("13. Dezember 2026"), never numerically; ``AccountPolicy.mail_date`` fills ``{date}``."""
+    asked: list[tuple[object, str | None]] = []
+
+    def sentence_day(when: date | datetime, locale: str | None) -> str:
+        asked.append((when, locale))
+        return f"{when.day}. Dezember {when.year}"
+
+    world = World(policy=replace(POLICY, mail_date=sentence_day))
+    async with world.client:
+        user = world.account(locale="de-CH")
+        token = await world.token_of(user)
+        body = {"password": PASSWORD, "confirm_email": user.email}
+        assert (await world.call("POST", "/auth/me/deletion", token=token, json=body)).status_code == 202
+        (mail,) = world.mailer.of("account_deletion")
+        assert "13. Dezember 2026" in mail.message.text and "13.12.2026" not in mail.message.text
+        assert asked == [(world.clock() + timedelta(days=30), "de-CH")]

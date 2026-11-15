@@ -32,10 +32,12 @@ builds its own.
 ``docs/server-services-harmonization.md``): every store write flushes. A refusal raised
 after a write leaves it to the app's rollback.
 
-**The hooks** (:class:`AuthHooks`, every one optional and async) are what differs between
-the apps (§12.2's six seams): what a sign-up or an invitation attaches, what a token carries
-and what each request binds, the private mode around passwords and passkeys, what else ends
-with the sessions, the deletion's outcomes, and the extras on the answers.
+**The hooks** (:class:`AuthHooks`, every one optional, and async but ``observe``) are what
+differs between the apps (§12.2's six seams): what a sign-up or an invitation attaches, what a
+token carries and what each request binds, the private mode around passwords and passkeys, what
+else ends with the sessions, the deletion's outcomes, and the extras on the answers; and, since
+0.32, what an app counts (``observe``: each decision as an :class:`~eifi1_server_kit.auth.AuthEvent`
+and its outcome).
 """
 
 from __future__ import annotations
@@ -45,9 +47,10 @@ import enum
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlencode
 
@@ -64,6 +67,7 @@ from eifi1_server_kit.auth.accounts import (
     verified_by_invitation,
 )
 from eifi1_server_kit.auth.errors import AuthError, AuthErrorCode
+from eifi1_server_kit.auth.events import AuthEvent
 from eifi1_server_kit.auth.limits import AuthLimiters
 from eifi1_server_kit.auth.mails import ACCOUNT_MAIL_KINDS, ACCOUNT_MAIL_TEXTS, AccountMailText, mail_date
 from eifi1_server_kit.auth.passkeys import (
@@ -95,9 +99,12 @@ from eifi1_server_kit.auth.ports import (
     PasskeyRow,
     PasskeyStore,
     PasswordHasher,
+    SecretSeal,
     SessionRow,
     SessionStore,
     TokenSigner,
+    TwoFactorState,
+    TwoFactorStore,
     UserStore,
 )
 from eifi1_server_kit.auth.schemas import (
@@ -117,6 +124,20 @@ from eifi1_server_kit.auth.schemas import (
     RegisterRequest,
     SessionInfo,
     SetPasswordRequest,
+    TwoFactorBackupCodesRequest,
+    TwoFactorConfirm,
+    TwoFactorDisableRequest,
+    TwoFactorEnabled,
+    TwoFactorLogin,
+    TwoFactorSetup,
+    TwoFactorSetupRequest,
+    TwoFactorStatus,
+)
+from eifi1_server_kit.auth.seal import (
+    SecretSealError,
+    SecretUnreadableError,
+    totp_pending_secret_aad,
+    totp_secret_aad,
 )
 from eifi1_server_kit.auth.sessions import (
     SessionPolicy,
@@ -144,9 +165,21 @@ from eifi1_server_kit.auth.tokens import (
     shared_device_of,
     token_is_revoked,
 )
+from eifi1_server_kit.auth.totp import (
+    TOTP_STEP_SECONDS,
+    backup_code_digest,
+    backup_code_spent,
+    new_backup_codes,
+    new_totp_secret,
+    totp_matched_step,
+    totp_step_accepted,
+    totp_uri,
+    two_factor_challenge_claims,
+    two_factor_challenge_is_spent,
+)
 from eifi1_server_kit.clock import Clock, utc_now
 from eifi1_server_kit.demo import refuse_demo
-from eifi1_server_kit.limiter import charge
+from eifi1_server_kit.limiter import ThrottledError, charge
 from eifi1_server_kit.mail import Mailer, MailMessage, render_mail
 from eifi1_server_kit.user_admin.actions import AdminAction, confirmation_level
 from eifi1_server_kit.user_admin.audit import admin_action_record
@@ -186,6 +219,7 @@ __all__ = [
     "SessionsEndedReason",
     "SignedIn",
     "StartedSession",
+    "TwoFactorChallengeIssued",
 ]
 
 logger = logging.getLogger("eifi1_server_kit.auth")
@@ -259,7 +293,8 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     write the app's rows in the sign-up's transaction (kastlan's company). Each may raise a
     kit refusal (``AuthError``, ``AccountError``) to refuse the step. A hook that answers a
     mapping adds its keys to the route's answer, which the app's answer model (an
-    ``AuthDeps`` field) declares."""
+    ``AuthDeps`` field) declares. ``observe`` (0.32) is the one plain function: it is told,
+    and refuses nothing."""
 
     #: Seam 1: a sign-up, with the invitation that let it in (``None`` for the first account),
     #: and the app's body (its ``register_model``): the household, the company, the team.
@@ -281,6 +316,10 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: on the invitation's log rows (``target_group_id``), its ``name`` into the mail's
     #: ``{group}``. ``None``, or no hook: no group.
     invitation_group: Callable[[InvT], Awaitable[GroupRef | None]] | None = None
+    #: An existing account is about to take up an invitation (``/invitations/accept``, 0.32,
+    #: keksdose's KG-4): ``(user, invitation)``, before anything is spent; a kit refusal
+    #: refuses it (keksdose: a registration invitation is for a new address).
+    invitation_accepting: Callable[[UserT, InvT], Awaitable[None]] | None = None
     #: An admin is about to invite (0.31, G7): ``(admin, body, existing, scope)`` — the
     #: request's ``InvitationCreate``, the account that already has the address or ``None``,
     #: and what ``invitation_scope`` answered or ``None``. Raise a kit refusal to refuse it
@@ -295,8 +334,16 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: Seam 2: every signed-in request, after the kit's checks: bind the request (kastlan's
     #: RLS variables), or refuse (its 401 for a lost membership, 403 for a closed company).
     bind: Callable[[UserT, Mapping[str, Any]], Awaitable[None]] | None = None
+    #: The same on a signed-out path that names an account (0.32, keksdose's KG-2): a mailed
+    #: link (reset, verification, address change), the sign-in once its credential passed
+    #: (password or passkey), or a sign-in challenge (the forced change, the second
+    #: factor). Called as soon as the account is loaded, before any other hook reads under
+    #: it (keksdose's key wraps are FORCE row-level security on the current user).
+    bind_anonymous: Callable[[UserT], Awaitable[None]] | None = None
     #: Seam 4: every session of the account ended, and why: what else ends with them.
-    sessions_ended: Callable[[UserT, SessionsEndedReason], Awaitable[None]] | None = None
+    #: It may answer a mapping (0.32, keksdose's KG-7): its counts join the detail of the
+    #: admin's row that ended the sessions (deactivate, password_change_require).
+    sessions_ended: Callable[[UserT, SessionsEndedReason], Awaitable[_Extras | None]] | None = None
     #: Seam 3: a password is about to change (the voluntary change and the forced one),
     #: with the app's body: refuse, or answer extras (keksdose's key wrap,
     #: ``key_wrap_unchanged``).
@@ -318,6 +365,10 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: the app's (billing, budget guests); the extras ride on the answer and, since 0.31, are
     #: the ``deletion_request`` row's detail (ids, counts and flags: ``audit_detail``'s rule).
     on_deletion_requested: Callable[[UserT], Awaitable[_Extras | None]] | None = None
+    #: Before a deletion request changes anything (0.32, keksdose's KG-8): raise a kit
+    #: refusal to refuse it (``household_has_members``), so nothing is deactivated, ended,
+    #: mailed or logged — not a rollback after the fact.
+    deletion_requesting: Callable[[UserT], Awaitable[None]] | None = None
     #: Seam 5: an admin reactivated the account before its erasure (0.30's admin routes); what
     #: it answers is the ``deletion_cancel`` row's detail (0.31), ``None`` none.
     on_deletion_withdrawn: Callable[[UserT], Awaitable[_Extras | None]] | None = None
@@ -330,14 +381,29 @@ class AuthHooks[UserT: AccountRow = Any, InvT: InvitationRow = Any]:
     #: for the ``after_days`` job (Kurvenschmiede logs the hand-over in its own rows by it).
     erase: _EraseHook[UserT] | None = None
     #: Seam 5 (0.30): the stored files an erasure left nobody naming (the feedback's), deleted
-    #: after the commit (keksdose's object purge). Without it they are left to the app.
+    #: after the commit (keksdose's object purge). Without it they stay in the store, and each
+    #: erasure that leaves any logs a WARNING (0.32): an app with feedback files sets it.
     #: Delete them through ``objects.purge_objects``: since 0.31 it spares a file written in
     #: the last minutes by default, as a byte-identical upload committed after the erasure's
     #: decision names the same content-addressed object.
+    #: The keys are bare, as ``FeedbackService.erase_author`` answers them: the store's path is
+    #: the attachment storage's ``object_key(key)`` (keksdose's ``feedback/`` prefix).
     purge_files: Callable[[Sequence[str]], Awaitable[None]] | None = None
+    #: Seam 5 (0.32, keksdose's): the app's own strings for the person, added to the kit's
+    #: :func:`~eifi1_server_kit.auth.erasure_identifiers` when an erasure anonymises the
+    #: feedback (keksdose's ``legacy_display_name``, which older report stamps hold). Same
+    #: rules: never a bare first or last name.
+    erasure_identifiers: Callable[[UserT], Awaitable[Sequence[str]]] | None = None
     #: Seam 6: ``/auth/me`` and the user in every token answer, as the app's ``me_model``;
     #: without it, ``me_model.model_validate(user)`` with ``email_verified`` from the row.
     to_me: Callable[[UserT], Awaitable[BaseModel]] | None = None
+    #: Every decision of the signed-out flows and the refresh (0.32, keksdose's review of
+    #: 0.32.0.dev4): ``(event, outcome)``, an :class:`~eifi1_server_kit.auth.AuthEvent` and a
+    #: short stable string — ``ok``, the internal reason where the answer folds several into
+    #: one code (``unknown_email``, ``bad_password``), else the refusal's code — never an
+    #: address, an id or a token (keksdose's ``auth_events_total`` counter). Synchronous, as
+    #: a metric counter is; an exception it raises is logged at WARNING and changes no answer.
+    observe: Callable[[AuthEvent, str], None] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -357,6 +423,8 @@ class AccountLinks:
     settings: str = "/settings"
     #: The deletion mail's link.
     home: str = "/"
+    #: The privacy page, which a deletion mail's own words may link (``{privacy}``, 0.32).
+    privacy: str = "/privacy"
 
     def __post_init__(self) -> None:
         if not self.base_url.startswith(("https://", "http://")):
@@ -391,8 +459,15 @@ class AccountPolicy:
     invitable_roles: tuple[str, ...] | None = None
     #: An invitation to an address that has an open one with the same role and scope sends
     #: that one again — a new link, 14 more days, logged ``invite_resend`` — instead of adding
-    #: a second row (0.31, G7; Kurvenschmiede's). Off: every invitation is a row, as in 0.29.
+    #: a second row (0.31, G7; Kurvenschmiede's); since 0.32 the row takes the new request's
+    #: language, note and inviter (``remint``'s fields). Off: every invitation is a row, as in
+    #: 0.29.
     reuse_open_invitations: bool = False
+    #: The admin's invitation list shows the accepted invitations too, status ``accepted``
+    #: (0.32, keksdose's: who came in by an invitation); the store's ``listing(accepted=True)``
+    #: answers them. Off: every invitation but the accepted ones, as in 0.29. Re-sending or
+    #: withdrawing an accepted one is ``invitation_closed`` either way.
+    list_accepted_invitations: bool = False
     #: The environment list that bootstraps the first admin (``parse_env_list``); ``None``:
     #: the first registration is open (``registration_decision``).
     bootstrap: frozenset[str] | None = None
@@ -407,6 +482,11 @@ class AccountPolicy:
     #: Above the mail provider's slow answers (Resend's are well under a second); a send still
     #: running at the floor is cut and logged, so the answer is never late.
     answer_floor: timedelta = timedelta(seconds=3)
+    #: How a mail writes a day (``{date}``, the deletion mail's erasure day): ``(day,
+    #: locale)`` to the words. Default :func:`~eifi1_server_kit.auth.mails.mail_date`,
+    #: numeric so no month name needs a translation; keksdose writes it as a sentence does
+    #: ("6. November 2026", its ``server_text.format_day``) (0.32, KG-5).
+    mail_date: Callable[[date | datetime, str | None], str] = mail_date
 
     def __post_init__(self) -> None:
         if not _APP_NAME.match(self.app):
@@ -437,6 +517,17 @@ class ChallengeIssued[UserT: AccountRow = Any]:
     user: UserT
     challenge_token: str
     extras: _Extras = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class TwoFactorChallengeIssued[UserT: AccountRow = Any]:
+    """The password was right and the account has two-factor sign-in on: its code is next
+    (§5.1, 0.32; keksdose ``TwoFactorChallengeResponse``) → ``POST /auth/login/2fa``. Its own
+    class, not a :class:`ChallengeIssued`: an app's code that reads that one as "a new
+    password first" stays right."""
+
+    user: UserT
+    challenge_token: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,6 +576,42 @@ def _unspent(invitation: InvitationRow) -> bool:
     return invitation.accepted_at is None and invitation.revoked_at is None
 
 
+class _Decision:
+    """What an observed flow decided (``AuthHooks.observe``, 0.32): the flow sets ``outcome``
+    where its answer folds several reasons into one code, or where it succeeds with more to
+    say than ``ok``, right before it raises or answers; unset, a refusal is told by its
+    code."""
+
+    __slots__ = ("outcome",)
+
+    def __init__(self) -> None:
+        self.outcome: str | None = None
+
+
+def _noted(decision: _Decision | None, outcome: str) -> None:
+    """``outcome`` from a helper that an unobserved path shares (``decision`` ``None``)."""
+    if decision is not None:
+        decision.outcome = outcome
+
+
+def _signed_in[T](decision: _Decision, answer: T) -> T:
+    """A sign-in that passed, told as ``ok``, or as ``password_change_required`` while an
+    admin requires a new password first (the challenge, not a session)."""
+    if isinstance(answer, ChallengeIssued):
+        decision.outcome = "password_change_required"
+    return answer
+
+
+def _refusal_code(exc: Exception) -> str | None:
+    """The outcome of a refusal no flow named: ``throttled`` for a 429, else a coded refusal's
+    code (the kit's, or a hook's); ``None`` for a fault or an exception without a code, which
+    is no decision and is not observed."""
+    if isinstance(exc, ThrottledError):
+        return "throttled"
+    code = getattr(exc, "code", None)
+    return str(code) if isinstance(code, enum.StrEnum) else None
+
+
 class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRow]:
     """The account's flows over the app's stores, for one request. The limiters are the
     app's (``app.state``); ``absent_check`` is :func:`~eifi1_server_kit.auth.absent_account_check`
@@ -507,6 +634,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         hooks: AuthHooks[UserT, InvT] | None = None,
         passkeys: PasskeyStore[Any] | None = None,
         relying_party: RelyingParty | None = None,
+        two_factor: TwoFactorStore | None = None,
+        secret_seal: SecretSeal | None = None,
         mail_texts: Mapping[AccountMailText, Any] = ACCOUNT_MAIL_TEXTS,
         absent_check: Callable[[str], bool] | None = None,
         now: Clock = utc_now,
@@ -527,6 +656,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         self._hooks: AuthHooks[UserT, InvT] = hooks or AuthHooks()
         self._passkeys = passkeys
         self._rp = relying_party
+        self._two_factor = two_factor
+        self._seal = secret_seal
         self._texts = mail_texts
         self._absent = absent_check or absent_account_check(hasher.hash, hasher.verify)
         self._now = now
@@ -537,16 +668,50 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     async def me(self, user: UserT, model: type[BaseModel]) -> BaseModel:
         """The account as ``/auth/me`` answers it: ``to_me``, else ``model`` from the row
-        with ``email_verified`` read off ``email_verified_at``."""
+        with ``email_verified`` read off ``email_verified_at`` and, with a
+        :class:`~eifi1_server_kit.auth.ports.TwoFactorStore` (0.32), ``totp_enabled`` off its
+        state."""
         if self._hooks.to_me is not None:
             return await self._hooks.to_me(user)
         answer = model.model_validate(user, from_attributes=True)
-        return answer.model_copy(update={"email_verified": user.email_verified_at is not None})
+        update: dict[str, Any] = {"email_verified": user.email_verified_at is not None}
+        if self._two_factor is not None:
+            update["totp_enabled"] = (await self._two_factor.state(user.id)).enabled
+        return answer.model_copy(update=update)
 
     async def _extras[T](self, hook: Callable[..., Awaitable[T]] | None, *args: Any, **kwargs: Any) -> dict[str, Any]:
         if hook is None:
             return {}
         return dict(cast(Mapping[str, Any], await hook(*args, **kwargs) or {}))
+
+    # --- what an app counts (0.32, keksdose's review of 0.32.0.dev4) ------------------------
+
+    def _observe(self, event: AuthEvent, outcome: str) -> None:
+        """Tell ``AuthHooks.observe``, never breaking the request: whatever it raises is
+        logged at WARNING, naming the event, and the answer stands."""
+        observe = self._hooks.observe
+        if observe is None:
+            return
+        try:
+            observe(event, outcome)
+        except Exception:
+            logger.warning("The observe hook failed at %s (%s); the answer stands", event, outcome, exc_info=True)
+
+    @contextmanager
+    def _observing(self, event: AuthEvent) -> Iterator[_Decision]:
+        """One observed flow: its decision is told once, as the flow raises or answers — the
+        outcome it set, else ``ok`` or the refusal's code; a fault (no code) is told nothing.
+        It runs inside the flow, at its very end, so the reset request tells it after its
+        floor on every path alike."""
+        decision = _Decision()
+        try:
+            yield decision
+        except Exception as exc:
+            outcome = decision.outcome or _refusal_code(exc)
+            if outcome is not None:
+                self._observe(event, outcome)
+            raise
+        self._observe(event, decision.outcome or "ok")
 
     # --- sessions and tokens -------------------------------------------------------------
 
@@ -644,30 +809,36 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         sessions through the rows only, and its store refuses a column it lacks."""
         return {"sessions_invalid_before": now} if hasattr(user, "sessions_invalid_before") else {}
 
-    async def _sessions_ended(self, user: UserT, reason: SessionsEndedReason) -> None:
+    async def _sessions_ended(self, user: UserT, reason: SessionsEndedReason) -> dict[str, Any]:
         """What every "every session ends" does beside the rows: the pending address change
-        goes too (keksdose: its notice names a new password as the remedy), then the hook."""
+        goes too (keksdose: its notice names a new password as the remedy), then the hook,
+        whose answer (0.32) is handed back for the row that ended them."""
         await self._tokens.drop(OneTimeTokenKind.EMAIL_CHANGE, user.id)
-        if self._hooks.sessions_ended is not None:
-            await self._hooks.sessions_ended(user, reason)
+        return await self._extras(self._hooks.sessions_ended, user, reason)
 
     async def end_sessions(self, user: UserT, reason: SessionsEndedReason) -> int:
         """Every session of the account ends, for ``reason`` (0.30, the admin's deactivation
         and forced password change): every row, the ``iat`` cut-off where the row has one, the
         pending address change, and the ``sessions_ended`` hook (keksdose's API tokens and push
         devices). Nothing else is cleared. Answers how many rows ended."""
+        return (await self.end_sessions_noting(user, reason))[0]
+
+    async def end_sessions_noting(self, user: UserT, reason: SessionsEndedReason) -> tuple[int, dict[str, Any]]:
+        """:meth:`end_sessions`, answering the ``sessions_ended`` hook's mapping beside the
+        count (0.32): the admin router puts it on its row."""
         ended = await self._sessions.end_all(user.id)
         if cutoff := self._cutoff(user, self._now()):
             await self._users.apply(user, cutoff)
-        await self._sessions_ended(user, reason)
-        return ended
+        return ended, await self._sessions_ended(user, reason)
 
     async def _sign_in(
         self, user: UserT, *, shared: bool, ip: str | None, device: str | None
     ) -> IssuedSession[UserT] | ChallengeIssued[UserT]:
         """What a sign-in that passed answers, by password or by passkey: a session, or,
         while an admin requires a new password, the challenge to set one first
-        (user-admin §4.1). ``last_login_at`` waits for the session."""
+        (user-admin §4.1). ``last_login_at`` waits for the session. The caller has bound the
+        account (``bind_anonymous``, keksdose's KG-2): a sign-in is signed out until it ends,
+        and the challenge's hook reads under the binding."""
         now = self._now()
         if user.password_change_required_at is not None:
             claims = challenge_claims(user.id, ChallengeKind.PASSWORD_CHANGE, now=now, shared_device=shared)
@@ -677,30 +848,30 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         session = await self._start(user, shared=shared, ip=ip, device=device, now=now)
         return await self._pair(user, session, now=now)
 
-    async def _live(self, claims: Mapping[str, Any]) -> tuple[UserT, SessionT]:
+    async def _live(self, claims: Mapping[str, Any], decision: _Decision | None = None) -> tuple[UserT, SessionT]:
         """The account and session a signed token names, both alive, or ``session_ended``:
         the row ended, expired or someone else's; the account gone or deactivated; the
         token minted at or before the cut-off."""
         sid, sub = claims.get("sid"), claims.get("sub")
         session = await self._sessions.get(sid) if isinstance(sid, str) and sid else None
-        if (
-            session is None
-            or not session.is_active
-            or str(session.user_id) != str(sub)
-            or _expired(session.expires_at, self._now())
-            or session_expired(
-                self._policy.sessions,
-                shared=session.shared_device,
-                started_at=session.started_at,
-                last_active=session.last_active,
-                now=self._now(),
-            )
+        if session is None or not session.is_active or str(session.user_id) != str(sub):
+            _noted(decision, "session_ended")
+            raise AuthError(AuthErrorCode.SESSION_ENDED, "The session has ended")
+        if _expired(session.expires_at, self._now()) or session_expired(
+            self._policy.sessions,
+            shared=session.shared_device,
+            started_at=session.started_at,
+            last_active=session.last_active,
+            now=self._now(),
         ):
+            _noted(decision, "session_expired")
             raise AuthError(AuthErrorCode.SESSION_ENDED, "The session has ended")
         user = await self._users.get(session.user_id)
         if user is None or not user.is_active:
+            _noted(decision, "inactive_user")
             raise AuthError(AuthErrorCode.SESSION_ENDED, "The account is not active")
         if token_is_revoked(claims.get("iat"), getattr(user, "sessions_invalid_before", None)):
+            _noted(decision, "revoked")
             raise AuthError(AuthErrorCode.SESSION_ENDED, "The session was ended by a sign-out everywhere")
         return user, session
 
@@ -719,12 +890,14 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
 
     # --- sign-up and sign-in ---------------------------------------------------------------
 
-    async def _open_invitation(self, token: str) -> InvT:
+    async def _open_invitation(self, token: str, decision: _Decision) -> InvT:
         """The invitation a token names, open and unexpired, or the coded refusal."""
         invitation = await self._invitations.by_token_hash(hash_token(token))
         if invitation is None or not _unspent(invitation):
+            decision.outcome = "invalid"
             raise AuthError(AuthErrorCode.INVITATION_INVALID)
         if _expired(invitation.expires_at, self._now()):
+            decision.outcome = "expired"
             raise AuthError(AuthErrorCode.INVITATION_EXPIRED)
         return invitation
 
@@ -735,70 +908,307 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         account. The first account is the admin; the invitation names the role, else the
         app's default. The invitation's exact address counts as verified; anything else
         is sent a verification link after the commit."""
-        charge(self._limiters.register, ip, AUTH_THROTTLED["register"])
-        invitation: InvT | None = None
-        if body.invite_token is not None:
-            invitation = await self._open_invitation(body.invite_token)
-            if not invitation_accepts(invitation.email, body.email, self._policy.app):
-                raise AuthError(AuthErrorCode.INVITATION_INVALID)
-        decision = registration_decision(
-            is_first_user=await self._users.count_people() == 0,
-            on_env_list=env_list_match(body.email, self._policy.bootstrap or ()),
-            has_valid_invitation=invitation is not None,
-        )
-        if not decision.allowed:
-            raise AuthError(AuthErrorCode.REGISTRATION_CLOSED)
-        if await self._users.by_email(body.email) is not None:
-            raise AuthError(AuthErrorCode.EMAIL_TAKEN)
-        now = self._now()
-        if decision.first_admin:
-            role = self._policy.admin_role
-        else:
-            role = (invitation.role if invitation is not None else None) or self._policy.default_role
-        verified = invitation is not None and verified_by_invitation(invitation.email, body.email)
-        user = await self._users.add(
-            NewAccount(
-                email=body.email,
-                password_hash=self._hasher.hash(body.password),
-                first_name=body.first_name,
-                last_name=body.last_name,
-                locale=body.locale,
-                role=role,
-                email_verified_at=now if verified else None,
-                last_login_at=now,
-                device_timezone=body.device_timezone,
+        with self._observing(AuthEvent.REGISTER) as seen:
+            charge(self._limiters.register, ip, AUTH_THROTTLED["register"])
+            invitation: InvT | None = None
+            if body.invite_token is not None:
+                invitation = await self._open_invitation(body.invite_token, seen)
+                if not invitation_accepts(invitation.email, body.email, self._policy.app):
+                    seen.outcome = "email_mismatch"
+                    raise AuthError(AuthErrorCode.INVITATION_INVALID)
+            decision = registration_decision(
+                is_first_user=await self._users.count_people() == 0,
+                on_env_list=env_list_match(body.email, self._policy.bootstrap or ()),
+                has_valid_invitation=invitation is not None,
             )
-        )
-        if invitation is not None:
-            await self._invitations.accept(invitation, user_id=user.id, at=now)
-        if self._hooks.on_register is not None:
-            await self._hooks.on_register(user, invitation, body)
-        if not verified:
-            link = await self._verification_link(user, now)
-            self._send_later(user.email, AccountMailText.VERIFICATION, user.locale, link=link, name=self._name(user))
-        session = await self._start(user, shared=body.shared_device, ip=ip, device=device, now=now)
-        return await self._pair(user, session, now=now)
+            if not decision.allowed:
+                raise AuthError(AuthErrorCode.REGISTRATION_CLOSED)
+            if await self._users.by_email(body.email) is not None:
+                raise AuthError(AuthErrorCode.EMAIL_TAKEN)
+            now = self._now()
+            if decision.first_admin:
+                role = self._policy.admin_role
+            else:
+                role = (invitation.role if invitation is not None else None) or self._policy.default_role
+            verified = invitation is not None and verified_by_invitation(invitation.email, body.email)
+            user = await self._users.add(
+                NewAccount(
+                    email=body.email,
+                    password_hash=self._hasher.hash(body.password),
+                    first_name=body.first_name,
+                    last_name=body.last_name,
+                    locale=body.locale,
+                    role=role,
+                    email_verified_at=now if verified else None,
+                    last_login_at=now,
+                    device_timezone=body.device_timezone,
+                )
+            )
+            if invitation is not None:
+                await self._invitations.accept(invitation, user_id=user.id, at=now)
+            if self._hooks.on_register is not None:
+                await self._hooks.on_register(user, invitation, body)
+            if not verified:
+                link = await self._verification_link(user, now)
+                self._send_later(
+                    user.email, AccountMailText.VERIFICATION, user.locale, link=link, name=self._name(user)
+                )
+            session = await self._start(user, shared=body.shared_device, ip=ip, device=device, now=now)
+            return await self._pair(user, session, now=now)
 
     async def login(
         self, body: LoginRequest, *, ip: str, device: str | None = None
-    ) -> IssuedSession[UserT] | ChallengeIssued[UserT]:
+    ) -> IssuedSession[UserT] | ChallengeIssued[UserT] | TwoFactorChallengeIssued[UserT]:
         """``POST /auth/login`` (§5.1–§5.2): the per-IP limit before any hash, then the
         address's delay (failures only, never a lockout), then one refusal for an unknown
         address, a wrong password and a deactivated account, in the same time (a dummy
-        hash for the absent account)."""
-        charge(self._limiters.login, ip, AUTH_THROTTLED["login"])
-        failures = self._limiters.login_failures
-        await self._sleep(failures.delay(body.email))
-        user = await self._users.by_email(body.email)
-        if user is None:
-            accepted = self._absent(body.password)
-        else:
-            accepted = self._hasher.verify(body.password, user.password_hash) and user.is_active
-        if user is None or not accepted:
-            failures.record_failure(body.email)
-            raise AuthError(AuthErrorCode.INVALID_CREDENTIALS)
-        failures.clear(body.email)
-        return await self._sign_in(user, shared=body.shared_device, ip=ip, device=device)
+        hash for the absent account). An account with two-factor sign-in on gets the code's
+        challenge (0.32), before a forced password change: a 2FA account clears its second
+        factor before it may set a new password (keksdose's order)."""
+        with self._observing(AuthEvent.LOGIN) as seen:
+            charge(self._limiters.login, ip, AUTH_THROTTLED["login"])
+            failures = self._limiters.login_failures
+            await self._sleep(failures.delay(body.email))
+            user = await self._users.by_email(body.email)
+            if user is None:
+                self._absent(body.password)
+                seen.outcome = "unknown_email"
+            elif not self._hasher.verify(body.password, user.password_hash):
+                seen.outcome = "bad_password"
+            elif not user.is_active:
+                seen.outcome = "inactive_user"
+            if user is None or seen.outcome is not None:
+                failures.record_failure(body.email)
+                raise AuthError(AuthErrorCode.INVALID_CREDENTIALS)
+            failures.clear(body.email)
+            await self._bind_anonymous(user)
+            asked = await self._code_asked(user, shared=body.shared_device, decision=seen)
+            if asked is not None:
+                seen.outcome = "totp_required"
+                return asked
+            return _signed_in(seen, await self._sign_in(user, shared=body.shared_device, ip=ip, device=device))
+
+    # --- the second factor (0.32, keksdose's KG-1) -------------------------------------------
+
+    def _second_factor(self) -> tuple[TwoFactorStore, SecretSeal]:
+        if self._two_factor is None or self._seal is None:
+            raise RuntimeError("two-factor sign-in needs the two_factor and secret_seal of AuthDeps")
+        return self._two_factor, self._seal
+
+    def _unsealed(
+        self, seal: SecretSeal, user_id: int, sealed: str | None, aad: bytes, decision: _Decision | None = None
+    ) -> str:
+        """The secret, or ``503 two_factor_unavailable``: a stored second factor this server
+        cannot open fails closed and says so where it can be understood (keksdose live #278) —
+        an account told "wrong code" would re-pair a phone that is fine."""
+        try:
+            if sealed is None:
+                raise SecretUnreadableError("two-factor sign-in is on with no secret stored")
+            return seal.unseal(sealed, aad=aad)
+        except SecretSealError as exc:
+            logger.critical(
+                "the second factor of account %s cannot be read (%s): its 2FA sign-in fails closed "
+                "until the key is restored",
+                user_id,
+                exc,
+            )
+            _noted(decision, "secret_unreadable")
+            raise AuthError(AuthErrorCode.TWO_FACTOR_UNAVAILABLE) from exc
+
+    def _sealed(self, seal: SecretSeal, secret: str, aad: bytes) -> str:
+        try:
+            return seal.seal(secret, aad=aad)
+        except SecretSealError as exc:
+            logger.critical("a second factor cannot be stored (%s): no secret is kept in the clear", exc)
+            raise AuthError(AuthErrorCode.TWO_FACTOR_UNAVAILABLE) from exc
+
+    def _spent_step(self, secret: str, code: str, last_step: int | None, decision: _Decision | None = None) -> int:
+        """The step ``code`` matches and may spend (after ``last_step``), or
+        ``two_factor_invalid``: wrong, malformed and replayed are one answer (RFC 6238 §5.2)."""
+        matched = totp_matched_step(secret, code, now=self._now())
+        if matched is None or not totp_step_accepted(matched, last_step):
+            _noted(decision, "invalid_code" if matched is None else "replayed_code")
+            raise AuthError(AuthErrorCode.TWO_FACTOR_INVALID)
+        return matched
+
+    async def _code_asked(
+        self, user: UserT, *, shared: bool, decision: _Decision
+    ) -> TwoFactorChallengeIssued[UserT] | None:
+        """The code's challenge for an account with two-factor sign-in on, or ``None``. The
+        secret is opened here, one step early, so an unreadable one is the sign-in's ``503``
+        rather than a correct code refused at the next step (keksdose). The challenge carries
+        the last accepted step (one challenge, one sign-in) and the shared-computer choice."""
+        if self._two_factor is None:
+            return None
+        store, seal = self._second_factor()
+        state = await store.state(user.id)
+        if not state.enabled:
+            return None
+        self._unsealed(seal, user.id, state.secret, totp_secret_aad(user.id), decision)
+        claims = two_factor_challenge_claims(user.id, last_step=state.last_step, now=self._now(), shared_device=shared)
+        return TwoFactorChallengeIssued(user, self._signer.sign(claims))
+
+    async def login_two_factor(
+        self, body: TwoFactorLogin, *, ip: str, device: str | None = None
+    ) -> IssuedSession[UserT] | ChallengeIssued[UserT]:
+        """``POST /auth/login/2fa`` (§5.1; keksdose ``login_2fa``): the code's step. The per-IP
+        window, then the challenge, then the per-account window (a header cannot re-key it),
+        then keksdose's order: the account active, two-factor still on, its secret readable,
+        the challenge unspent, the code — whose step is spent — then a forced password change,
+        then the session, on a shared computer when the sign-in asked for one. A dead
+        challenge (expired, redeemed, its account gone or deactivated, 2FA off since) is
+        ``token_invalid``: signing in again is the way on. The account's row is locked, so
+        two redemptions of one code cannot both pass."""
+        with self._observing(AuthEvent.LOGIN_2FA) as seen:
+            store, seal = self._second_factor()
+            charge(self._limiters.challenge, ip, AUTH_THROTTLED["challenge"])
+            claims = self._signer.verify(body.challenge_token)
+            if claims is None or claims.get("type") != ChallengeKind.TWO_FACTOR:
+                seen.outcome = "challenge_invalid"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            charge(self._limiters.challenge_subject, str(claims.get("sub")), AUTH_THROTTLED["challenge"])
+            user = await self._account_of(claims)
+            if user is None or not user.is_active:
+                seen.outcome = "inactive_user"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            await self._bind_anonymous(user)
+            state = await store.state(user.id, lock=True)
+            if not state.enabled:
+                seen.outcome = "two_factor_off"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            secret = self._unsealed(seal, user.id, state.secret, totp_secret_aad(user.id), seen)
+            if two_factor_challenge_is_spent(claims, state.last_step):
+                seen.outcome = "challenge_spent"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            by_backup = backup_code_digest(body.code) is not None
+            if not by_backup:
+                step = self._spent_step(secret, body.code, state.last_step, seen)
+                await store.save(user.id, replace(state, last_step=step))
+            else:
+                # A backup code (0.32) is spent, and moves the step to now: its challenge is
+                # spent with it, as an accepted code spends the one it answered.
+                left = backup_code_spent(body.code, state.backup_codes)
+                if left is None:
+                    seen.outcome = "invalid_code"
+                    raise AuthError(AuthErrorCode.TWO_FACTOR_INVALID)
+                now_step = int(self._now().timestamp()) // TOTP_STEP_SECONDS
+                last = now_step if state.last_step is None else max(now_step, state.last_step + 1)
+                await store.save(user.id, replace(state, backup_codes=left, last_step=last))
+            answer = await self._sign_in(user, shared=shared_device_of(claims), ip=ip, device=device)
+            # The code step passed: a backup code is told apart, so its use can be counted; a
+            # forced change after it is the ``login_set_password`` event's.
+            if by_backup:
+                seen.outcome = "backup_code"
+            return answer
+
+    async def begin_two_factor(self, user: UserT, body: TwoFactorSetupRequest) -> TwoFactorSetup:
+        """``POST /auth/me/2fa/setup`` (keksdose ``setup_2fa``): the password every time, then
+        a new secret sealed as the PENDING one, beside the live one — what signs in now keeps
+        doing so until a code confirms it (keksdose's F-4). Neither this nor the confirmation
+        opens the old secret, so a new setup is the way back from a lost authenticator or a
+        key rotated out. ``503 two_factor_unavailable`` without a key."""
+        store, seal = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        await self._check_password(user, body.password)
+        secret = new_totp_secret()
+        sealed = self._sealed(seal, secret, totp_pending_secret_aad(user.id))
+        state = await store.state(user.id, lock=True)
+        await store.save(user.id, replace(state, pending_secret=sealed))
+        return TwoFactorSetup(
+            secret=secret, otpauth_url=totp_uri(secret, account=user.email, issuer=self._policy.app_name)
+        )
+
+    async def enable_two_factor(self, user: UserT, body: TwoFactorConfirm) -> TwoFactorEnabled:
+        """``POST /auth/me/2fa/enable`` (keksdose ``enable_2fa``): a code from the pending
+        secret makes it the factor that signs in, replacing the old one, and spends its step —
+        the first sign-in after it waits for the next code. Charged to the account's
+        password-check window: a code is a guess like a password. A wrong code changes nothing;
+        no setup is ``404 two_factor_not_pending``. Answers a fresh set of backup codes, once
+        (0.32): the server keeps their digests."""
+        store, seal = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        state = await store.state(user.id, lock=True)
+        if state.pending_secret is None:
+            raise AuthError(AuthErrorCode.TWO_FACTOR_NOT_PENDING)
+        charge(self._limiters.password_check, str(user.id), AUTH_THROTTLED["password_check"])
+        secret = self._unsealed(seal, user.id, state.pending_secret, totp_pending_secret_aad(user.id))
+        # The pending secret has accepted nothing: the old one's last step is not its own.
+        step = self._spent_step(secret, body.code, None)
+        sealed = self._sealed(seal, secret, totp_secret_aad(user.id))
+        codes = new_backup_codes()
+        await store.save(
+            user.id, TwoFactorState(enabled=True, secret=sealed, last_step=step, backup_codes=_digests(codes))
+        )
+        return TwoFactorEnabled(backup_codes=codes)
+
+    async def two_factor_status(self, user: UserT) -> TwoFactorStatus:
+        """``GET /auth/me/2fa`` (0.32): on or off, and the backup codes left."""
+        store, _ = self._second_factor()
+        state = await store.state(user.id)
+        return TwoFactorStatus(enabled=state.enabled, backup_codes_left=len(state.backup_codes) if state.enabled else 0)
+
+    async def renew_backup_codes(self, user: UserT, body: TwoFactorBackupCodesRequest) -> TwoFactorEnabled:
+        """``POST /auth/me/2fa/backup-codes`` (0.32): the password, then a new set — the old
+        codes no longer work. ``409 two_factor_not_enabled`` while two-factor sign-in is off."""
+        store, _ = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        await self._check_password(user, body.password)
+        state = await store.state(user.id, lock=True)
+        if not state.enabled:
+            raise AuthError(AuthErrorCode.TWO_FACTOR_NOT_ENABLED)
+        codes = new_backup_codes()
+        await store.save(user.id, replace(state, backup_codes=_digests(codes)))
+        return TwoFactorEnabled(backup_codes=codes)
+
+    @property
+    def has_two_factor(self) -> bool:
+        """Whether the account layer was given a second factor's store (0.32)."""
+        return self._two_factor is not None
+
+    async def two_factor_enabled(self, user: UserT) -> bool:
+        """Whether the account signs in with a second factor: its store's word, or the row's
+        own ``totp_enabled`` where the app gives the kit no store."""
+        if self._two_factor is None:
+            return bool(getattr(user, "totp_enabled", False))
+        return (await self._two_factor.state(user.id)).enabled
+
+    async def reset_two_factor(self, user: UserT) -> bool:
+        """An administrator's reset (0.32, ``user_admin``'s ``two-factor-reset``): every field
+        cleared, and the account told by mail after the commit. ``False``, with nothing
+        changed and nobody told, when it was off. The caller checks who may."""
+        store, _ = self._second_factor()
+        state = await store.state(user.id, lock=True)
+        if not state.enabled:
+            return False
+        await store.save(user.id, TwoFactorState())
+        self._send_later(
+            user.email,
+            AccountMailText.TWO_FACTOR_RESET_NOTICE,
+            user.locale,
+            link=self._policy.links.url(self._policy.links.settings),
+            name=self._name(user),
+            contact=self._policy.contact,
+        )
+        return True
+
+    async def disable_two_factor(self, user: UserT, body: TwoFactorDisableRequest) -> None:
+        """``POST /auth/me/2fa/disable`` (keksdose ``disable_2fa``): the password and a live
+        code, then everything goes — the live secret, a pending one, the last step. A secret
+        this server cannot open is switched off by the password alone: a code it cannot check
+        would leave it on for good, and the password already replaces the secret through a new
+        setup. Switching off what is off drops a pending setup."""
+        store, seal = self._second_factor()
+        refuse_demo(getattr(user, "is_demo", False), "two-factor authentication")
+        await self._check_password(user, body.password)
+        state = await store.state(user.id, lock=True)
+        if state.enabled and state.secret is not None:
+            try:
+                secret = seal.unseal(state.secret, aad=totp_secret_aad(user.id))
+            except SecretSealError as exc:
+                logger.warning("the second factor of account %s cannot be read (%s): off by the password", user.id, exc)
+            else:
+                self._spent_step(secret, body.code, state.last_step)
+        await store.save(user.id, TwoFactorState())
 
     async def set_password(
         self, body: SetPasswordRequest, *, ip: str, device: str | None = None
@@ -807,34 +1217,38 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         challenge, then a session. Every session ends with it (§12.5 item 7). A dead
         challenge, or one whose account is gone or deactivated, is ``token_invalid``
         (keksdose's dead challenge: signing in again is the one way on)."""
-        charge(self._limiters.challenge, ip, AUTH_THROTTLED["challenge"])
-        claims = self._signer.verify(body.challenge_token)
-        if claims is None or claims.get("type") != ChallengeKind.PASSWORD_CHANGE:
-            raise AuthError(AuthErrorCode.TOKEN_INVALID)
-        charge(self._limiters.challenge_subject, str(claims.get("sub")), AUTH_THROTTLED["challenge"])
-        user = await self._account_of(claims)
-        if user is None or not user.is_active:
-            raise AuthError(AuthErrorCode.TOKEN_INVALID)
-        if user.password_change_required_at is None:
-            raise AuthError(AuthErrorCode.PASSWORD_CHANGE_NOT_REQUIRED)
-        if self._hasher.verify(body.new_password, user.password_hash):
-            raise AuthError(AuthErrorCode.PASSWORD_UNCHANGED)
-        extras = await self._extras(self._hooks.password_changing, user, body)
-        now = self._now()
-        user = await self._users.apply(
-            user,
-            {
-                "password_hash": self._hasher.hash(body.new_password),
-                "password_change_required_at": None,
-                "last_login_at": now,
-                **self._cutoff(user, now),
-            },
-        )
-        await self._sessions.end_all(user.id)
-        await self._sessions_ended(user, SessionsEndedReason.FORCED_CHANGE)
-        minted = now + _AFTER_CUTOFF
-        session = await self._start(user, shared=shared_device_of(claims), ip=ip, device=device, now=minted)
-        return await self._pair(user, session, now=minted, extras=extras)
+        with self._observing(AuthEvent.LOGIN_SET_PASSWORD) as seen:
+            charge(self._limiters.challenge, ip, AUTH_THROTTLED["challenge"])
+            claims = self._signer.verify(body.challenge_token)
+            if claims is None or claims.get("type") != ChallengeKind.PASSWORD_CHANGE:
+                seen.outcome = "challenge_invalid"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            charge(self._limiters.challenge_subject, str(claims.get("sub")), AUTH_THROTTLED["challenge"])
+            user = await self._account_of(claims)
+            if user is None or not user.is_active:
+                seen.outcome = "inactive_user"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            await self._bind_anonymous(user)
+            if user.password_change_required_at is None:
+                raise AuthError(AuthErrorCode.PASSWORD_CHANGE_NOT_REQUIRED)
+            if self._hasher.verify(body.new_password, user.password_hash):
+                raise AuthError(AuthErrorCode.PASSWORD_UNCHANGED)
+            extras = await self._extras(self._hooks.password_changing, user, body)
+            now = self._now()
+            user = await self._users.apply(
+                user,
+                {
+                    "password_hash": self._hasher.hash(body.new_password),
+                    "password_change_required_at": None,
+                    "last_login_at": now,
+                    **self._cutoff(user, now),
+                },
+            )
+            await self._sessions.end_all(user.id)
+            await self._sessions_ended(user, SessionsEndedReason.FORCED_CHANGE)
+            minted = now + _AFTER_CUTOFF
+            session = await self._start(user, shared=shared_device_of(claims), ip=ip, device=device, now=minted)
+            return await self._pair(user, session, now=minted, extras=extras)
 
     async def _account_of(self, claims: Mapping[str, Any]) -> UserT | None:
         try:
@@ -846,22 +1260,25 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         """``POST /auth/refresh`` (§11): a new pair for the same session, its idle limit
         moved on. Every refusal is ``401 session_ended`` (decision 7); nothing else here
         answers 401 or 403, so a database fault stays a 5xx, which the client retries."""
-        charge(self._limiters.refresh, ip, AUTH_THROTTLED["refresh"])
-        claims = self._signer.verify(body.refresh_token)
-        if claims is None or claims.get("type") != REFRESH_TOKEN_TYPE:
-            raise AuthError(AuthErrorCode.SESSION_ENDED, "Not a refresh token of this app")
-        user, session = await self._live(claims)
-        if user.password_change_required_at is not None:
-            raise AuthError(AuthErrorCode.SESSION_ENDED, "The account has to choose a new password")
-        now = self._now()
-        expires_at = session_expires_at(
-            self._policy.sessions, shared=session.shared_device, started_at=session.started_at, last_active=now
-        )
-        end = _end_of(claims)
-        if end is not None:
-            expires_at = min(expires_at, end)
-        await self._sessions.touch(session, last_active=now, expires_at=expires_at)
-        return await self._pair(user, session, now=now, end=end)
+        with self._observing(AuthEvent.REFRESH) as seen:
+            charge(self._limiters.refresh, ip, AUTH_THROTTLED["refresh"])
+            claims = self._signer.verify(body.refresh_token)
+            if claims is None or claims.get("type") != REFRESH_TOKEN_TYPE:
+                seen.outcome = "invalid_token"
+                raise AuthError(AuthErrorCode.SESSION_ENDED, "Not a refresh token of this app")
+            user, session = await self._live(claims, seen)
+            if user.password_change_required_at is not None:
+                seen.outcome = "password_change_required"
+                raise AuthError(AuthErrorCode.SESSION_ENDED, "The account has to choose a new password")
+            now = self._now()
+            expires_at = session_expires_at(
+                self._policy.sessions, shared=session.shared_device, started_at=session.started_at, last_active=now
+            )
+            end = _end_of(claims)
+            if end is not None:
+                expires_at = min(expires_at, end)
+            await self._sessions.touch(session, last_active=now, expires_at=expires_at)
+            return await self._pair(user, session, now=now, end=end)
 
     # --- the sessions ----------------------------------------------------------------------
 
@@ -1023,46 +1440,56 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         """``DELETE /auth/me/email``: the pending change goes; the address stays."""
         await self._tokens.drop(OneTimeTokenKind.EMAIL_CHANGE, user.id)
 
-    async def _redeem(self, kind: OneTimeTokenKind, token: str, ip: str) -> tuple[Any, UserT]:
+    async def _redeem(self, kind: OneTimeTokenKind, token: str, ip: str, decision: _Decision) -> tuple[Any, UserT]:
         """A mailed link's row and account, or the coded refusal: unknown or spent
         (``token_invalid``), run out (``token_expired``), its account gone."""
         charge(self._limiters.redeem, ip, AUTH_THROTTLED["redeem"])
         row = await self._tokens.take(kind, hash_token(token))
         if row is None:
+            decision.outcome = "invalid"
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
         if _expired(row.expires_at, self._now()):
+            decision.outcome = "expired"
             raise AuthError(AuthErrorCode.TOKEN_EXPIRED)
         user = await self._users.get(row.user_id)
         if user is None:
+            decision.outcome = "invalid"
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
+        await self._bind_anonymous(user)
         return row, user
+
+    async def _bind_anonymous(self, user: UserT) -> None:
+        if self._hooks.bind_anonymous is not None:
+            await self._hooks.bind_anonymous(user)
 
     async def confirm_email_change(self, token: str, *, ip: str) -> EmailChangeConfirmed:
         """``POST /auth/me/email/confirm`` (user-admin §6.2), anonymous: the address switches
         and is verified, the sessions stay, the open, unexpired invitations for the new
         address attach (§12.5 item 9), and the ``on_email_changed`` hook is told (0.31).
         ``email_taken`` if it found an account meanwhile."""
-        row, user = await self._redeem(OneTimeTokenKind.EMAIL_CHANGE, token, ip)
-        if not user.is_active:
-            raise AuthError(AuthErrorCode.TOKEN_INVALID)
-        holder = await self._users.by_email(row.email)
-        if holder is not None and holder.id != user.id:
-            raise AuthError(AuthErrorCode.EMAIL_TAKEN)
-        now = self._now()
-        old = user.email
-        user = await self._users.apply(user, {"email": row.email, "email_verified_at": now})
-        for kind in (OneTimeTokenKind.EMAIL_CHANGE, OneTimeTokenKind.VERIFICATION, OneTimeTokenKind.PASSWORD_RESET):
-            await self._tokens.drop(kind, user.id)
-        attached = 0
-        for invitation in await self._invitations.open_for(row.email):
-            if _unspent(invitation) and not _expired(invitation.expires_at, now):
-                await self._invitations.accept(invitation, user_id=user.id, at=now)
-                if self._hooks.on_invitation_redeemed is not None:
-                    await self._hooks.on_invitation_redeemed(user, invitation)
-                attached += 1
-        if self._hooks.on_email_changed is not None:
-            await self._hooks.on_email_changed(user, old, user.email)
-        return EmailChangeConfirmed(email=user.email, invitations_attached=attached)
+        with self._observing(AuthEvent.EMAIL_CHANGE_CONFIRM) as seen:
+            row, user = await self._redeem(OneTimeTokenKind.EMAIL_CHANGE, token, ip, seen)
+            if not user.is_active:
+                seen.outcome = "inactive_user"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            holder = await self._users.by_email(row.email)
+            if holder is not None and holder.id != user.id:
+                raise AuthError(AuthErrorCode.EMAIL_TAKEN)
+            now = self._now()
+            old = user.email
+            user = await self._users.apply(user, {"email": row.email, "email_verified_at": now})
+            for kind in (OneTimeTokenKind.EMAIL_CHANGE, OneTimeTokenKind.VERIFICATION, OneTimeTokenKind.PASSWORD_RESET):
+                await self._tokens.drop(kind, user.id)
+            attached = 0
+            for invitation in await self._invitations.open_for(row.email):
+                if _unspent(invitation) and not _expired(invitation.expires_at, now):
+                    await self._invitations.accept(invitation, user_id=user.id, at=now)
+                    if self._hooks.on_invitation_redeemed is not None:
+                        await self._hooks.on_invitation_redeemed(user, invitation)
+                    attached += 1
+            if self._hooks.on_email_changed is not None:
+                await self._hooks.on_email_changed(user, old, user.email)
+            return EmailChangeConfirmed(email=user.email, invitations_attached=attached)
 
     # --- verification --------------------------------------------------------------------
 
@@ -1080,13 +1507,15 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
     async def verify_email(self, token: str, *, ip: str) -> EmailVerificationStatus:
         """``POST /auth/verify-email`` (§7, by POST: a mail scanner's GET verifies nothing).
         A link for an address the account no longer has is ``token_invalid``."""
-        row, user = await self._redeem(OneTimeTokenKind.VERIFICATION, token, ip)
-        if row.email != user.email:
-            raise AuthError(AuthErrorCode.TOKEN_INVALID)
-        if user.email_verified_at is None:
-            user = await self._users.apply(user, {"email_verified_at": self._now()})
-        await self._tokens.drop(OneTimeTokenKind.VERIFICATION, user.id)
-        return EmailVerificationStatus(email=user.email, email_verified=True)
+        with self._observing(AuthEvent.EMAIL_VERIFY) as seen:
+            row, user = await self._redeem(OneTimeTokenKind.VERIFICATION, token, ip, seen)
+            if row.email != user.email:
+                seen.outcome = "email_changed"
+                raise AuthError(AuthErrorCode.TOKEN_INVALID)
+            if user.email_verified_at is None:
+                user = await self._users.apply(user, {"email_verified_at": self._now()})
+            await self._tokens.drop(OneTimeTokenKind.VERIFICATION, user.id)
+            return EmailVerificationStatus(email=user.email, email_verified=True)
 
     async def resend_verification(self, user: UserT) -> EmailVerificationStatus:
         """``POST /auth/resend-verification``: a verified address sends nothing and spends
@@ -1122,106 +1551,128 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         were charged (``timer``, ``sleep``). The send gets the time left: one still running at
         the floor is cut and logged, and the person asks again. Only a write that has already
         overrun the floor, when the answer is late anyway, sends unbounded."""
-        charge(self._limiters.reset_ip, ip, AUTH_THROTTLED["reset"])
-        charge(self._limiters.reset_address, body.email, AUTH_THROTTLED["reset"])
-        floor = self._policy.answer_floor.total_seconds()
-        start = self._timer()
-        addresses = addresses_for_reset(body.email, self._policy.app)
-        found = {row.email: row for row in await self._users.by_emails(addresses)}
-        user = next((found[address] for address in addresses if address in found), None)
-        if user is not None and user.is_active and not getattr(user, "is_demo", False):
-            raw, digest = mint()
-            await self._tokens.put(
-                OneTimeTokenKind.PASSWORD_RESET,
-                user_id=user.id,
-                token_hash=digest,
-                email=user.email,
-                expires_at=self._now() + RESET_TTL,
-            )
-            await self._after.commit_now()
-            link = self._policy.links.url(self._policy.links.reset_password, token=raw)
-            left = floor - (self._timer() - start)
-            try:
-                async with asyncio.timeout(left if left > 0 else None):
-                    await self._send(
-                        user.email, AccountMailText.PASSWORD_RESET, user.locale, link=link, name=self._name(user)
-                    )
-            except TimeoutError:
-                logger.error(
-                    "The %s mail was still sending at the answer's floor (%.1f s) and was cut, so the "
-                    "answer does not tell that the account exists",
-                    ACCOUNT_MAIL_KINDS[AccountMailText.PASSWORD_RESET],
-                    floor,
+        with self._observing(AuthEvent.PASSWORD_RESET_REQUEST) as seen:
+            charge(self._limiters.reset_ip, ip, AUTH_THROTTLED["reset"])
+            charge(self._limiters.reset_address, body.email, AUTH_THROTTLED["reset"])
+            floor = self._policy.answer_floor.total_seconds()
+            start = self._timer()
+            addresses = addresses_for_reset(body.email, self._policy.app)
+            found = {row.email: row for row in await self._users.by_emails(addresses)}
+            user = next((found[address] for address in addresses if address in found), None)
+            if user is not None and user.is_active and not getattr(user, "is_demo", False):
+                raw, digest = mint()
+                await self._tokens.put(
+                    OneTimeTokenKind.PASSWORD_RESET,
+                    user_id=user.id,
+                    token_hash=digest,
+                    email=user.email,
+                    expires_at=self._now() + RESET_TTL,
                 )
-        else:
-            # The same commit as the account's path, so nothing after the floor differs.
-            await self._after.commit_now()
-        left = floor - (self._timer() - start)
-        if left > 0:
-            await self._sleep(left)
+                await self._after.commit_now()
+                link = self._policy.links.url(self._policy.links.reset_password, token=raw)
+                left = floor - (self._timer() - start)
+                # Only the observer can tell a failed send: the answer is 204 either way.
+                seen.outcome = "send_failed"
+                try:
+                    async with asyncio.timeout(left if left > 0 else None):
+                        if await self._send(
+                            user.email, AccountMailText.PASSWORD_RESET, user.locale, link=link, name=self._name(user)
+                        ):
+                            seen.outcome = "sent"
+                except TimeoutError:
+                    logger.error(
+                        "The %s mail was still sending at the answer's floor (%.1f s) and was cut, so the "
+                        "answer does not tell that the account exists",
+                        ACCOUNT_MAIL_KINDS[AccountMailText.PASSWORD_RESET],
+                        floor,
+                    )
+            else:
+                # The same commit as the account's path, so nothing after the floor differs.
+                await self._after.commit_now()
+                seen.outcome = (
+                    "unknown_email" if user is None else "inactive_user" if not user.is_active else "demo_user"
+                )
+            left = floor - (self._timer() - start)
+            if left > 0:
+                await self._sleep(left)
+            # The observer is told as the flow ends, after the floor on every path.
 
-    async def _reset_account(self, token: str, ip: str) -> UserT:
-        row, user = await self._redeem(OneTimeTokenKind.PASSWORD_RESET, token, ip)
+    async def _reset_account(self, token: str, ip: str, decision: _Decision) -> UserT:
+        row, user = await self._redeem(OneTimeTokenKind.PASSWORD_RESET, token, ip, decision)
         if not user.is_active or row.email != user.email:
+            decision.outcome = "inactive_user" if not user.is_active else "email_changed"
             raise AuthError(AuthErrorCode.TOKEN_INVALID)
         return user
 
     async def check_password_reset(self, token: str, *, ip: str) -> tuple[UserT, dict[str, Any]]:
         """``POST /auth/password-reset/check``: is the link good, without spending it; the
         account and the ``reset_extras``."""
-        user = await self._reset_account(token, ip)
-        return user, await self._extras(self._hooks.reset_extras, user, False)
+        with self._observing(AuthEvent.PASSWORD_RESET_CHECK) as seen:
+            user = await self._reset_account(token, ip, seen)
+            return user, await self._extras(self._hooks.reset_extras, user, False)
 
     async def confirm_password_reset(self, body: PasswordResetConfirm, *, ip: str) -> tuple[UserT, dict[str, Any]]:
         """``POST /auth/password-reset/confirm`` (§6.3, §12.5 item 6): the new password, the
         forced change met, the address verified (the link proved it), every session ended
         — and no tokens: a reset is not a sign-in, so a second factor cannot be skipped."""
-        user = await self._reset_account(body.token, ip)
-        now = self._now()
-        changes: dict[str, Any] = {
-            "password_hash": self._hasher.hash(body.new_password),
-            "password_change_required_at": None,
-            **self._cutoff(user, now),
-        }
-        if user.email_verified_at is None:
-            changes["email_verified_at"] = now
-        user = await self._users.apply(user, changes)
-        await self._tokens.drop(OneTimeTokenKind.PASSWORD_RESET, user.id)
-        await self._sessions.end_all(user.id)
-        await self._sessions_ended(user, SessionsEndedReason.PASSWORD_RESET)
-        return user, await self._extras(self._hooks.reset_extras, user, True)
+        with self._observing(AuthEvent.PASSWORD_RESET_CONFIRM) as seen:
+            user = await self._reset_account(body.token, ip, seen)
+            now = self._now()
+            changes: dict[str, Any] = {
+                "password_hash": self._hasher.hash(body.new_password),
+                "password_change_required_at": None,
+                **self._cutoff(user, now),
+            }
+            if user.email_verified_at is None:
+                changes["email_verified_at"] = now
+            user = await self._users.apply(user, changes)
+            await self._tokens.drop(OneTimeTokenKind.PASSWORD_RESET, user.id)
+            await self._sessions.end_all(user.id)
+            await self._sessions_ended(user, SessionsEndedReason.PASSWORD_RESET)
+            return user, await self._extras(self._hooks.reset_extras, user, True)
 
     # --- invitations -------------------------------------------------------------------
 
     async def check_invitation(self, token: str, *, ip: str) -> tuple[InvT, bool, dict[str, Any]]:
         """``POST /auth/invitations/check`` (§4.4): the invitation without spending it,
         whether its address has an account, and the ``describe_invitation`` extras."""
-        charge(self._limiters.redeem, ip, AUTH_THROTTLED["redeem"])
-        invitation = await self._open_invitation(token)
-        exists = await self._users.by_email(invitation.email) is not None
-        return invitation, exists, await self._extras(self._hooks.describe_invitation, invitation)
+        with self._observing(AuthEvent.INVITATION_CHECK) as seen:
+            charge(self._limiters.redeem, ip, AUTH_THROTTLED["redeem"])
+            invitation = await self._open_invitation(token, seen)
+            exists = await self._users.by_email(invitation.email) is not None
+            return invitation, exists, await self._extras(self._hooks.describe_invitation, invitation)
 
     async def accept_invitation(self, user: UserT, token: str, *, ip: str) -> tuple[InvT, dict[str, Any]]:
         """``POST /auth/invitations/accept`` (§4.4): an existing account takes up an
         invitation for its address (or the app's tag on it); ``on_invitation_redeemed``
         attaches what it names."""
-        refuse_demo(getattr(user, "is_demo", False), "invitations")
-        charge(self._limiters.redeem, ip, AUTH_THROTTLED["redeem"])
-        invitation = await self._open_invitation(token)
-        if not invitation_accepts(invitation.email, user.email, self._policy.app):
-            raise AuthError(AuthErrorCode.INVITATION_INVALID)
-        await self._invitations.accept(invitation, user_id=user.id, at=self._now())
-        if self._hooks.on_invitation_redeemed is not None:
-            await self._hooks.on_invitation_redeemed(user, invitation)
-        return invitation, await self._extras(self._hooks.describe_invitation, invitation)
+        with self._observing(AuthEvent.INVITATION_ACCEPT) as seen:
+            refuse_demo(getattr(user, "is_demo", False), "invitations")
+            charge(self._limiters.redeem, ip, AUTH_THROTTLED["redeem"])
+            invitation = await self._open_invitation(token, seen)
+            if not invitation_accepts(invitation.email, user.email, self._policy.app):
+                seen.outcome = "email_mismatch"
+                raise AuthError(AuthErrorCode.INVITATION_INVALID)
+            if self._hooks.invitation_accepting is not None:
+                await self._hooks.invitation_accepting(user, invitation)
+            await self._invitations.accept(invitation, user_id=user.id, at=self._now())
+            if self._hooks.on_invitation_redeemed is not None:
+                await self._hooks.on_invitation_redeemed(user, invitation)
+            extras = await self._extras(self._hooks.describe_invitation, invitation)
+            group = await self._group_of(invitation)
+            return invitation, extras if group is None else {**extras, "group": group.model_dump()}
 
     async def invitation_rows(self) -> list[dict[str, Any]]:
-        """``GET /admin/invitations`` (user-admin §5): every invitation not accepted, newest
+        """``GET /admin/invitations`` (user-admin §5): every invitation not accepted — and the
+        accepted ones too with ``AccountPolicy.list_accepted_invitations`` (0.32) — newest
         first, as ``InvitationRow`` fields — the inviter as a person, the status from the
         columns, never a link. A row never sent (an allow-list entry carried over) reads as
         expired, so the admin re-sends it."""
         now = self._now()
-        rows = await self._invitations.listing()
+        if self._policy.list_accepted_invitations:
+            rows = await self._invitations.listing(accepted=True)
+        else:
+            rows = await self._invitations.listing()
         people: dict[int, PersonRef | None] = {}
         for invitation in rows:
             inviter = invitation.invited_by_user_id
@@ -1261,31 +1712,55 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         hook = self._hooks.invitation_group
         return None if hook is None else await hook(invitation)
 
-    async def _mail_invitation(self, invitation: InvT, raw: str, group: GroupRef | None) -> tuple[str, bool]:
-        """Commit, then mail the invitation in the invitee's language, naming its group."""
+    async def _mail_invitation(
+        self, invitation: InvT, raw: str, group: GroupRef | None, inviter: UserT
+    ) -> tuple[str, bool]:
+        """Commit, then mail the invitation in the invitee's language, naming its group and who
+        invited; an address that has an account gets the "join" kind of it (0.32)."""
         await self._after.commit_now()
         link = self._policy.links.url(self._policy.links.register, invite=raw)
         name = "" if group is None or group.name is None else group.name
-        return link, await self._send(
-            invitation.email, AccountMailText.INVITATION, invitation.locale, link=link, group=name
-        )
+        known = await self._users.by_email(invitation.email) is not None
+        if name:
+            kind = AccountMailText.GROUP_INVITATION_ACCOUNT if known else AccountMailText.GROUP_INVITATION
+        else:
+            kind = AccountMailText.INVITATION_ACCOUNT if known else AccountMailText.INVITATION
+        who = full_name(inviter.first_name, inviter.last_name, invitation.locale)
+        return link, await self._send(invitation.email, kind, invitation.locale, link=link, group=name, inviter=who)
 
-    async def _issued(self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool) -> dict[str, Any]:
+    async def _issued(
+        self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool, resent: bool = False
+    ) -> dict[str, Any]:
         inviter = PersonRef.model_validate(admin, from_attributes=True)
         fields = await self._invitation_fields(
             issued.invitation, self._now(), inviter, link=issued.link if show_link else None
         )
-        return {**fields, "sent": issued.sent}
+        return {**fields, "sent": issued.sent, "resent": resent}
 
-    async def create_invitation(self, admin: UserT, body: InvitationCreate, *, show_link: bool) -> dict[str, Any]:
+    async def create_invitation(
+        self,
+        admin: UserT,
+        body: InvitationCreate,
+        *,
+        show_link: bool,
+        scope: Mapping[str, Any] | None = None,
+        detail: Mapping[str, object] | None = None,
+    ) -> dict[str, Any]:
         """``POST /admin/invitations`` (user-admin §5): an invitation to an address, in the
-        invitee's language, logged as ``invite``; the mail after the commit. ``show_link``:
+        invitee's language; the mail after the commit, then the ``invite`` row with ``sent``
+        (0.32, as the admin's mails log it). ``show_link``:
         the console transport's shown-once link (§12.5 item 11). A ``scope`` goes through the
-        ``invitation_scope`` hook, else it is refused."""
+        ``invitation_scope`` hook, else it is refused.
+
+        For a caller that decided the scope itself (0.32, the teams: a team and the role in
+        it), ``scope`` is stored as it is, past the hook, and ``detail`` joins the ``invite``
+        row's detail beside the kit's (``team_role``). A body that names a scope too is a
+        :class:`ValueError`. Without either, nothing changes."""
         invitable = self._policy.invitable_roles
         if invitable is not None and body.role not in invitable:
             raise AccountError(AccountErrorCode.ROLE_NOT_GRANTABLE)
-        scope: Mapping[str, Any] | None = None
+        if scope is not None and body.scope is not None:
+            raise ValueError("create_invitation: a decided scope, or the body's scope through the hook, not both")
         if body.scope is not None:
             if self._hooks.invitation_scope is None:
                 raise AuthError(AuthErrorCode.INVITATION_SCOPE_INVALID)
@@ -1294,10 +1769,16 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             existing = await self._users.by_email(body.email)
             await self._hooks.invitation_creating(admin, body, existing, scope)
         charge(self._limiters.verification_resend, body.email, AUTH_THROTTLED["mail"])
+        # A body that names no language is written in the inviting admin's (0.32,
+        # Kurvenschmiede's), not the schema's default; one that names it wins.
+        locale = body.locale if "locale" in body.model_fields_set or not admin.locale else admin.locale
         if self._policy.reuse_open_invitations:
             for open_one in await self._invitations.open_for(body.email):
                 if open_one.role == body.role and (open_one.scope or None) == (scope or None):
-                    return await self._send_again(admin, open_one, show_link=show_link)
+                    # Re-used, it is the new request's (0.32, keksdose's): its language, its
+                    # note, and the admin who asked.
+                    renewed = {"locale": locale, "note": body.note, "invited_by_user_id": admin.id}
+                    return await self._send_again(admin, open_one, show_link=show_link, renewed=renewed)
         now = self._now()
         raw, digest = mint()
         invitation = await self._invitations.add(
@@ -1305,7 +1786,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 email=body.email,
                 token_hash=digest,
                 expires_at=now + INVITE_TTL,
-                locale=body.locale,
+                locale=locale,
                 invited_by_user_id=admin.id,
                 role=body.role,
                 scope=scope,
@@ -1313,8 +1794,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             )
         )
         group = await self._group_of(invitation)
-        await self._record(AdminAction.INVITE, admin, invitation, now, group)
-        link, sent = await self._mail_invitation(invitation, raw, group)
+        link, sent = await self._mail_invitation(invitation, raw, group, admin)
+        await self._record(AdminAction.INVITE, admin, invitation, now, group, {**(detail or {}), "sent": sent})
         return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
 
     async def _closed_or_found(self, invitation_id: int) -> InvT:
@@ -1332,17 +1813,22 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         charge(self._limiters.verification_resend, invitation.email, AUTH_THROTTLED["mail"])
         return await self._send_again(admin, invitation, show_link=show_link)
 
-    async def _send_again(self, admin: UserT, invitation: InvT, *, show_link: bool) -> dict[str, Any]:
-        """A new token and 14 more days for an unspent invitation, the old link dead, logged
-        as ``invite_resend``: the re-send, and a reused invitation (0.31). Charged by the
-        caller."""
+    async def _send_again(
+        self, admin: UserT, invitation: InvT, *, show_link: bool, renewed: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """A new token and 14 more days for an unspent invitation, the old link dead, mailed
+        after the commit and then logged as ``invite_resend`` with ``sent`` (0.32): the re-send, and a reused invitation (0.31), which takes the
+        ``renewed`` fields of its new request (0.32: ``locale``, ``note``,
+        ``invited_by_user_id``); a re-send keeps the row's own. Charged by the caller."""
         now = self._now()
         raw, digest = mint()
-        invitation = await self._invitations.remint(invitation, token_hash=digest, expires_at=now + INVITE_TTL)
+        invitation = await self._invitations.remint(
+            invitation, token_hash=digest, expires_at=now + INVITE_TTL, **(renewed or {})
+        )
         group = await self._group_of(invitation)
-        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group)
-        link, sent = await self._mail_invitation(invitation, raw, group)
-        return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
+        link, sent = await self._mail_invitation(invitation, raw, group, admin)
+        await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group, {"sent": sent})
+        return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link, resent=True)
 
     async def revoke_invitation(self, admin: UserT, invitation_id: int) -> None:
         """``DELETE /admin/invitations/{id}``: an open or expired invitation is withdrawn,
@@ -1358,9 +1844,15 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         await self._record(AdminAction.INVITE_REVOKE, admin, invitation, now, await self._group_of(invitation))
 
     async def _record(
-        self, action: AdminAction, admin: UserT, invitation: InvT, now: datetime, group: GroupRef | None
+        self,
+        action: AdminAction,
+        admin: UserT,
+        invitation: InvT,
+        now: datetime,
+        group: GroupRef | None,
+        more: Mapping[str, object] | None = None,
     ) -> None:
-        detail = (
+        detail: dict[str, object] = (
             {"invitation_id": invitation.id, "role": invitation.role}
             if invitation.role
             else {"invitation_id": invitation.id}
@@ -1371,7 +1863,7 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 actor_id=admin.id,
                 target_user_id=None,
                 target_email=invitation.email,
-                detail=detail,
+                detail={**detail, **(more or {})},
                 target_group_id=None if group is None else group.id,
                 now=now,
             )
@@ -1439,7 +1931,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         extras = await self._extras(self._hooks.erase, user, actor_id=actor_id)
         anonymised = 0
         if feedback is not None:
-            erased = await feedback.erase_author(user.id, erasure_identifiers(email, user.first_name, user.last_name))
+            own = self._hooks.erasure_identifiers
+            extra = await own(user) if own is not None else ()
+            identifiers = erasure_identifiers(email, user.first_name, user.last_name, extra=extra)
+            erased = await feedback.erase_author(user.id, identifiers)
             anonymised = erased.reports
             self._purge_later(erased.keys)
         addresses = {email}
@@ -1472,7 +1967,12 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             return
         purge = self._hooks.purge_files
         if purge is None:
-            logger.info("an erasure left %s stored files and the app takes no purge_files", len(keys))
+            # A WARNING (0.32, Staunlabor): the erased person's files stay in the store, and an
+            # app with feedback files and no hook would otherwise never notice.
+            logger.warning(
+                "an erasure left %s stored files in the store: the app takes no AuthHooks.purge_files",
+                len(keys),
+            )
             return
         kept = tuple(keys)
 
@@ -1531,6 +2031,8 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
                 active_admins=await self._users.count_active(role=self._policy.admin_role),
                 change_removes_admin=True,
             )
+        if self._hooks.deletion_requesting is not None:
+            await self._hooks.deletion_requesting(user)
         now = self._now()
         scheduled = deletion_schedule(now, self._policy.deletion_mode, self._policy.deletion_days)
         user = await self._users.apply(
@@ -1556,11 +2058,16 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             )
         )
         await self._after.commit_now()
-        values: dict[str, Any] = {"name": self._name(user), "contact": self._policy.contact, **self._policy.retention}
+        values: dict[str, Any] = {
+            "name": self._name(user),
+            "contact": self._policy.contact,
+            "privacy": self._policy.links.url(self._policy.links.privacy),
+            **self._policy.retention,
+        }
         if scheduled is None:
             kind = AccountMailText.ACCOUNT_DELETION_OPERATOR
         else:
-            kind, values["date"] = AccountMailText.ACCOUNT_DELETION, mail_date(scheduled, user.locale)
+            kind, values["date"] = AccountMailText.ACCOUNT_DELETION, self._policy.mail_date(scheduled, user.locale)
         link = self._policy.links.url(self._policy.links.home)
         sent = await self._send(user.email, kind, user.locale, link=link, **values)
         return {"deletion_scheduled_at": scheduled, "mail_sent": sent, **extras}
@@ -1718,36 +2225,51 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         its challenge once (after the signature, so only a genuine answer learns it is
         spent; keksdose's order), and the sign-in answers as the password one does — a
         forced change caught too. User verification makes it both factors (§12.5 item 8)."""
-        store, rp = self._passkey_parts()
-        charge(self._limiters.login, ip, AUTH_THROTTLED["login"])
-        claims = self._signer.verify(body.challenge_token)
-        challenge = claims.get("challenge") if claims is not None else None
-        try:
-            if claims is None or claims.get("type") != ChallengeKind.WEBAUTHN_AUTH or not isinstance(challenge, str):
-                raise PasskeyCheckError("not a sign-in challenge")
-            stored = await store.by_credential_id(credential_id_of(body.credential))
-            if stored is None:
-                raise PasskeyCheckError("no such passkey")
-            handle = user_handle_of(body.credential)
-            if handle is not None and handle != stored.user_id:
-                raise PasskeyCheckError("the user handle names another account")
-            count = verify_authentication(
-                rp,
-                body.credential,
-                base64url_decode(challenge),
-                public_key=stored.public_key,
-                sign_count=stored.sign_count,
-            )
-            if not await self._spend(store, challenge, ChallengeKind.WEBAUTHN_AUTH):
-                raise PasskeyCheckError("the challenge has already been answered")
-            user = await self._users.get(stored.user_id)
-            if user is None or not user.is_active:
-                raise PasskeyCheckError("the account is not active")
-        except (PasskeyCheckError, ValueError) as exc:
-            logger.info(_REFUSED, exc)
-            raise AuthError(AuthErrorCode.PASSKEY_REFUSED) from exc
-        await store.used(stored, sign_count=count, at=self._now())
-        return await self._sign_in(user, shared=body.shared_device, ip=ip, device=device)
+        with self._observing(AuthEvent.PASSKEY_LOGIN) as seen:
+            store, rp = self._passkey_parts()
+            charge(self._limiters.login, ip, AUTH_THROTTLED["login"])
+            claims = self._signer.verify(body.challenge_token)
+            challenge = claims.get("challenge") if claims is not None else None
+            # The step being checked: what a refusal there is told as (``observe``).
+            step = "challenge_invalid"
+            try:
+                if (
+                    claims is None
+                    or claims.get("type") != ChallengeKind.WEBAUTHN_AUTH
+                    or not isinstance(challenge, str)
+                ):
+                    raise PasskeyCheckError("not a sign-in challenge")
+                step = "unknown_passkey"
+                stored = await store.by_credential_id(credential_id_of(body.credential))
+                if stored is None:
+                    raise PasskeyCheckError("no such passkey")
+                step = "user_handle_mismatch"
+                handle = user_handle_of(body.credential)
+                if handle is not None and handle != stored.user_id:
+                    raise PasskeyCheckError("the user handle names another account")
+                step = "not_verified"
+                count = verify_authentication(
+                    rp,
+                    body.credential,
+                    base64url_decode(challenge),
+                    public_key=stored.public_key,
+                    sign_count=stored.sign_count,
+                )
+                step = "challenge_spent"
+                if not await self._spend(store, challenge, ChallengeKind.WEBAUTHN_AUTH):
+                    raise PasskeyCheckError("the challenge has already been answered")
+                step = "inactive_user"
+                user = await self._users.get(stored.user_id)
+                if user is None or not user.is_active:
+                    raise PasskeyCheckError("the account is not active")
+            except (PasskeyCheckError, ValueError) as exc:
+                logger.info(_REFUSED, exc)
+                seen.outcome = step
+                raise AuthError(AuthErrorCode.PASSKEY_REFUSED) from exc
+            await store.used(stored, sign_count=count, at=self._now())
+            # A passkey with user verification counts as both factors (§12.5 item 8): no code.
+            await self._bind_anonymous(user)
+            return _signed_in(seen, await self._sign_in(user, shared=body.shared_device, ip=ip, device=device))
 
     async def passkeys_of(self, user: UserT) -> Sequence[PasskeyRow]:
         """``GET /auth/passkeys``: the account's own, oldest first."""
@@ -1801,3 +2323,10 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             await mailer.send(to, message, kind=sent_as)
 
         self._after.later(send)
+
+
+def _digests(codes: Sequence[str]) -> tuple[str, ...]:
+    """The stored form of a fresh set of backup codes (:func:`new_backup_codes`' upper-case
+    groups): each one's digest, as :func:`~eifi1_server_kit.auth.backup_code_digest` reads a
+    typed one."""
+    return tuple(hash_token(code.replace("-", "")) for code in codes)

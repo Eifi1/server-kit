@@ -78,7 +78,8 @@ async def test_an_existing_account_takes_up_an_invitation_for_its_address(world:
     world.hooks = AuthHooks(on_invitation_redeemed=on_invitation_redeemed)
     raw, invitation = invite(world, "bob@example.com", role="MEMBER")
     response = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": raw})
-    assert response.status_code == 200 and response.json() == {"email": "bob@example.com", "role": "MEMBER"}
+    assert response.status_code == 200
+    assert response.json() == {"email": "bob@example.com", "role": "MEMBER", "group": None}
     assert invitation.accepted_by_user_id == user.id and redeemed == [invitation.id]
     again = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": raw})
     assert code(again) == "invitation_invalid"
@@ -136,7 +137,7 @@ async def test_an_admin_invites_and_the_mail_goes_after_the_commit(world: World)
     assert mail.message.subject == "Invitation à Staunlabor" and "/register?invite=" in world.mailer.link("invitation")
     (row,) = world.log.rows
     assert (row.action, row.actor_id, row.target_email) == ("invite", admin.id, "bob@example.com")
-    assert row.detail == {"invitation_id": body["id"], "role": "MEMBER"}
+    assert row.detail == {"invitation_id": body["id"], "role": "MEMBER", "sent": True}
     raw = world.mailer.token("invitation")
     check = await world.call("POST", "/auth/invitations/check", json={"token": raw})
     assert check.json()["email"] == "bob@example.com"
@@ -324,7 +325,7 @@ async def test_an_invitation_names_its_group_in_the_mail_and_the_log() -> None:
         team = (invitation.scope or {}).get("team")
         return None if team is None else GroupRef(id=team, name=f"Rig {team}")
 
-    world = World(mail_texts={"invitation": own})
+    world = World(mail_texts={"group_invitation": own})  # 0.32: the group invitation is its own mail
     async with world.client:
         _, token = await admin_token(world)
         world.hooks = AuthHooks(invitation_scope=invitation_scope, invitation_group=invitation_group)
@@ -346,4 +347,231 @@ async def test_an_invitation_names_its_group_in_the_mail_and_the_log() -> None:
             "POST", "/admin/invitations", token=token, json={"email": "cy@example.com", "role": "MEMBER"}
         )
         assert plain.status_code == 201 and world.log.rows[-1].target_group_id is None
-        assert world.mailer.of("invitation")[-1].message.subject == "Join  on Staunlabor"
+        assert "Rig" not in world.mailer.of("invitation")[-1].message.subject, "no group: the general invitation"
+
+
+async def test_an_invitation_without_a_language_is_written_in_the_admin_s() -> None:
+    """Kurvenschmiede (0.32): the inviting admin's language, not the kit's de-CH, when the
+    body names none; a language the body names wins."""
+    world = World()
+    async with world.client:
+        admin = world.account(email="root@example.com", role="ADMIN", locale="fr")
+        token = await world.token_of(admin)
+        await world.call("POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER"})
+        await world.call(
+            "POST",
+            "/admin/invitations",
+            token=token,
+            json={"email": "cy@example.com", "role": "MEMBER", "locale": "it"},
+        )
+        assert [row.locale for row in world.invitations.rows.values()] == ["fr", "it"]
+        admin.locale = ""  # an admin with no language of their own: the schema's default
+        await world.call("POST", "/admin/invitations", token=token, json={"email": "dee@example.com", "role": "MEMBER"})
+        assert list(world.invitations.rows.values())[-1].locale == "de-CH"
+
+
+async def test_an_invitation_to_a_group_names_it_in_the_kit_s_own_words() -> None:
+    """Kurvenschmiede's gap 2 (0.32): with ``invitation_group`` answering a name, the kit
+    sends its group invitation, in the invitee's language; without one, the general text."""
+    from eifi1_server_kit.auth.mails import ACCOUNT_MAIL_KINDS, AccountMailText
+    from eifi1_server_kit.user_admin.schemas import GroupRef
+
+    async def invitation_scope(admin: MemoryUser, scope: int | str) -> dict[str, Any]:
+        return {"team": scope}
+
+    async def invitation_group(invitation: MemoryInvitation) -> GroupRef | None:
+        team = (invitation.scope or {}).get("team")
+        return None if team is None else GroupRef(id=team, name=f"Rig {team}")
+
+    world = World()
+    async with world.client:
+        _, token = await admin_token(world)
+        world.hooks = AuthHooks(invitation_scope=invitation_scope, invitation_group=invitation_group)
+        body = {"email": "bob@example.com", "role": "MEMBER", "scope": 4}
+        await world.call("POST", "/admin/invitations", token=token, json={**body, "locale": "en"})
+        await world.call(
+            "POST", "/admin/invitations", token=token, json={**body, "email": "cy@example.com", "locale": "de-CH"}
+        )
+        await world.call(
+            "POST",
+            "/admin/invitations",
+            token=token,
+            json={"email": "dee@example.com", "role": "MEMBER", "locale": "en"},
+        )
+        en, de, plain = world.mailer.of("invitation")
+        assert "Rig 4" in en.message.subject and "Rig 4" in en.message.text
+        assert "Rig 4" in de.message.subject and "eingeladen" in de.message.text
+        assert "Rig" not in plain.message.subject
+    assert ACCOUNT_MAIL_KINDS[AccountMailText.GROUP_INVITATION] == "invitation"
+
+
+async def test_an_accepted_invitation_names_its_group() -> None:
+    """0.32 (Kurvenschmiede's dev.2 finding 3): the accept answers the group
+    ``invitation_group`` names, so the page says what the account joined."""
+    from eifi1_server_kit.user_admin.schemas import GroupRef
+
+    async def invitation_group(invitation: MemoryInvitation) -> GroupRef | None:
+        return GroupRef(id=4, name="Rig 4")
+
+    world = World()
+    async with world.client:
+        user = world.account(email="bob@example.com")
+        token = await world.token_of(user)
+        world.hooks = AuthHooks(invitation_group=invitation_group)
+        raw, _ = invite(world, "bob@example.com", role="MEMBER")
+        response = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": raw})
+        assert response.json()["group"] == {"id": 4, "name": "Rig 4"}
+
+
+async def test_the_app_may_refuse_an_existing_account_s_accept() -> None:
+    """keksdose's KG-4 (c) (0.32): a registration invitation is for a new address; an existing
+    account taking it up is refused (keksdose answers ``invitation_invalid``), while a budget
+    invitation is accepted. ``invitation_accepting`` sees the account and the invitation
+    before anything is spent."""
+    world = World()
+    async with world.client:
+        user = world.account(email="bob@example.com")
+        token = await world.token_of(user)
+
+        async def invitation_accepting(account: MemoryUser, invitation: MemoryInvitation) -> None:
+            if invitation.scope is None:
+                raise AuthError(AuthErrorCode.INVITATION_INVALID)
+
+        world.hooks = AuthHooks(invitation_accepting=invitation_accepting)
+        registration, first = invite(world, "bob@example.com", role="MEMBER")
+        refused = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": registration})
+        assert code(refused) == "invitation_invalid" and first.accepted_at is None
+        budget, second = invite(world, "bob@example.com", role="GUEST", scope={"budget_id": 7})
+        accepted = await world.call("POST", "/auth/invitations/accept", token=token, json={"token": budget})
+        assert accepted.status_code == 200 and second.accepted_by_user_id == user.id
+
+
+async def test_an_invitation_names_its_inviter_and_knows_an_existing_account() -> None:
+    """keksdose's KG-5 (0.32): its invitation mail names the inviter, and an address that has an
+    account reads "join" where a new one reads "register"; the kit's own words are the same for
+    both, an app's table words each."""
+    from eifi1_server_kit.mail import MailText
+
+    def text(body: str) -> dict[str, MailText]:
+        return {"en": MailText(subject="{app}", intro="Hello,", body=body, cta="Open", outro="")}
+
+    world = World(
+        mail_texts={
+            "invitation": text("{inviter} invites you to register."),
+            "invitation_account": text("{inviter} invites you to join."),
+        }
+    )
+    async with world.client:
+        _, token = await admin_token(world)
+        world.account(email="known@example.com")
+        for email in ("new@example.com", "known@example.com"):
+            await world.call(
+                "POST", "/admin/invitations", token=token, json={"email": email, "role": "MEMBER", "locale": "en"}
+            )
+        new, known = world.mailer.of("invitation")
+        assert "Grace Hopper invites you to register." in new.message.text
+        assert "Grace Hopper invites you to join." in known.message.text
+
+
+# --- 0.32: keksdose's move onto the admin's invitation routes --------------------------------------
+
+
+async def test_the_admin_s_list_shows_accepted_invitations_where_the_app_asks() -> None:
+    """keksdose lists who came in by an invitation: ``AccountPolicy.list_accepted_invitations``
+    adds the accepted ones, in the same order; re-sending or withdrawing one is still refused."""
+    from dataclasses import replace
+
+    from tests.auth._world import POLICY
+
+    world = World(policy=replace(POLICY, list_accepted_invitations=True))
+    async with world.client:
+        _, token = await admin_token(world)
+        world.invitations.seed(email="old@example.com", role="MEMBER")
+        world.clock.advance(minutes=1)
+        accepted = world.invitations.seed(email="in@example.com", accepted_at=world.clock(), accepted_by_user_id=7)
+        tied = world.invitations.seed(email="new@example.com", role="MEMBER")
+        rows = (await world.call("GET", "/admin/invitations", token=token)).json()
+        assert [(row["id"], row["status"]) for row in rows] == [
+            (tied.id, "open"),
+            (accepted.id, "accepted"),
+            (1, "open"),
+        ], "newest first, the higher id first on a tie"
+        for method, path in (
+            ("POST", f"/admin/invitations/{accepted.id}/resend"),
+            ("DELETE", f"/admin/invitations/{accepted.id}"),
+        ):
+            refused = await world.call(method, path, token=token)
+            assert (refused.status_code, code(refused)) == (409, "invitation_closed"), method
+        assert world.log.rows == [] and accepted.accepted_at is not None and accepted.revoked_at is None
+
+    plain = World()
+    async with plain.client:
+        _, token = await admin_token(plain)
+        plain.invitations.seed(email="in@example.com", accepted_at=plain.clock())
+        assert (await plain.call("GET", "/admin/invitations", token=token)).json() == [], "off: 0.29's list"
+
+
+async def test_a_re_invitation_takes_the_new_request_s_language_note_and_inviter() -> None:
+    """keksdose: inviting an address again (``reuse_open_invitations``) re-uses its row, now in
+    the new request's language (the body's, else the admin's), with its note and the admin who
+    asked; a plain re-send keeps the row's own. Both answer ``resent``."""
+    from dataclasses import replace
+
+    from tests.auth._world import POLICY
+
+    world = World(policy=replace(POLICY, reuse_open_invitations=True))
+    async with world.client:
+        first_admin, first = await admin_token(world)
+        made = await world.call(
+            "POST",
+            "/admin/invitations",
+            token=first,
+            json={"email": "bob@example.com", "role": "MEMBER", "locale": "fr", "note": "first"},
+        )
+        assert made.status_code == 201 and made.json()["resent"] is False
+        (row,) = world.invitations.rows.values()
+        row.expires_at = world.clock() - timedelta(days=1)  # expired: re-used all the same
+        second_admin = world.account(email="ops@example.com", role="ADMIN", locale="it", first_name="Ada")
+        second = await world.token_of(second_admin)
+        again = await world.call(
+            "POST",
+            "/admin/invitations",
+            token=second,
+            json={"email": "bob@example.com", "role": "MEMBER", "note": "second"},
+        )
+        answer = again.json()
+        assert again.status_code == 201 and answer["id"] == row.id and answer["resent"] is True
+        assert (row.locale, row.note, row.invited_by_user_id) == ("it", "second", second_admin.id)
+        assert (answer["locale"], answer["note"], answer["invited_by"]["id"]) == ("it", "second", second_admin.id)
+        assert world.mailer.of("invitation")[-1].message.subject == "Invito a Staunlabor"
+        resent = await world.call("POST", f"/admin/invitations/{row.id}/resend", token=first)
+        assert resent.json()["resent"] is True
+        assert (row.locale, row.note, row.invited_by_user_id) == ("it", "second", second_admin.id), (
+            "a re-send keeps them"
+        )
+        assert first_admin.id != second_admin.id
+
+
+async def test_the_invitation_rows_record_whether_the_mail_went_after_it_was_sent(world: World) -> None:
+    """``invite`` and ``invite_resend`` log ``sent`` (0.32), as the admin's mails do: written
+    after the commit and the send, so the row says what happened."""
+    _, token = await admin_token(world)
+    logged_at_send: list[int] = []
+    send = world.mailer.send
+
+    async def sending(to: str, message: Any, *, kind: str = "other") -> bool:
+        logged_at_send.append(len(world.log.rows))
+        return await send(to, message, kind=kind)
+
+    world.mailer.send = sending  # type: ignore[method-assign]
+    made = (
+        await world.call("POST", "/admin/invitations", token=token, json={"email": "bob@example.com", "role": "MEMBER"})
+    ).json()
+    world.mailer.works = False
+    resent = (await world.call("POST", f"/admin/invitations/{made['id']}/resend", token=token)).json()
+    assert (made["sent"], resent["sent"]) == (True, False)
+    assert [(row.action, row.detail) for row in world.log.rows] == [
+        ("invite", {"invitation_id": made["id"], "role": "MEMBER", "sent": True}),
+        ("invite_resend", {"invitation_id": made["id"], "role": "MEMBER", "sent": False}),
+    ]
+    assert logged_at_send == [0, 1], "each row is written after its mail"

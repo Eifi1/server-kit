@@ -1,6 +1,7 @@
 """The account layer's pieces the admin router and the erasure job share (0.30): ending
 every session for a reason, the admin's mails, and the erasure (user-admin §6.4)."""
 
+import logging
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -161,6 +162,43 @@ async def test_an_erasure_hands_over_anonymises_scrubs_and_deletes_the_account(w
         None,
     )
     assert erased.detail == detail
+
+
+async def test_an_erasure_takes_the_app_s_own_identifiers_beside_the_kit_s(world: World) -> None:
+    """keksdose (0.32): older report stamps hold ``legacy_display_name``, the whole name an
+    account carried before its first/last split; ``AuthHooks.erasure_identifiers`` adds it,
+    and the list keeps the kit's rules (de-duplicated, longest first)."""
+    user = world.account(email="ada@example.com", is_active=False, deletion_requested_at=world.clock())
+
+    async def erasure_identifiers(account: MemoryUser) -> list[str]:
+        assert account is user
+        return ["Countess Ada Lovelace", "ADA@example.com", "  "]
+
+    feedback = FakeFeedback()
+    hooks = AuthHooks(erasure_identifiers=erasure_identifiers)
+    await world.service(hooks).erase(user, actor_id=None, feedback=feedback)  # type: ignore[arg-type]
+    identifiers = [str(i) for i in feedback.asked[0][1]]
+    assert identifiers[0] == "Countess Ada Lovelace" and "Ada Lovelace" in identifiers
+    assert [i.lower() for i in identifiers].count("ada@example.com") == 1
+    assert identifiers == sorted(identifiers, key=len, reverse=True)
+
+
+async def test_an_erasure_that_leaves_files_with_no_purge_warns(world: World, caplog: pytest.LogCaptureFixture) -> None:
+    """Staunlabor's finding on 0.32.0.dev4: an app with feedback files and no ``purge_files``
+    kept an erased person's files, and only an INFO line said so. It is a WARNING now, naming
+    the hook; an erasure that leaves no file says nothing."""
+    admin = world.account(email="root@example.com", role="ADMIN")
+    user = world.account(email="ada@example.com", is_active=False, deletion_requested_at=world.clock())
+    with caplog.at_level(logging.INFO, logger="eifi1_server_kit.auth"):
+        await world.service().erase(user, actor_id=admin.id, feedback=FakeFeedback())  # type: ignore[arg-type]
+        await world.service().erase(
+            world.account(email="bob@example.com", is_active=False, deletion_requested_at=world.clock()),
+            actor_id=admin.id,
+            feedback=FakeFeedback(keys=()),  # type: ignore[arg-type]
+        )
+    (record,) = [r for r in caplog.records if "purge_files" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert "1 stored files" in record.getMessage()
 
 
 async def test_an_erasure_scrubs_the_rows_about_the_account_whatever_address_they_name(world: World) -> None:

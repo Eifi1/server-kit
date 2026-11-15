@@ -25,7 +25,8 @@ address change's link went, ``{passkey}`` the new passkey's name, ``{date}`` the
 (:func:`mail_date`), ``{backup_days}`` and ``{log_days}`` the retention note
 (:func:`~eifi1_server_kit.user_admin.deletion_mail_retention_note`), ``{group}`` the invitation's
 group (0.31: a team's name from ``AuthHooks.invitation_group``, empty without one; the kit's own
-invitation text names none, an app's own table may).
+invitation text names none, an app's own table may), ``{inviter}`` who invited (0.32), and
+``{privacy}`` the privacy page's link in the deletion mails (0.32, ``AccountLinks.privacy``).
 """
 
 from __future__ import annotations
@@ -60,12 +61,22 @@ class AccountMailText(enum.StrEnum):
     EMAIL_CHANGE_NOTICE = "email_change_notice"
     #: An invitation, in the invitee's language (§4.4).
     INVITATION = "invitation"
+    #: An invitation into a group the app names (``AuthHooks.invitation_group``: a team), in
+    #: the invitee's language, the group named (0.32, Kurvenschmiede's).
+    GROUP_INVITATION = "group_invitation"
+    #: The two invitations to an address that already has an account (0.32, keksdose's KG-5):
+    #: "join" where a new address reads "register". The kit's words are the general ones; an
+    #: app's own table words each.
+    INVITATION_ACCOUNT = "invitation_account"
+    GROUP_INVITATION_ACCOUNT = "group_invitation_account"
     #: The deletion request's confirmation in ``after_days`` mode: the day of the erasure.
     ACCOUNT_DELETION = "account_deletion"
     #: The same in ``operator`` mode: an administrator erases, on no promised day.
     ACCOUNT_DELETION_OPERATOR = "account_deletion_operator"
     #: A passkey was added (keksdose's audit AU-1): a way in no sign-out reaches.
     PASSKEY_ADDED_NOTICE = "passkey_added_notice"
+    #: An administrator switched the account's two-factor sign-in off (0.32).
+    TWO_FACTOR_RESET_NOTICE = "two_factor_reset_notice"
 
 
 #: The ``kind`` each mail is sent and logged under (:meth:`~eifi1_server_kit.mail.Mailer.send`):
@@ -76,9 +87,13 @@ ACCOUNT_MAIL_KINDS: Mapping[AccountMailText, str] = {
     AccountMailText.EMAIL_CHANGE: OneTimeTokenKind.EMAIL_CHANGE,
     AccountMailText.EMAIL_CHANGE_NOTICE: AccountNoticeKind.EMAIL_CHANGE_NOTICE,
     AccountMailText.INVITATION: OneTimeTokenKind.INVITATION,
+    AccountMailText.GROUP_INVITATION: OneTimeTokenKind.INVITATION,
+    AccountMailText.INVITATION_ACCOUNT: OneTimeTokenKind.INVITATION,
+    AccountMailText.GROUP_INVITATION_ACCOUNT: OneTimeTokenKind.INVITATION,
     AccountMailText.ACCOUNT_DELETION: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: AccountNoticeKind.ACCOUNT_DELETION,
     AccountMailText.PASSKEY_ADDED_NOTICE: AccountNoticeKind.PASSKEY_ADDED_NOTICE,
+    AccountMailText.TWO_FACTOR_RESET_NOTICE: AccountNoticeKind.TWO_FACTOR_RESET_NOTICE,
 }
 
 #: The placeholders the account layer fills for each mail; a table may use any of them.
@@ -87,10 +102,18 @@ ACCOUNT_MAIL_VALUES: Mapping[AccountMailText, frozenset[str]] = {
     AccountMailText.VERIFICATION: frozenset({"app", "name"}),
     AccountMailText.EMAIL_CHANGE: frozenset({"app", "name"}),
     AccountMailText.EMAIL_CHANGE_NOTICE: frozenset({"app", "name", "new_email", "contact"}),
-    AccountMailText.INVITATION: frozenset({"app", "group"}),
-    AccountMailText.ACCOUNT_DELETION: frozenset({"app", "name", "date", "contact", "backup_days", "log_days"}),
-    AccountMailText.ACCOUNT_DELETION_OPERATOR: frozenset({"app", "name", "contact", "backup_days", "log_days"}),
+    AccountMailText.INVITATION: frozenset({"app", "group", "inviter"}),
+    AccountMailText.GROUP_INVITATION: frozenset({"app", "group", "inviter"}),
+    AccountMailText.INVITATION_ACCOUNT: frozenset({"app", "group", "inviter"}),
+    AccountMailText.GROUP_INVITATION_ACCOUNT: frozenset({"app", "group", "inviter"}),
+    AccountMailText.ACCOUNT_DELETION: frozenset(
+        {"app", "name", "date", "contact", "backup_days", "log_days", "privacy"}
+    ),
+    AccountMailText.ACCOUNT_DELETION_OPERATOR: frozenset(
+        {"app", "name", "contact", "backup_days", "log_days", "privacy"}
+    ),
     AccountMailText.PASSKEY_ADDED_NOTICE: frozenset({"app", "name", "passkey", "contact"}),
+    AccountMailText.TWO_FACTOR_RESET_NOTICE: frozenset({"app", "name", "contact"}),
 }
 
 _RESET: Mapping[str, MailText] = {
@@ -718,6 +741,157 @@ _PASSKEY_ADDED: Mapping[str, MailText] = {
     ),
 }
 
+#: 0.32: an administrator switched the account's two-factor sign-in off.
+_TWO_FACTOR_RESET: Mapping[str, MailText] = {
+    "de-CH": MailText(
+        subject="Die Zwei-Faktor-Anmeldung Ihres {app}-Kontos wurde ausgeschaltet",
+        intro="Hallo {name},",
+        body=(
+            "die Administration hat die Zwei-Faktor-Anmeldung Ihres Kontos ausgeschaltet. Sie melden sich "
+            "jetzt nur mit Ihrem Passwort oder einem Passkey an."
+        ),
+        cta="Zwei-Faktor-Anmeldung wieder einrichten",
+        outro="Haben Sie das nicht veranlasst? Ändern Sie Ihr Passwort und schreiben Sie an {contact}.",
+    ),
+    "en": MailText(
+        subject="Two-factor sign-in was switched off for your {app} account",
+        intro="Hello {name},",
+        body=(
+            "an administrator switched off two-factor sign-in for your account. You now sign in with your "
+            "password or a passkey alone."
+        ),
+        cta="Set up two-factor sign-in again",
+        outro="Did you not ask for this? Change your password and write to {contact}.",
+    ),
+    "es": MailText(
+        subject="Se ha desactivado la verificación en dos pasos de su cuenta de {app}",
+        intro="Hola, {name}:",
+        body=(
+            "Un administrador ha desactivado la verificación en dos pasos de su cuenta. Ahora inicia sesión "
+            "solo con su contraseña o una clave de acceso."
+        ),
+        cta="Volver a configurar la verificación en dos pasos",
+        outro="¿No lo ha pedido usted? Cambie su contraseña y escriba a {contact}.",
+    ),
+    "fr": MailText(
+        subject="La connexion à deux facteurs de votre compte {app} a été désactivée",
+        intro="Bonjour {name},",
+        body=(
+            "Un administrateur a désactivé la connexion à deux facteurs de votre compte. Vous vous connectez "
+            "désormais avec votre seul mot de passe ou une clé d’accès."
+        ),
+        cta="Configurer à nouveau la connexion à deux facteurs",
+        outro="Si vous ne l’avez pas demandé, changez votre mot de passe et écrivez à {contact}.",
+    ),
+    "it": MailText(
+        subject="L’accesso a due fattori del Suo account {app} è stato disattivato",
+        intro="Buongiorno {name},",
+        body=(
+            "un amministratore ha disattivato l’accesso a due fattori del Suo account. Ora accede solo con la "
+            "password o una passkey."
+        ),
+        cta="Configurare di nuovo l’accesso a due fattori",
+        outro="Non l’ha chiesto Lei? Cambi la password e scriva a {contact}.",
+    ),
+    "hu": MailText(
+        subject="Kikapcsolták a kétlépcsős bejelentkezést {app}-fiókjában",
+        intro="Kedves {name}!",
+        body=(
+            "Egy adminisztrátor kikapcsolta fiókja kétlépcsős bejelentkezését. Mostantól csak a jelszavával vagy "
+            "egy azonosítókulccsal jelentkezik be."
+        ),
+        cta="Kétlépcsős bejelentkezés újbóli beállítása",
+        outro="Nem Ön kérte? Változtassa meg a jelszavát, és írjon ide: {contact}.",
+    ),
+    "zh": MailText(
+        subject="您的 {app} 账户的双重验证登录已被关闭",
+        intro="{name}，您好：",
+        body="管理员关闭了您账户的双重验证登录。您现在只需密码或通行密钥即可登录。",
+        cta="重新设置双重验证登录",
+        outro="不是您本人要求的？请修改密码并联系：{contact}。",
+    ),
+}
+
+#: 0.32: the invitation into a group the app names (a team), the group in its words.
+_GROUP_INVITATION: Mapping[str, MailText] = {
+    "de-CH": MailText(
+        subject="Einladung zu «{group}» bei {app}",
+        intro="Hallo,",
+        body=(
+            "Sie sind zu «{group}» bei {app} eingeladen. Der Link unten öffnet die Registrierung mit Ihrer "
+            "Adresse — oder, wenn Sie schon ein Konto haben, nimmt die Einladung nach der Anmeldung an. Er "
+            "funktioniert einmal und ist 14 Tage gültig."
+        ),
+        cta="Einladung annehmen",
+        outro="Falls Ihnen das nichts sagt, ignorieren Sie diese Mail.",
+    ),
+    "en": MailText(
+        subject="You have been invited to “{group}” on {app}",
+        intro="Hello,",
+        body=(
+            "you have been invited to “{group}” on {app}. The link below opens the registration with your "
+            "address — or, if you already have an account, accepts the invitation once you sign in. It works "
+            "once, for 14 days."
+        ),
+        cta="Accept the invitation",
+        outro="If this means nothing to you, ignore this mail.",
+    ),
+    "es": MailText(
+        subject="Invitación a «{group}» en {app}",
+        intro="Hola:",
+        body=(
+            "Le han invitado a «{group}» en {app}. El enlace de abajo abre el registro con su dirección o, si "
+            "ya tiene una cuenta, acepta la invitación en cuanto inicie sesión. Funciona una sola vez y "
+            "durante 14 días."
+        ),
+        cta="Aceptar la invitación",
+        outro="Si esto no le dice nada, ignore este correo.",
+    ),
+    "fr": MailText(
+        subject="Invitation à « {group} » sur {app}",
+        intro="Bonjour,",
+        body=(
+            "Vous êtes invité à « {group} » sur {app}. Le lien ci-dessous ouvre l’inscription avec votre "
+            "adresse — ou, si vous avez déjà un compte, accepte l’invitation dès que vous êtes connecté. Il "
+            "ne fonctionne qu’une fois et pendant 14 jours."
+        ),
+        cta="Accepter l’invitation",
+        outro="Si ce message ne vous dit rien, ignorez-le.",
+    ),
+    "it": MailText(
+        subject="Invito a «{group}» su {app}",
+        intro="Buongiorno,",
+        body=(
+            "è stato invitato a «{group}» su {app}. Il link qui sotto apre la registrazione con il Suo "
+            "indirizzo oppure, se ha già un account, accetta l’invito dopo l’accesso. Funziona una sola "
+            "volta e per 14 giorni."
+        ),
+        cta="Accettare l’invito",
+        outro="Se questo messaggio non Le dice nulla, lo ignori.",
+    ),
+    "hu": MailText(
+        subject="Meghívó: „{group}” – {app}",
+        intro="Jó napot kívánunk!",
+        body=(
+            "Meghívták a(z) „{group}” csoportba a(z) {app} alkalmazásban. Az alábbi hivatkozás megnyitja a "
+            "regisztrációt az Ön címével – vagy, ha már van fiókja, bejelentkezés után elfogadja a meghívót. "
+            "Egyszer használható, 14 napig."
+        ),
+        cta="Meghívó elfogadása",
+        outro="Ha ez semmit sem mond Önnek, hagyja figyelmen kívül ezt az e-mailt.",
+    ),
+    "zh": MailText(
+        subject="邀请您加入 {app} 的「{group}」",
+        intro="您好：",
+        body=(
+            "您已受邀加入 {app} 的「{group}」。点击下方链接即可使用您的地址注册；如果您已有账户，登录后即会接受邀请。"
+            "该链接仅可使用一次，14 天内有效。"
+        ),
+        cta="接受邀请",
+        outro="如果您不清楚这封邮件的来由，请忽略。",
+    ),
+}
+
 #: The kit's words for every account mail, seven languages each.
 ACCOUNT_MAIL_TEXTS: Mapping[AccountMailText, Mapping[str, MailText]] = {
     AccountMailText.PASSWORD_RESET: _RESET,
@@ -725,9 +899,13 @@ ACCOUNT_MAIL_TEXTS: Mapping[AccountMailText, Mapping[str, MailText]] = {
     AccountMailText.EMAIL_CHANGE: _EMAIL_CHANGE,
     AccountMailText.EMAIL_CHANGE_NOTICE: _EMAIL_CHANGE_NOTICE,
     AccountMailText.INVITATION: _INVITATION,
+    AccountMailText.GROUP_INVITATION: _GROUP_INVITATION,
+    AccountMailText.INVITATION_ACCOUNT: _INVITATION,
+    AccountMailText.GROUP_INVITATION_ACCOUNT: _GROUP_INVITATION,
     AccountMailText.ACCOUNT_DELETION: _DELETION,
     AccountMailText.ACCOUNT_DELETION_OPERATOR: _DELETION_OPERATOR,
     AccountMailText.PASSKEY_ADDED_NOTICE: _PASSKEY_ADDED,
+    AccountMailText.TWO_FACTOR_RESET_NOTICE: _TWO_FACTOR_RESET,
 }
 
 
@@ -755,8 +933,15 @@ def account_mail_texts(
     app's table needs a fallback row (``de-CH``, ``de`` or ``en``, as
     :func:`~eifi1_server_kit.mail.pick` falls back) and may use only the kind's
     :data:`ACCOUNT_MAIL_VALUES`; either fault is a :class:`ValueError`, raised when the
-    router is built. A kind the kit does not know is one too."""
+    router is built. A kind the kit does not know is one too.
+
+    The existing account's invitations take the app's words for the general ones (0.32,
+    Kurvenschmiede's review): a table for ``invitation`` or ``group_invitation`` stands for
+    ``invitation_account`` or ``group_invitation_account`` too, unless the app names that kind
+    itself — the kit's own words share one table for both, and an app that wrote the one
+    meant the other."""
     merged: dict[AccountMailText, Mapping[str, MailText]] = dict(ACCOUNT_MAIL_TEXTS)
+    named: set[AccountMailText] = set()
     for key, table in (overrides or {}).items():
         try:
             kind = AccountMailText(key)
@@ -764,7 +949,18 @@ def account_mail_texts(
             raise ValueError(f"no account mail is called {key!r}") from exc
         _check_table(kind, table)
         merged[kind] = table
+        named.add(kind)
+    for general, existing in _ACCOUNT_VARIANTS.items():
+        if general in named and existing not in named:
+            merged[existing] = merged[general]
     return merged
+
+
+#: The invitation a known address gets, by the general one whose words it takes by default.
+_ACCOUNT_VARIANTS: Mapping[AccountMailText, AccountMailText] = {
+    AccountMailText.INVITATION: AccountMailText.INVITATION_ACCOUNT,
+    AccountMailText.GROUP_INVITATION: AccountMailText.GROUP_INVITATION_ACCOUNT,
+}
 
 
 #: How each language writes a day in a mail's sentence: numeric, so no month name needs a

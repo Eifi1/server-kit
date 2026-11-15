@@ -1,6 +1,6 @@
 """The ports the account service runs on: the rows, the sessions, the links, the invitations,
-the passkeys, the admin log, the work after the commit, and the app's JWT signer and
-password hasher.
+the passkeys, the second factor, the admin log, the work after the commit, and the app's JWT
+signer, password hasher and seal.
 
 Layer 2 (``docs/auth-harmonization.md`` §12 in ``Eifi1/ui-kit``, on the pattern of
 :mod:`eifi1_server_kit.feedback.ports`). Each app implements these over its own session and
@@ -17,8 +17,11 @@ purge of an erased person's files. The kit never commits, so it cannot know when
 is safe to do; the app runs the queue from its session's commit event and drops it on a
 rollback (Kurvenschmiede's ``send_after_commit``).
 
-**Not in this cut**: the second factor's store (keksdose's adoption brings it) and the admin
-scope of a company (kastlan rests, Marcel 2026-11-13).
+**The second factor** (0.32, keksdose's KG-1): :class:`TwoFactorStore` keeps an account's
+:class:`TwoFactorState`, its secrets sealed by the app's :class:`SecretSeal`; both optional,
+and together they mount the two-factor routes.
+
+**Not in this cut**: the admin scope of a company (kastlan rests, Marcel 2026-11-13).
 """
 
 from __future__ import annotations
@@ -26,13 +29,15 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from enum import Enum
+from typing import Any, Final, Literal, Protocol
 
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 
 __all__ = [
     "ACCOUNT_FIELDS",
     "OPTIONAL_ACCOUNT_FIELDS",
+    "UNCHANGED",
     "AccountRow",
     "AdminActionLog",
     "AdminActionRowView",
@@ -48,9 +53,13 @@ __all__ = [
     "PasskeyRow",
     "PasskeyStore",
     "PasswordHasher",
+    "SecretSeal",
     "SessionRow",
     "SessionStore",
     "TokenSigner",
+    "TwoFactorState",
+    "TwoFactorStore",
+    "Unchanged",
     "UserStore",
 ]
 
@@ -307,6 +316,17 @@ class OneTimeTokenStore[TokenT: OneTimeTokenRow](Protocol):
 # ── Invitations ─────────────────────────────────────────────────────────────
 
 
+class Unchanged(Enum):
+    """The type of :data:`UNCHANGED`."""
+
+    UNCHANGED = "unchanged"
+
+
+#: A ``remint`` field left as the row has it (0.32): the default of each, so a plain re-send
+#: keeps the invitation's own language, note and inviter.
+UNCHANGED: Final = Unchanged.UNCHANGED
+
+
 class InvitationRow(Protocol):
     """An invitation (auth §4.4). ``scope`` is the app's, opaque to the kit: a team, a
     budget, nothing; ``on_invitation_redeemed`` reads it."""
@@ -368,15 +388,30 @@ class InvitationStore[InvT: InvitationRow](Protocol):
         """The address's invitations that are neither accepted nor revoked, expired ones
         included: the kit decides on the expiry."""
 
-    async def listing(self) -> Sequence[InvT]:
+    async def listing(self, *, accepted: bool = False) -> Sequence[InvT]:
         """Every invitation that was not accepted (open, expired and revoked ones), newest
-        first, the higher id first on a tie: the admin's list."""
+        first, the higher id first on a tie: the admin's list. ``accepted`` (0.32): the
+        accepted ones too, in the same order; the kit asks for them only with
+        ``AccountPolicy.list_accepted_invitations``, so a store without the parameter keeps
+        working without it."""
 
     async def add(self, new: NewInvitation) -> InvT:
         """Insert and flush."""
 
-    async def remint(self, invitation: InvT, *, token_hash: str, expires_at: datetime) -> InvT:
-        """A new link for the same invitation (a re-send), flushed."""
+    async def remint(
+        self,
+        invitation: InvT,
+        *,
+        token_hash: str,
+        expires_at: datetime,
+        locale: str | Literal[Unchanged.UNCHANGED] = UNCHANGED,
+        note: str | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+        invited_by_user_id: int | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+    ) -> InvT:
+        """A new link for the same invitation (a re-send), flushed. ``locale``, ``note`` and
+        ``invited_by_user_id`` (0.32) are written where given, each left as it is by default
+        (:data:`UNCHANGED`): the kit gives them only when an admin's new invitation re-uses
+        the row (``AccountPolicy.reuse_open_invitations``), never on a plain re-send."""
 
     async def accept(self, invitation: InvT, *, user_id: int, at: datetime) -> None:
         """Mark it accepted by the account, flushed."""
@@ -451,6 +486,60 @@ class PasskeyStore[PasskeyT: PasskeyRow](Protocol):
         spent before (one use per challenge, Kurvenschmiede's table, §12.5 item 8). The row
         may go once ``expires_at`` has passed; a store may sweep expired rows here (there is
         no separate prune: old session rows are the app's own clean-up)."""
+
+
+# ── The second factor ───────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class TwoFactorState:
+    """An account's second factor as the kit reads and writes it (0.32, keksdose's KG-1, its
+    four ``users`` columns): the default is "never set up".
+
+    * ``enabled`` — the code is asked at sign-in;
+    * ``secret`` — the live TOTP secret, sealed (:class:`SecretSeal`), or ``None``;
+    * ``pending_secret`` — a setup not yet confirmed by a code, sealed beside the live one so
+      that a setup walked away from changes nothing (keksdose's F-4), or ``None``;
+    * ``last_step`` — the time step of the last code accepted
+      (:func:`~eifi1_server_kit.auth.totp_step_accepted`), ``None`` until one is;
+    * ``backup_codes`` — the backup codes left, each a digest
+      (:func:`~eifi1_server_kit.auth.backup_code_digest`), never the code (0.32, Marcel
+      2026-11-14: a lost phone with no passkey must not lock the account out).
+    """
+
+    enabled: bool = False
+    secret: str | None = None
+    pending_secret: str | None = None
+    last_step: int | None = None
+    backup_codes: tuple[str, ...] = ()
+
+
+class TwoFactorStore(Protocol):
+    """The app's second factor per account: keksdose's columns on ``users``, the ``sql`` extra's
+    :class:`~eifi1_server_kit.auth.sql.TwoFactorColumns`, or a table of its own."""
+
+    async def state(self, user_id: int, *, lock: bool = False) -> TwoFactorState:
+        """The account's state, :class:`TwoFactorState` ``()`` when it has none. ``lock``: the
+        row locked for the transaction and read again (``SELECT … FOR UPDATE``), so two
+        redemptions of one code racing each other cannot both read the step as unspent
+        (keksdose's AU-10); the kit locks wherever it may spend a step or replace a secret."""
+
+    async def save(self, user_id: int, state: TwoFactorState) -> None:
+        """Write the whole state, flushed."""
+
+
+class SecretSeal(Protocol):
+    """The app's encryption of a secret the server reads back: the TOTP secret, bound to its
+    row by ``aad`` (:func:`~eifi1_server_kit.auth.seal.totp_secret_aad`). Ready-made:
+    :class:`~eifi1_server_kit.auth.seal.SecretBox`, the ``seal`` extra's (AES-256-GCM, keksdose's).
+    Either method raises :class:`~eifi1_server_kit.auth.seal.SecretSealError` — no key, or a
+    value no key opens — and never answers the plaintext as sealed."""
+
+    def seal(self, plaintext: str, *, aad: bytes) -> str:
+        """The sealed value."""
+
+    def unseal(self, sealed: str, *, aad: bytes) -> str:
+        """The plaintext of a value :meth:`seal` made with the same ``aad``."""
 
 
 # ── The admin log ───────────────────────────────────────────────────────────

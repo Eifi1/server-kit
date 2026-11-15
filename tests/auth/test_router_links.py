@@ -312,3 +312,30 @@ async def test_a_reset_link_is_refused_with_codes(world: World) -> None:
     )
     assert response.status_code == 400 and code(response) == "token_invalid"
     assert hash_token(raw) in {row.token_hash for row in world.tokens.rows}
+
+
+async def test_the_app_binds_the_account_on_a_signed_out_path_before_any_hook(world: World) -> None:
+    """keksdose's KG-2 (0.32): its key wraps are FORCE row-level security on the current user,
+    and the reset, a verification and an address change read them signed out. The
+    ``bind_anonymous`` hook binds the account as soon as the link names it, before the
+    ``reset_extras`` hook (or any other) reads under it."""
+    from eifi1_server_kit.auth.service import AuthHooks
+
+    user = world.account()
+    events: list[str] = []
+
+    async def bind_anonymous(account: MemoryUser) -> None:
+        events.append(f"bind {account.id}")
+
+    async def reset_extras(account: MemoryUser, confirmed: bool) -> dict[str, Any]:
+        events.append(f"reset_extras {confirmed}")
+        return {}
+
+    world.hooks = AuthHooks(bind_anonymous=bind_anonymous, reset_extras=reset_extras)
+    raw = await link(world, OneTimeTokenKind.PASSWORD_RESET, user)
+    await world.call("POST", "/auth/password-reset/check", json={"token": raw})
+    assert events == [f"bind {user.id}", "reset_extras False"]
+    events.clear()
+    verify = await link(world, OneTimeTokenKind.VERIFICATION, user)
+    await world.call("POST", "/auth/verify-email", json={"token": verify})
+    assert events == [f"bind {user.id}"]

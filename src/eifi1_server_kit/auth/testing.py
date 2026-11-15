@@ -8,16 +8,19 @@ no FastAPI and no JWT library.
 
 * the stores: :class:`InMemoryUserStore`, :class:`InMemorySessionStore`,
   :class:`InMemoryOneTimeTokenStore`, :class:`InMemoryInvitationStore`,
-  :class:`InMemoryPasskeyStore` and :class:`InMemoryAdminActionLog`, each over a slotted row
+  :class:`InMemoryPasskeyStore`, :class:`InMemoryTwoFactorStore` (0.32) and
+  :class:`InMemoryAdminActionLog`, each over a slotted row
   (:class:`MemoryAccountRow` and its siblings) that satisfies its port's row protocol, with
   ids counted up and ``created_at`` from an injectable clock; and :class:`InMemoryAfterCommit`,
   whose :meth:`~InMemoryAfterCommit.run` and :meth:`~InMemoryAfterCommit.drop` stand for the
   app's commit and rollback. The kit's own service tests run on these;
 * the fakes: :class:`FakePasswordHasher`, a deterministic hasher that costs nothing, and
-  :class:`HmacTokenSigner`, a signer over HMAC-SHA256 with an injectable clock;
+  :class:`HmacTokenSigner`, a signer over HMAC-SHA256 with an injectable clock; and
+  :func:`totp_code` (0.32), the code an authenticator shows for a secret at a moment;
 * the checks: :func:`check_user_store`, :func:`check_session_store`,
   :func:`check_one_time_token_store`, :func:`check_invitation_store`,
-  :func:`check_passkey_store`, :func:`check_admin_action_log` and :func:`check_after_commit`.
+  :func:`check_passkey_store`, :func:`check_two_factor_store` (0.32),
+  :func:`check_admin_action_log` and :func:`check_after_commit`.
   An app runs them once against its own adapters (or the ``sql`` extra's), on a fresh
   session over its test database as it is. Each calls every method of its port, raises
   :class:`AssertionError` naming the first promise that fails, writes under fresh addresses,
@@ -42,6 +45,7 @@ import base64
 import dataclasses
 import hashlib
 import hmac
+import inspect
 import itertools
 import json
 import logging
@@ -50,10 +54,11 @@ import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeGuard
 
 from eifi1_server_kit.auth.ports import (
     ACCOUNT_FIELDS,
+    UNCHANGED,
     AccountRow,
     AdminActionLog,
     AfterCommit,
@@ -65,9 +70,13 @@ from eifi1_server_kit.auth.ports import (
     OneTimeTokenStore,
     PasskeyStore,
     SessionStore,
+    TwoFactorState,
+    TwoFactorStore,
+    Unchanged,
     UserStore,
 )
 from eifi1_server_kit.auth.tokens import INVITE_TTL, OneTimeTokenKind, hash_token
+from eifi1_server_kit.auth.totp import TOTP_STEP_SECONDS, totp_code
 from eifi1_server_kit.clock import Clock, utc_now
 from eifi1_server_kit.user_admin.actions import AdminAction
 from eifi1_server_kit.user_admin.audit import admin_action_record
@@ -84,6 +93,7 @@ __all__ = [
     "InMemoryOneTimeTokenStore",
     "InMemoryPasskeyStore",
     "InMemorySessionStore",
+    "InMemoryTwoFactorStore",
     "InMemoryUserStore",
     "MemoryAccountRow",
     "MemoryAdminActionRow",
@@ -100,7 +110,9 @@ __all__ = [
     "check_one_time_token_store",
     "check_passkey_store",
     "check_session_store",
+    "check_two_factor_store",
     "check_user_store",
+    "totp_code",
 ]
 
 _log = logging.getLogger(__name__)
@@ -419,8 +431,8 @@ class InMemoryInvitationStore:
             if row.email == email and row.accepted_at is None and row.revoked_at is None
         ]
 
-    async def listing(self) -> Sequence[MemoryInvitationRow]:
-        rows = [row for row in self.rows.values() if row.accepted_at is None]
+    async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+        rows = [row for row in self.rows.values() if accepted or row.accepted_at is None]
         return _newest_first(rows, lambda row: (row.created_at, row.id))
 
     async def add(self, new: NewInvitation) -> MemoryInvitationRow:
@@ -431,10 +443,23 @@ class InMemoryInvitationStore:
         return row
 
     async def remint(
-        self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime
+        self,
+        invitation: MemoryInvitationRow,
+        *,
+        token_hash: str,
+        expires_at: datetime,
+        locale: str | Literal[Unchanged.UNCHANGED] = UNCHANGED,
+        note: str | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+        invited_by_user_id: int | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
     ) -> MemoryInvitationRow:
         invitation.token_hash = token_hash
         invitation.expires_at = expires_at
+        if locale is not UNCHANGED:
+            invitation.locale = locale
+        if note is not UNCHANGED:
+            invitation.note = note
+        if invited_by_user_id is not UNCHANGED:
+            invitation.invited_by_user_id = invited_by_user_id
         return invitation
 
     async def accept(self, invitation: MemoryInvitationRow, *, user_id: int, at: datetime) -> None:
@@ -502,6 +527,27 @@ class InMemoryPasskeyStore:
         return True
 
 
+class InMemoryTwoFactorStore:
+    """A :class:`~eifi1_server_kit.auth.ports.TwoFactorStore` (0.32): each account's
+    :class:`~eifi1_server_kit.auth.ports.TwoFactorState` in :attr:`states`, by id, and the ids
+    read with ``lock`` in :attr:`locked`, in order, so a test sees that a step is spent under
+    the lock."""
+
+    def __init__(self) -> None:
+        #: Every account's state, by id; an account missing here has none.
+        self.states: dict[int, TwoFactorState] = {}
+        #: The ids read with ``lock=True``, in order.
+        self.locked: list[int] = []
+
+    async def state(self, user_id: int, *, lock: bool = False) -> TwoFactorState:
+        if lock:
+            self.locked.append(user_id)
+        return self.states.get(user_id, TwoFactorState())
+
+    async def save(self, user_id: int, state: TwoFactorState) -> None:
+        self.states[user_id] = state
+
+
 class InMemoryAdminActionLog:
     """A :class:`~eifi1_server_kit.auth.ports.AdminActionLog` of :class:`MemoryAdminActionRow`.
     :meth:`add` takes :func:`~eifi1_server_kit.user_admin.admin_action_record`'s mapping and
@@ -556,6 +602,17 @@ class InMemoryAdminActionLog:
         for row in self.rows.values():
             if row.target_user_id == user_id:
                 row.target_email = None
+
+    async def deleted_group_names(self, group_ids: Sequence[int]) -> Mapping[int, str]:
+        """0.32's :class:`~eifi1_server_kit.user_admin.ports.DeletedGroupNames`."""
+        wanted = set(group_ids)
+        return {
+            row.target_group_id: row.target_group_name
+            for row in self.rows.values()
+            if row.action == AdminAction.GROUP_DELETE
+            and row.target_group_id in wanted
+            and row.target_group_name is not None
+        }
 
 
 class InMemoryAfterCommit:
@@ -1155,7 +1212,8 @@ async def check_invitation_store(
     order is checked over every row it answers. ``role`` is one of the app's role values,
     by default the policy's ``default_role`` (upper case since 0.30).
     ``revoke`` may keep the row with its ``revoked_at`` or delete it, as the port allows; a
-    kept one is still listed, since ``listing`` leaves out only accepted ones.
+    kept one is still listed, since ``listing`` leaves out only accepted ones. A store whose
+    ``listing`` takes ``accepted`` (0.32) is asked for those too.
     """
     token = secrets.token_hex(8)
     now = utc_now()
@@ -1236,6 +1294,20 @@ async def check_invitation_store(
         "listing: newest first, the higher id first on a tie",
     )
 
+    # 4b. listing(accepted=True) (0.32): the accepted ones too, in the same order — asked only
+    # of a store whose listing takes the parameter (the kit asks for it only with
+    # AccountPolicy.list_accepted_invitations).
+    if "accepted" in inspect.signature(store.listing).parameters:
+        every = list(await store.listing(accepted=True))
+        _check(
+            {first.id, expired.id, accepted.id, other.id} <= {row.id for row in every},
+            "listing(accepted=True): the accepted invitation beside the rest",
+        )
+        _check(
+            _in_order([(row.created_at, row.id) for row in every], newest_first=True),
+            "listing(accepted=True): newest first, the higher id first on a tie",
+        )
+
     # 5. remint: a new link for the same invitation, the old one dead.
     later = now + 2 * INVITE_TTL
     reminted = await store.remint(first, token_hash=_digest(token, 6), expires_at=later)
@@ -1248,6 +1320,27 @@ async def check_invitation_store(
     found = await store.by_token_hash(_digest(token, 6))
     _check(found is not None and found.id == first.id, "remint: the new link finds the invitation")
     _check(first.id in {row.id for row in await store.open_for(address)}, "remint: the invitation is still open")
+    _check(
+        (reminted.locale, reminted.note, reminted.invited_by_user_id) == ("fr", f"Checked ({token})", inviter_id),
+        "remint: the language, the note and the inviter stay as they were",
+    )
+
+    # 5b. remint's fields (0.32): a re-used invitation takes the new request's — asked only of
+    # a store whose remint takes them (the kit gives them only with reuse_open_invitations).
+    if "locale" in inspect.signature(store.remint).parameters:
+        renewed = await store.remint(
+            first,
+            token_hash=_digest(token, 7),
+            expires_at=later,
+            locale="it",
+            note=None,
+            invited_by_user_id=user_id,
+        )
+        again = _found(await store.get(first.id), "remint: get still finds the invitation")
+        _check(
+            (renewed.locale, again.locale, again.note, again.invited_by_user_id) == ("it", "it", None, user_id),
+            "remint: locale, note (None too) and invited_by_user_id read back where given",
+        )
 
 
 async def check_passkey_store(store: PasskeyStore[Any], *, user_id: int, other_user_id: int) -> None:
@@ -1339,6 +1432,42 @@ async def check_passkey_store(store: PasskeyStore[Any], *, user_id: int, other_u
     )
     await store.remove(first)
     await store.remove(others)
+
+
+async def check_two_factor_store(store: TwoFactorStore, *, user_id: int, other_user_id: int) -> None:
+    """Does the app's second-factor store keep the port's promises (0.32, keksdose's KG-1)?
+    Raises :class:`AssertionError` naming the first that fails.
+
+    ``user_id`` and ``other_user_id`` are two existing accounts. It writes a whole state to
+    each — a sealed secret as long as :class:`~eifi1_server_kit.auth.seal.SecretBox` makes
+    one, a pending one, a time step of today's size and ten backup-code digests — reads them back with and without
+    the lock, clears one, and puts both accounts' states back as it found them.
+    """
+    _two_accounts(user_id, other_user_id)
+    mine, theirs = await store.state(user_id), await store.state(other_user_id)
+    _check(isinstance(mine, TwoFactorState), "state: a TwoFactorState, also for an account with none")
+    token = secrets.token_urlsafe(60)[:80]
+    step = int(utc_now().timestamp()) // TOTP_STEP_SECONDS
+    written = TwoFactorState(
+        enabled=True,
+        secret=f"enc:v1:{token}",
+        pending_secret=f"enc:v1:{token[::-1]}",
+        last_step=step,
+        backup_codes=tuple(hash_token(f"{token}-{number}") for number in range(10)),
+    )
+    other = TwoFactorState(enabled=False, pending_secret=f"enc:v1:{token.upper()}")
+    await store.save(user_id, written)
+    await store.save(other_user_id, other)
+    _check(await store.state(user_id) == written, "save: every field reads back")
+    _check(await store.state(user_id, lock=True) == written, "state: the same with the row locked")
+    _check(await store.state(other_user_id) == other, "save: each account's state is its own")
+    await store.save(user_id, dataclasses.replace(written, last_step=step + 1))
+    _check((await store.state(user_id)).last_step == step + 1, "save: a new step reads back")
+    await store.save(user_id, TwoFactorState())
+    _check(await store.state(user_id) == TwoFactorState(), "save: the empty state clears every field")
+    _check(await store.state(other_user_id) == other, "save: clearing one account leaves another's")
+    await store.save(user_id, mine)
+    await store.save(other_user_id, theirs)
 
 
 async def check_admin_action_log(log: AdminActionLog[Any], *, actor_id: int, target_user_id: int) -> None:

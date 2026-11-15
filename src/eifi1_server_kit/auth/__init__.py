@@ -16,13 +16,17 @@ the reference, cited ``file`` per rule.
 * :mod:`~eifi1_server_kit.auth.totp` — the second factor's code: the time step it matches
   (:func:`totp_matched_step`), the replay rule, a step accepted once
   (:func:`totp_step_accepted`), and one 2FA challenge for one sign-in
-  (:func:`two_factor_challenge_claims`, :func:`two_factor_challenge_is_spent`);
+  (:func:`two_factor_challenge_claims`, :func:`two_factor_challenge_is_spent`); since 0.32 a
+  new secret (:func:`new_totp_secret`), its ``otpauth://`` URI (:func:`totp_uri`) and the code
+  an authenticator shows (:func:`totp_code`, for tests);
 * :mod:`~eifi1_server_kit.auth.sessions` — a session's life on the server (0.27):
   :class:`SessionPolicy`, a shared computer's short session (:func:`session_expired`,
   :func:`refresh_lifetime`, :func:`access_lifetime`, :func:`session_expires_at`);
 * :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes, with the account's text size
   and contrast (``docs/text-size-harmonization.md`` §6);
-* :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes.
+* :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes;
+* :mod:`~eifi1_server_kit.auth.events` — :class:`AuthEvent`, the flows whose decisions the
+  account service tells ``AuthHooks.observe`` (0.32), so an app counts its sign-in funnel.
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ from eifi1_server_kit.auth.accounts import (
     verified_by_invitation,
 )
 from eifi1_server_kit.auth.errors import AUTH_ERROR_DETAIL, AUTH_ERROR_STATUS, AuthError, AuthErrorCode
+from eifi1_server_kit.auth.events import AuthEvent
 from eifi1_server_kit.auth.limits import (
     CHALLENGE_PER_IP,
     CHALLENGE_PER_SUBJECT,
@@ -94,6 +99,7 @@ from eifi1_server_kit.auth.schemas import (
     ExistingPassword,
     InvitationAccepted,
     InvitationCheck,
+    InvitationGroup,
     LocaleTag,
     LoginRequest,
     NewPassword,
@@ -118,7 +124,17 @@ from eifi1_server_kit.auth.schemas import (
     TextSize,
     TokenRequest,
     TokenResponse,
+    TwoFactorBackupCodesRequest,
     TwoFactorChallenge,
+    TwoFactorCodeText,
+    TwoFactorConfirm,
+    TwoFactorDisableRequest,
+    TwoFactorEnabled,
+    TwoFactorLogin,
+    TwoFactorSetup,
+    TwoFactorSetupRequest,
+    TwoFactorStatus,
+    UserCore,
     UserResponse,
     UtcDateTime,
     WebAuthnCredentialJson,
@@ -166,12 +182,20 @@ from eifi1_server_kit.auth.tokens import (
     token_is_revoked,
 )
 from eifi1_server_kit.auth.totp import (
+    BACKUP_CODE_ALPHABET,
+    BACKUP_CODE_COUNT,
     TOTP_DIGITS,
     TOTP_STEP_CLAIM,
     TOTP_STEP_SECONDS,
     TOTP_WINDOW,
+    backup_code_digest,
+    backup_code_spent,
+    new_backup_codes,
+    new_totp_secret,
+    totp_code,
     totp_matched_step,
     totp_step_accepted,
+    totp_uri,
     two_factor_challenge_claims,
     two_factor_challenge_is_spent,
 )
@@ -183,6 +207,8 @@ __all__ = [
     "ACCESS_TOKEN_TYPE",
     "AUTH_ERROR_DETAIL",
     "AUTH_ERROR_STATUS",
+    "BACKUP_CODE_ALPHABET",
+    "BACKUP_CODE_COUNT",
     "CHALLENGE_LIFETIMES",
     "CHALLENGE_PER_IP",
     "CHALLENGE_PER_SUBJECT",
@@ -239,6 +265,7 @@ __all__ = [
     "VERIFY_TTL",
     "AuthError",
     "AuthErrorCode",
+    "AuthEvent",
     "AuthLimiters",
     "Budget",
     "ChallengeKind",
@@ -252,6 +279,7 @@ __all__ = [
     "ExistingPassword",
     "InvitationAccepted",
     "InvitationCheck",
+    "InvitationGroup",
     "LocaleTag",
     "LoginFailureThrottle",
     "LoginRequest",
@@ -281,7 +309,17 @@ __all__ = [
     "TextSize",
     "TokenRequest",
     "TokenResponse",
+    "TwoFactorBackupCodesRequest",
     "TwoFactorChallenge",
+    "TwoFactorCodeText",
+    "TwoFactorConfirm",
+    "TwoFactorDisableRequest",
+    "TwoFactorEnabled",
+    "TwoFactorLogin",
+    "TwoFactorSetup",
+    "TwoFactorSetupRequest",
+    "TwoFactorStatus",
+    "UserCore",
     "UserResponse",
     "UtcDateTime",
     "WebAuthnCredentialJson",
@@ -291,6 +329,8 @@ __all__ = [
     "access_lifetime",
     "addresses_for_reset",
     "apply_zone_update",
+    "backup_code_digest",
+    "backup_code_spent",
     "challenge_claims",
     "env_list_match",
     "erasure_identifiers",
@@ -302,6 +342,8 @@ __all__ = [
     "login_failure_delay",
     "mint",
     "name_incomplete",
+    "new_backup_codes",
+    "new_totp_secret",
     "normalise_email",
     "parse_env_list",
     "refresh_claims",
@@ -312,8 +354,10 @@ __all__ = [
     "shared_device_of",
     "tagged_variant",
     "token_is_revoked",
+    "totp_code",
     "totp_matched_step",
     "totp_step_accepted",
+    "totp_uri",
     "two_factor_challenge_claims",
     "two_factor_challenge_is_spent",
     "verified_by_invitation",

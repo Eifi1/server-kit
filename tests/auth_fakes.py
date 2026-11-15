@@ -18,6 +18,7 @@ from typing import Any
 
 from eifi1_server_kit.auth.ports import (
     ACCOUNT_FIELDS,
+    UNCHANGED,
     NewAccount,
     NewInvitation,
     NewPasskey,
@@ -270,16 +271,21 @@ class MemoryInvitationStore:
             if row.email == email and row.accepted_at is None and row.revoked_at is None
         ]
 
-    async def listing(self) -> Sequence[MemoryInvitation]:
-        rows = [row for row in self.rows.values() if row.accepted_at is None]
+    async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitation]:
+        rows = [row for row in self.rows.values() if accepted or row.accepted_at is None]
         return sorted(rows, key=lambda row: (row.created_at, row.id), reverse=True)
 
     async def add(self, new: NewInvitation) -> MemoryInvitation:
         values = {item.name: getattr(new, item.name) for item in fields(new)}
         return self.seed(**values)
 
-    async def remint(self, invitation: MemoryInvitation, *, token_hash: str, expires_at: datetime) -> MemoryInvitation:
+    async def remint(
+        self, invitation: MemoryInvitation, *, token_hash: str, expires_at: datetime, **fields: Any
+    ) -> MemoryInvitation:
         invitation.token_hash, invitation.expires_at = token_hash, expires_at
+        for name, value in fields.items():
+            if value is not UNCHANGED:
+                setattr(invitation, name, value)
         return invitation
 
     async def accept(self, invitation: MemoryInvitation, *, user_id: int, at: datetime) -> None:

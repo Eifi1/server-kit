@@ -79,6 +79,12 @@ async def test_the_in_memory_log_pages_by_address() -> None:
     await assert_pages_by_email(InMemoryAdminActionLog(), actor_id=1, user_id=2)
 
 
+async def test_the_in_memory_log_reads_the_names_deleted_groups_had() -> None:
+    from tests.user_admin._log_search import assert_reads_deleted_group_names
+
+    await assert_reads_deleted_group_names(InMemoryAdminActionLog(), actor_id=1)
+
+
 async def test_a_log_without_scrub_account_is_named() -> None:
     class Plain:
         pass
@@ -125,7 +131,10 @@ class _Broken(InMemoryRosterStore):
         super().__init__(rows)
         self.broken = broken
 
-    async def page(self, query: Any, *, admin_role: str, reviewer_role: str | None) -> tuple[Sequence[Any], int]:
+    # Without 0.32's filters, as an app's store may be: the check never passes them.
+    async def page(  # type: ignore[override]
+        self, query: Any, *, admin_role: str, reviewer_role: str | None
+    ) -> tuple[Sequence[Any], int]:
         if self.broken == "unescaped" and query.q is not None and query.q.startswith("%"):
             query = query.model_copy(update={"q": query.q.lstrip("%")})
         if self.broken == "state_and" and len(query.state) > 1:

@@ -3,7 +3,8 @@
 
 Layer 2 (``docs/auth-harmonization.md`` §12.3 in ``Eifi1/ui-kit``; the pattern of
 :func:`eifi1_server_kit.feedback.router.feedback_router`), behind the ``fastapi`` extra, and
-the passkey routes behind the ``passkeys`` extra too. The app passes its stores as
+the passkey routes behind the ``passkeys`` extra too; with a ``two_factor`` store and a
+``secret_seal`` (0.32, keksdose's KG-1), the two-factor routes. The app passes its stores as
 dependencies on the request's session, its signer, hasher and mailer, its policy, its hooks
 dependency, and the schema subclasses it extends; and includes the routers as its own::
 
@@ -50,12 +51,13 @@ from typing import Annotated, Any, cast
 
 from pydantic import BaseModel
 
+from eifi1_server_kit.auth.accounts import full_name
 from eifi1_server_kit.auth.errors import AuthError, AuthErrorCode
 from eifi1_server_kit.auth.limits import AuthLimiters
 from eifi1_server_kit.auth.mails import AccountMailText, account_mail_texts
 from eifi1_server_kit.auth.passkeys import RelyingParty
 from eifi1_server_kit.auth.passwords import absent_account_check
-from eifi1_server_kit.auth.ports import PasswordHasher, TokenSigner
+from eifi1_server_kit.auth.ports import PasswordHasher, SecretSeal, TokenSigner
 from eifi1_server_kit.auth.schemas import (
     DeletionResult,
     DeletionTerms,
@@ -83,6 +85,15 @@ from eifi1_server_kit.auth.schemas import (
     SetPasswordRequest,
     TokenRequest,
     TokenResponse,
+    TwoFactorBackupCodesRequest,
+    TwoFactorChallenge,
+    TwoFactorConfirm,
+    TwoFactorDisableRequest,
+    TwoFactorEnabled,
+    TwoFactorLogin,
+    TwoFactorSetup,
+    TwoFactorSetupRequest,
+    TwoFactorStatus,
     UserResponse,
 )
 from eifi1_server_kit.auth.service import (
@@ -93,8 +104,10 @@ from eifi1_server_kit.auth.service import (
     ChallengeIssued,
     IssuedSession,
     SignedIn,
+    TwoFactorChallengeIssued,
 )
 from eifi1_server_kit.clock import Clock, utc_now
+from eifi1_server_kit.feedback.ports import FeedbackActor
 from eifi1_server_kit.limiter import UNKNOWN_CLIENT, charge
 from eifi1_server_kit.mail import Mailer, MailText
 from eifi1_server_kit.user_admin.export import export_filename
@@ -122,9 +135,14 @@ __all__ = [
     "account_request_window",
     "account_service",
     "admin_guard",
+    "app_account_service",
+    "app_admin",
+    "app_current_user",
+    "app_feedback_actor",
     "app_state_limiters",
     "auth_router",
     "current_user",
+    "install_account_layer",
     "invitations_admin_router",
     "no_hooks",
     "peer_address",
@@ -196,6 +214,8 @@ class AuthDeps:
     hooks: Callable[..., Any] = no_hooks
     #: ``PasskeyStore``: mounts the passkey routes, with ``relying_party``.
     passkeys: Callable[..., Any] | None = None
+    #: ``TwoFactorStore`` (0.32): mounts the two-factor routes, with ``secret_seal``.
+    two_factor: Callable[..., Any] | None = None
     # The app's objects.
     signer: TokenSigner
     hasher: PasswordHasher
@@ -205,6 +225,9 @@ class AuthDeps:
     mail_backend: str
     policy: AccountPolicy
     relying_party: RelyingParty | None = None
+    #: The TOTP secret's seal (0.32): :class:`~eifi1_server_kit.auth.seal.SecretBox`, or the
+    #: app's own :class:`~eifi1_server_kit.auth.ports.SecretSeal`.
+    secret_seal: SecretSeal | None = None
     #: The app's factory for the never-list routes: ``demo_guard("passkeys")``. ``None``: the
     #: service's own ``refuse_demo`` is the only check.
     demo_guard: Callable[[str], Callable[..., Any]] | None = None
@@ -271,6 +294,8 @@ _BUILT: weakref.WeakKeyDictionary[AuthDeps, _Built] = weakref.WeakKeyDictionary(
 def _build(deps: AuthDeps) -> _Built:
     if (deps.passkeys is None) != (deps.relying_party is None):
         raise ValueError("auth_router: passkeys and relying_party come together, or neither")
+    if (deps.two_factor is None) != (deps.secret_seal is None):
+        raise ValueError("auth_router: two_factor and secret_seal come together, or neither")
     texts = account_mail_texts(deps.mail_texts)
     check_absent = absent_account_check(deps.hasher.hash, deps.hasher.verify)
 
@@ -284,6 +309,7 @@ def _build(deps: AuthDeps) -> _Built:
         after_commit: Annotated[Any, Depends(deps.after_commit)],
         hooks: Annotated[Any, Depends(deps.hooks)],
         passkeys: Annotated[Any, Depends(deps.passkeys or _absent)],
+        two_factor: Annotated[Any, Depends(deps.two_factor or _absent)],
     ) -> AccountService[Any, Any, Any]:
         return AccountService(
             users=users,
@@ -300,6 +326,8 @@ def _build(deps: AuthDeps) -> _Built:
             hooks=hooks,
             passkeys=passkeys,
             relying_party=deps.relying_party,
+            two_factor=two_factor,
+            secret_seal=deps.secret_seal,
             mail_texts=texts,
             absent_check=check_absent,
             now=deps.now,
@@ -383,6 +411,77 @@ def admin_guard(deps: AuthDeps) -> Callable[..., Awaitable[Any]]:
     return _built(deps).admin_guard
 
 
+_NOT_INSTALLED = (
+    "the app's account layer is not installed: call install_account_layer(app, deps) where the app "
+    "is built, before it serves (eifi1_server_kit.auth.router)"
+)
+
+
+async def app_current_user(
+    _credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+) -> Any:
+    """The signed-in account, for a router an app makes when its module is imported — before
+    its ``AuthDeps`` exist, so :func:`current_user` cannot be called yet (0.32,
+    Kurvenschmiede's gap 1). ``Depends(app_current_user)`` there, and
+    :func:`install_account_layer` binds it to the app's ``current_user(deps)``; unbound, it
+    raises :class:`RuntimeError` naming the missing call.
+
+    It takes the kit's bearer scheme itself, unused: ``dependency_overrides`` do not reach
+    ``app.openapi()``, which reads this function's own dependencies, so a route on it declares
+    the bearer as the kit's routes do (Kurvenschmiede's S1)."""
+    raise RuntimeError(_NOT_INSTALLED)
+
+
+async def app_admin(
+    _credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+) -> Any:
+    """:func:`admin_guard`'s account, for an import-time router (:func:`app_current_user`),
+    declaring the bearer as it does."""
+    raise RuntimeError(_NOT_INSTALLED)
+
+
+async def app_account_service() -> AccountService[Any, Any, Any]:
+    """This request's :class:`~eifi1_server_kit.auth.service.AccountService`, for an
+    import-time router (:func:`app_current_user`)."""
+    raise RuntimeError(_NOT_INSTALLED)
+
+
+async def app_feedback_actor(request: Request, user: Annotated[Any, Depends(app_current_user)]) -> FeedbackActor:
+    """The signed-in account as the feedback router's actor (0.32, Staunlabor's pilot):
+    ``FeedbackDeps(actor=app_feedback_actor)``. A module-level dependency, so FastAPI resolves
+    it under ``from __future__ import annotations`` too, where a closure over
+    ``current_user(deps)`` left the feedback routes out of ``app.openapi()``. Admin is
+    ``policy.admin_role``; the name is :func:`~eifi1_server_kit.auth.full_name` in the
+    account's language. Needs :func:`install_account_layer`."""
+    deps: AuthDeps = request.app.state.account_deps
+    name = full_name(user.first_name, user.last_name, user.locale)
+    return FeedbackActor(
+        id=user.id,
+        email=user.email,
+        display_name=name or None,
+        is_admin=user.role == deps.policy.admin_role,
+        is_demo=bool(getattr(user, "is_demo", False)),
+        role=user.role,
+    )
+
+
+def install_account_layer(app: Any, deps: AuthDeps) -> None:
+    """Bind the import-time placeholders — :func:`app_current_user`, :func:`app_admin`,
+    :func:`app_account_service` — to ``deps``, through the app's ``dependency_overrides``,
+    and keep ``deps`` on ``app.state.account_deps``. Call it once where the app is built,
+    beside mounting :func:`auth_router` (0.32)::
+
+        deps = AuthDeps(...)
+        app.include_router(auth_router(deps), prefix="/api/v1")
+        install_account_layer(app, deps)
+
+    A test that builds its own app calls it on that app too."""
+    app.state.account_deps = deps
+    app.dependency_overrides[app_current_user] = current_user(deps)
+    app.dependency_overrides[app_admin] = admin_guard(deps)
+    app.dependency_overrides[app_account_service] = account_service(deps)
+
+
 def _guards(deps: AuthDeps, what: str) -> list[Any]:
     return [Depends(deps.demo_guard(what))] if deps.demo_guard is not None else []
 
@@ -396,9 +495,11 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
     """The account routes (§12.1), on ``APIRouter(prefix=prefix, tags=tags)``: sign-up and
     sign-in with its forced change, the refresh, the sessions, ``/me`` and its settings
     (password, address, deletion, export), the mailed links (verification, reset,
-    invitations), and with ``deps.passkeys`` the passkey routes. ``/sessions/current`` comes
-    before ``/sessions/{session_id}``. Raises :class:`ValueError` for a ``passkeys`` without a
-    ``relying_party`` (or the reverse) and for an app mail table the kit cannot fill."""
+    invitations), with ``deps.passkeys`` the passkey routes, and with ``deps.two_factor`` the
+    two-factor routes (0.32). ``/sessions/current`` comes before ``/sessions/{session_id}``.
+    Raises :class:`ValueError` for a ``passkeys`` without a ``relying_party``, a ``two_factor``
+    without a ``secret_seal`` (or the reverse of either), and for an app mail table the kit
+    cannot fill."""
     built = _built(deps)
     token_model = built.token_model
     challenge_model = deps.challenge_model
@@ -415,8 +516,11 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
         )
 
     async def sign_in_answer(
-        accounts: AccountService[Any, Any, Any], outcome: IssuedSession[Any] | ChallengeIssued[Any]
+        accounts: AccountService[Any, Any, Any],
+        outcome: IssuedSession[Any] | ChallengeIssued[Any] | TwoFactorChallengeIssued[Any],
     ) -> BaseModel:
+        if isinstance(outcome, TwoFactorChallengeIssued):
+            return TwoFactorChallenge(challenge_token=outcome.challenge_token)
         if isinstance(outcome, ChallengeIssued):
             return challenge_model.model_validate({"challenge_token": outcome.challenge_token, **outcome.extras})
         return await session_answer(accounts, outcome)
@@ -429,9 +533,13 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
         issued = await accounts.register(payload, ip=deps.client_address(request), device=_device(request))
         return await session_answer(accounts, issued)
 
-    @router.post("/login", response_model=token_model | challenge_model)
+    login_answers: Any = token_model | challenge_model
+    if deps.two_factor is not None:
+        login_answers = login_answers | TwoFactorChallenge
+
+    @router.post("/login", response_model=login_answers)
     async def login(payload: LoginRequest, request: Request, accounts: Accounts) -> BaseModel:
-        """Sign in (§5.1): a session, or the forced change's challenge."""
+        """Sign in (§5.1): a session, the forced change's challenge, or the code's."""
         outcome = await accounts.login(payload, ip=deps.client_address(request), device=_device(request))
         return await sign_in_answer(accounts, outcome)
 
@@ -448,7 +556,9 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
         """Renew the session (§11): every refusal ``401 session_ended``."""
         return await session_answer(accounts, await accounts.refresh(payload, ip=deps.client_address(request)))
 
-    @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+    @router.post(
+        "/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=_guards(deps, "signing out everywhere")
+    )
     async def logout(user: User, accounts: Accounts) -> Response:
         """Sign out everywhere: every session ends, this one included (§6.3)."""
         await accounts.logout_everywhere(user)
@@ -625,7 +735,61 @@ def auth_router(deps: AuthDeps, *, prefix: str = "/auth", tags: Sequence[str] = 
 
     if deps.passkeys is not None:
         _passkey_routes(router, deps, Accounts, User, sign_in_answer)
+    if deps.two_factor is not None:
+        _two_factor_routes(router, deps, Accounts, User, sign_in_answer, token_model | challenge_model)
     return router
+
+
+def _two_factor_routes(
+    router: APIRouter,
+    deps: AuthDeps,
+    Accounts: Any,  # noqa: N803
+    User: Any,  # noqa: N803
+    sign_in_answer: Callable[..., Awaitable[BaseModel]],
+    answers: Any,
+) -> None:
+    """The two-factor routes (0.32, keksdose's KG-1), on ``router``: the sign-in's code step
+    and the account's setup, confirmation and switching off, each of the last three behind
+    the app's demo guard."""
+    guards = _guards(deps, "two-factor authentication")
+
+    @router.post("/login/2fa", response_model=answers)
+    async def login_two_factor(payload: TwoFactorLogin, request: Request, accounts: Accounts) -> BaseModel:
+        """The sign-in's code: a session, or the forced change's challenge after it."""
+        outcome = await accounts.login_two_factor(payload, ip=deps.client_address(request), device=_device(request))
+        return await sign_in_answer(accounts, outcome)
+
+    @router.post("/me/2fa/setup", response_model=TwoFactorSetup, dependencies=guards)
+    async def begin_two_factor(payload: TwoFactorSetupRequest, user: User, accounts: Accounts) -> TwoFactorSetup:
+        """A new secret, pending until a code from it confirms it; the password every time."""
+        result: TwoFactorSetup = await accounts.begin_two_factor(user, payload)
+        return result
+
+    @router.get("/me/2fa", response_model=TwoFactorStatus)
+    async def two_factor_status(user: User, accounts: Accounts) -> TwoFactorStatus:
+        """On or off, and the backup codes left (0.32)."""
+        result: TwoFactorStatus = await accounts.two_factor_status(user)
+        return result
+
+    @router.post("/me/2fa/enable", response_model=TwoFactorEnabled, dependencies=guards)
+    async def enable_two_factor(payload: TwoFactorConfirm, user: User, accounts: Accounts) -> TwoFactorEnabled:
+        """A code from the pending secret: it signs in from now on; the backup codes, once."""
+        result: TwoFactorEnabled = await accounts.enable_two_factor(user, payload)
+        return result
+
+    @router.post("/me/2fa/backup-codes", response_model=TwoFactorEnabled, dependencies=guards)
+    async def renew_backup_codes(
+        payload: TwoFactorBackupCodesRequest, user: User, accounts: Accounts
+    ) -> TwoFactorEnabled:
+        """A new set of backup codes behind the password; the old ones end (0.32)."""
+        result: TwoFactorEnabled = await accounts.renew_backup_codes(user, payload)
+        return result
+
+    @router.post("/me/2fa/disable", status_code=status.HTTP_204_NO_CONTENT, dependencies=guards)
+    async def disable_two_factor(payload: TwoFactorDisableRequest, user: User, accounts: Accounts) -> Response:
+        """The password and a live code: two-factor sign-in off, its secrets gone."""
+        await accounts.disable_two_factor(user, payload)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _passkey_routes(
@@ -720,7 +884,8 @@ def invitations_admin_router(
 
     @router.get("", response_model=list[row_model], dependencies=guards)  # type: ignore[valid-type]
     async def list_invitations(accounts: Accounts) -> list[BaseModel]:
-        """Every invitation not accepted, newest first; never a link."""
+        """Every invitation not accepted (and the accepted ones with
+        ``AccountPolicy.list_accepted_invitations``), newest first; never a link."""
         return [row_model.model_validate(fields) for fields in await accounts.invitation_rows()]
 
     @router.post("", response_model=issued_model, status_code=status.HTTP_201_CREATED, dependencies=guards)
