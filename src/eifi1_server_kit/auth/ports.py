@@ -29,13 +29,15 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from enum import Enum
+from typing import Any, Final, Literal, Protocol
 
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
 
 __all__ = [
     "ACCOUNT_FIELDS",
     "OPTIONAL_ACCOUNT_FIELDS",
+    "UNCHANGED",
     "AccountRow",
     "AdminActionLog",
     "AdminActionRowView",
@@ -57,6 +59,7 @@ __all__ = [
     "TokenSigner",
     "TwoFactorState",
     "TwoFactorStore",
+    "Unchanged",
     "UserStore",
 ]
 
@@ -313,6 +316,17 @@ class OneTimeTokenStore[TokenT: OneTimeTokenRow](Protocol):
 # ── Invitations ─────────────────────────────────────────────────────────────
 
 
+class Unchanged(Enum):
+    """The type of :data:`UNCHANGED`."""
+
+    UNCHANGED = "unchanged"
+
+
+#: A ``remint`` field left as the row has it (0.32): the default of each, so a plain re-send
+#: keeps the invitation's own language, note and inviter.
+UNCHANGED: Final = Unchanged.UNCHANGED
+
+
 class InvitationRow(Protocol):
     """An invitation (auth §4.4). ``scope`` is the app's, opaque to the kit: a team, a
     budget, nothing; ``on_invitation_redeemed`` reads it."""
@@ -384,8 +398,20 @@ class InvitationStore[InvT: InvitationRow](Protocol):
     async def add(self, new: NewInvitation) -> InvT:
         """Insert and flush."""
 
-    async def remint(self, invitation: InvT, *, token_hash: str, expires_at: datetime) -> InvT:
-        """A new link for the same invitation (a re-send), flushed."""
+    async def remint(
+        self,
+        invitation: InvT,
+        *,
+        token_hash: str,
+        expires_at: datetime,
+        locale: str | Literal[Unchanged.UNCHANGED] = UNCHANGED,
+        note: str | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+        invited_by_user_id: int | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+    ) -> InvT:
+        """A new link for the same invitation (a re-send), flushed. ``locale``, ``note`` and
+        ``invited_by_user_id`` (0.32) are written where given, each left as it is by default
+        (:data:`UNCHANGED`): the kit gives them only when an admin's new invitation re-uses
+        the row (``AccountPolicy.reuse_open_invitations``), never on a plain re-send."""
 
     async def accept(self, invitation: InvT, *, user_id: int, at: datetime) -> None:
         """Mark it accepted by the account, flushed."""

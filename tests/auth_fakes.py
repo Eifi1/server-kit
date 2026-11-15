@@ -18,6 +18,7 @@ from typing import Any
 
 from eifi1_server_kit.auth.ports import (
     ACCOUNT_FIELDS,
+    UNCHANGED,
     NewAccount,
     NewInvitation,
     NewPasskey,
@@ -278,8 +279,13 @@ class MemoryInvitationStore:
         values = {item.name: getattr(new, item.name) for item in fields(new)}
         return self.seed(**values)
 
-    async def remint(self, invitation: MemoryInvitation, *, token_hash: str, expires_at: datetime) -> MemoryInvitation:
+    async def remint(
+        self, invitation: MemoryInvitation, *, token_hash: str, expires_at: datetime, **fields: Any
+    ) -> MemoryInvitation:
         invitation.token_hash, invitation.expires_at = token_hash, expires_at
+        for name, value in fields.items():
+            if value is not UNCHANGED:
+                setattr(invitation, name, value)
         return invitation
 
     async def accept(self, invitation: MemoryInvitation, *, user_id: int, at: datetime) -> None:

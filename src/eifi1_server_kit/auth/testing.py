@@ -54,10 +54,11 @@ import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeGuard
 
 from eifi1_server_kit.auth.ports import (
     ACCOUNT_FIELDS,
+    UNCHANGED,
     AccountRow,
     AdminActionLog,
     AfterCommit,
@@ -71,6 +72,7 @@ from eifi1_server_kit.auth.ports import (
     SessionStore,
     TwoFactorState,
     TwoFactorStore,
+    Unchanged,
     UserStore,
 )
 from eifi1_server_kit.auth.tokens import INVITE_TTL, OneTimeTokenKind, hash_token
@@ -441,10 +443,23 @@ class InMemoryInvitationStore:
         return row
 
     async def remint(
-        self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime
+        self,
+        invitation: MemoryInvitationRow,
+        *,
+        token_hash: str,
+        expires_at: datetime,
+        locale: str | Literal[Unchanged.UNCHANGED] = UNCHANGED,
+        note: str | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+        invited_by_user_id: int | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
     ) -> MemoryInvitationRow:
         invitation.token_hash = token_hash
         invitation.expires_at = expires_at
+        if locale is not UNCHANGED:
+            invitation.locale = locale
+        if note is not UNCHANGED:
+            invitation.note = note
+        if invited_by_user_id is not UNCHANGED:
+            invitation.invited_by_user_id = invited_by_user_id
         return invitation
 
     async def accept(self, invitation: MemoryInvitationRow, *, user_id: int, at: datetime) -> None:
@@ -1305,6 +1320,27 @@ async def check_invitation_store(
     found = await store.by_token_hash(_digest(token, 6))
     _check(found is not None and found.id == first.id, "remint: the new link finds the invitation")
     _check(first.id in {row.id for row in await store.open_for(address)}, "remint: the invitation is still open")
+    _check(
+        (reminted.locale, reminted.note, reminted.invited_by_user_id) == ("fr", f"Checked ({token})", inviter_id),
+        "remint: the language, the note and the inviter stay as they were",
+    )
+
+    # 5b. remint's fields (0.32): a re-used invitation takes the new request's — asked only of
+    # a store whose remint takes them (the kit gives them only with reuse_open_invitations).
+    if "locale" in inspect.signature(store.remint).parameters:
+        renewed = await store.remint(
+            first,
+            token_hash=_digest(token, 7),
+            expires_at=later,
+            locale="it",
+            note=None,
+            invited_by_user_id=user_id,
+        )
+        again = _found(await store.get(first.id), "remint: get still finds the invitation")
+        _check(
+            (renewed.locale, again.locale, again.note, again.invited_by_user_id) == ("it", "it", None, user_id),
+            "remint: locale, note (None too) and invited_by_user_id read back where given",
+        )
 
 
 async def check_passkey_store(store: PasskeyStore[Any], *, user_id: int, other_user_id: int) -> None:

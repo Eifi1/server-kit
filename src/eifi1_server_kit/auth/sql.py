@@ -104,11 +104,13 @@ except ImportError as exc:
 
 from eifi1_server_kit.auth.ports import (
     ACCOUNT_FIELDS,
+    UNCHANGED,
     NewAccount,
     NewInvitation,
     NewPasskey,
     NewSession,
     TwoFactorState,
+    Unchanged,
 )
 from eifi1_server_kit.auth.schemas import MAX_NAME_LENGTH, MAX_ZONE_LENGTH
 from eifi1_server_kit.auth.tokens import OneTimeTokenKind
@@ -766,9 +768,24 @@ class SqlInvitationStore[InvT: InvitationColumns]:
         await self._session.flush()
         return row
 
-    async def remint(self, invitation: InvT, *, token_hash: str, expires_at: datetime) -> InvT:
+    async def remint(
+        self,
+        invitation: InvT,
+        *,
+        token_hash: str,
+        expires_at: datetime,
+        locale: str | Literal[Unchanged.UNCHANGED] = UNCHANGED,
+        note: str | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+        invited_by_user_id: int | Literal[Unchanged.UNCHANGED] | None = UNCHANGED,
+    ) -> InvT:
         invitation.token_hash = token_hash
         invitation.expires_at = expires_at
+        if locale is not UNCHANGED:
+            invitation.locale = locale
+        if note is not UNCHANGED:
+            invitation.note = note
+        if invited_by_user_id is not UNCHANGED:
+            invitation.invited_by_user_id = invited_by_user_id
         await self._session.flush()
         return invitation
 

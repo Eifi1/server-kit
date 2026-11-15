@@ -459,7 +459,9 @@ class AccountPolicy:
     invitable_roles: tuple[str, ...] | None = None
     #: An invitation to an address that has an open one with the same role and scope sends
     #: that one again — a new link, 14 more days, logged ``invite_resend`` — instead of adding
-    #: a second row (0.31, G7; Kurvenschmiede's). Off: every invitation is a row, as in 0.29.
+    #: a second row (0.31, G7; Kurvenschmiede's); since 0.32 the row takes the new request's
+    #: language, note and inviter (``remint``'s fields). Off: every invitation is a row, as in
+    #: 0.29.
     reuse_open_invitations: bool = False
     #: The admin's invitation list shows the accepted invitations too, status ``accepted``
     #: (0.32, keksdose's: who came in by an invitation); the store's ``listing(accepted=True)``
@@ -1726,12 +1728,14 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         who = full_name(inviter.first_name, inviter.last_name, invitation.locale)
         return link, await self._send(invitation.email, kind, invitation.locale, link=link, group=name, inviter=who)
 
-    async def _issued(self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool) -> dict[str, Any]:
+    async def _issued(
+        self, admin: UserT, issued: IssuedInvitation[InvT], *, show_link: bool, resent: bool = False
+    ) -> dict[str, Any]:
         inviter = PersonRef.model_validate(admin, from_attributes=True)
         fields = await self._invitation_fields(
             issued.invitation, self._now(), inviter, link=issued.link if show_link else None
         )
-        return {**fields, "sent": issued.sent}
+        return {**fields, "sent": issued.sent, "resent": resent}
 
     async def create_invitation(
         self,
@@ -1764,15 +1768,18 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             existing = await self._users.by_email(body.email)
             await self._hooks.invitation_creating(admin, body, existing, scope)
         charge(self._limiters.verification_resend, body.email, AUTH_THROTTLED["mail"])
-        if self._policy.reuse_open_invitations:
-            for open_one in await self._invitations.open_for(body.email):
-                if open_one.role == body.role and (open_one.scope or None) == (scope or None):
-                    return await self._send_again(admin, open_one, show_link=show_link)
-        now = self._now()
-        raw, digest = mint()
         # A body that names no language is written in the inviting admin's (0.32,
         # Kurvenschmiede's), not the schema's default; one that names it wins.
         locale = body.locale if "locale" in body.model_fields_set or not admin.locale else admin.locale
+        if self._policy.reuse_open_invitations:
+            for open_one in await self._invitations.open_for(body.email):
+                if open_one.role == body.role and (open_one.scope or None) == (scope or None):
+                    # Re-used, it is the new request's (0.32, keksdose's): its language, its
+                    # note, and the admin who asked.
+                    renewed = {"locale": locale, "note": body.note, "invited_by_user_id": admin.id}
+                    return await self._send_again(admin, open_one, show_link=show_link, renewed=renewed)
+        now = self._now()
+        raw, digest = mint()
         invitation = await self._invitations.add(
             NewInvitation(
                 email=body.email,
@@ -1805,17 +1812,22 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
         charge(self._limiters.verification_resend, invitation.email, AUTH_THROTTLED["mail"])
         return await self._send_again(admin, invitation, show_link=show_link)
 
-    async def _send_again(self, admin: UserT, invitation: InvT, *, show_link: bool) -> dict[str, Any]:
+    async def _send_again(
+        self, admin: UserT, invitation: InvT, *, show_link: bool, renewed: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         """A new token and 14 more days for an unspent invitation, the old link dead, logged
-        as ``invite_resend``: the re-send, and a reused invitation (0.31). Charged by the
-        caller."""
+        as ``invite_resend``: the re-send, and a reused invitation (0.31), which takes the
+        ``renewed`` fields of its new request (0.32: ``locale``, ``note``,
+        ``invited_by_user_id``); a re-send keeps the row's own. Charged by the caller."""
         now = self._now()
         raw, digest = mint()
-        invitation = await self._invitations.remint(invitation, token_hash=digest, expires_at=now + INVITE_TTL)
+        invitation = await self._invitations.remint(
+            invitation, token_hash=digest, expires_at=now + INVITE_TTL, **(renewed or {})
+        )
         group = await self._group_of(invitation)
         await self._record(AdminAction.INVITE_RESEND, admin, invitation, now, group)
         link, sent = await self._mail_invitation(invitation, raw, group, admin)
-        return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link)
+        return await self._issued(admin, IssuedInvitation(invitation, link, sent), show_link=show_link, resent=True)
 
     async def revoke_invitation(self, admin: UserT, invitation_id: int) -> None:
         """``DELETE /admin/invitations/{id}``: an open or expired invitation is withdrawn,

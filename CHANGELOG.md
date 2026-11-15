@@ -24,6 +24,18 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Added
 
+* **auth (keksdose's move onto the admin's invitation routes): a re-invitation is the new
+  request's.** With `reuse_open_invitations`, the address's re-used row (an expired one too) takes
+  the new request's language (the body's, else the admin's, as a new one), its note, and the
+  admin re-inviting as `invited_by_user_id`. `InvitationStore.remint` gains the keywords
+  `locale`, `note` and `invited_by_user_id`, each defaulting to the new `auth.ports.UNCHANGED`
+  (`Unchanged`), so `POST /admin/invitations/{id}/resend` keeps the row's own; the kit gives them
+  only on a re-use, so a store without them works while `reuse_open_invitations` is off (an app's
+  own store with it on adds them; `SqlInvitationStore`, `InMemoryInvitationStore` and
+  `check_invitation_store`, for a store that takes them, do). `InvitationIssued.resent` (default
+  `False`) is true when `POST /admin/invitations` re-used a row and on every
+  `…/{id}/resend`.
+
 * **auth (keksdose's move onto the admin's invitation routes):**
   `AccountPolicy.list_accepted_invitations` (default `False`): `GET /admin/invitations` lists the
   accepted invitations too, status `accepted`, in the same order (newest first, the higher id

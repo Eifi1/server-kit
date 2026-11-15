@@ -509,3 +509,44 @@ async def test_the_admin_s_list_shows_accepted_invitations_where_the_app_asks() 
         _, token = await admin_token(plain)
         plain.invitations.seed(email="in@example.com", accepted_at=plain.clock())
         assert (await plain.call("GET", "/admin/invitations", token=token)).json() == [], "off: 0.29's list"
+
+
+async def test_a_re_invitation_takes_the_new_request_s_language_note_and_inviter() -> None:
+    """keksdose: inviting an address again (``reuse_open_invitations``) re-uses its row, now in
+    the new request's language (the body's, else the admin's), with its note and the admin who
+    asked; a plain re-send keeps the row's own. Both answer ``resent``."""
+    from dataclasses import replace
+
+    from tests.auth._world import POLICY
+
+    world = World(policy=replace(POLICY, reuse_open_invitations=True))
+    async with world.client:
+        first_admin, first = await admin_token(world)
+        made = await world.call(
+            "POST",
+            "/admin/invitations",
+            token=first,
+            json={"email": "bob@example.com", "role": "MEMBER", "locale": "fr", "note": "first"},
+        )
+        assert made.status_code == 201 and made.json()["resent"] is False
+        (row,) = world.invitations.rows.values()
+        row.expires_at = world.clock() - timedelta(days=1)  # expired: re-used all the same
+        second_admin = world.account(email="ops@example.com", role="ADMIN", locale="it", first_name="Ada")
+        second = await world.token_of(second_admin)
+        again = await world.call(
+            "POST",
+            "/admin/invitations",
+            token=second,
+            json={"email": "bob@example.com", "role": "MEMBER", "note": "second"},
+        )
+        answer = again.json()
+        assert again.status_code == 201 and answer["id"] == row.id and answer["resent"] is True
+        assert (row.locale, row.note, row.invited_by_user_id) == ("it", "second", second_admin.id)
+        assert (answer["locale"], answer["note"], answer["invited_by"]["id"]) == ("it", "second", second_admin.id)
+        assert world.mailer.of("invitation")[-1].message.subject == "Invito a Staunlabor"
+        resent = await world.call("POST", f"/admin/invitations/{row.id}/resend", token=first)
+        assert resent.json()["resent"] is True
+        assert (row.locale, row.note, row.invited_by_user_id) == ("it", "second", second_admin.id), (
+            "a re-send keeps them"
+        )
+        assert first_admin.id != second_admin.id

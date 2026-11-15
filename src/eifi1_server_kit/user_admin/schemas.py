@@ -460,6 +460,9 @@ class InvitationIssued(InvitationRow):
 
     sent: bool
     mail_backend: str
+    #: The invitation was sent again (0.32): ``POST /admin/invitations`` re-used the address's
+    #: open one (``AccountPolicy.reuse_open_invitations``), or ``POST …/{id}/resend``.
+    resent: bool = False
 
     @model_validator(mode="after")
     def _link_only_on_the_console(self) -> Self:
