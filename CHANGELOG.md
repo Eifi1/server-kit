@@ -155,7 +155,7 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
   the store's key; what the purge answers and logs stays in the app's names.
 * **auth (Kurvenschmiede's ui-kit dev.2 run):** `InvitationAccepted.group` (`InvitationGroup`:
   `id`, `name`), what `invitation_group` names, in `POST /auth/invitations/accept`'s answer, so
-  ui-kit 0.64's page says what the account joined; `None` without the hook or a group.
+  ui-kit 0.65's page says what the account joined; `None` without the hook or a group.
 * **auth, user_admin (keksdose's KG-7):** `AuthHooks.sessions_ended` and
   `UserAdminHooks.activating` may answer a mapping: its counts join the detail of the admin's
   `deactivate`, `password_change_require` and `reactivate` rows (keksdose's

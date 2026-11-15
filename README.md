@@ -42,7 +42,7 @@ from the `server-kit-api.json` each release carries ([Developing](#developing)).
 ## Compatibility with ui-kit
 
 The frontend half, [`@eifi1/ui-kit`](https://github.com/Eifi1/ui-kit), is a separate
-package with its own version and changelog. **server-kit 0.32 ↔ ui-kit 0.64**: that ui-kit
+package with its own version and changelog. **server-kit 0.32 ↔ ui-kit 0.65**: that ui-kit
 release is tested against server-kit 0.32's API export, and its `@eifi1/ui-kit/accounts` reads
 the account routes (0.29), the admin half (`user_admin_router`, 0.30), the daily jobs and the
 feedback tables (0.31), and the two-factor sign-in with its backup codes and the opt-in teams
@@ -922,7 +922,7 @@ under `prefix="/platform"`.
 | `POST /admin/mail/test` | `MailTestResult` | `demo_refused` | `mail_test` (3 in 10 minutes per admin) |
 
 Every route is behind the guard: `401 not_signed_in` / `session_ended`, `403 admin_required`.
-**New codes for the ui-kit's words (ui-kit 0.64):** `user_not_found` (404),
+**New codes for the ui-kit's words (ui-kit 0.65):** `user_not_found` (404),
 `role_not_grantable` (422), `reviewer_is_admin`, `email_already_verified`,
 `deletion_not_requested` (409), and `account_inactive` (409, already in the ui-kit's union) as
 the admin mail's answer.
