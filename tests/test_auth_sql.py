@@ -810,3 +810,27 @@ async def test_the_admin_log_scrubs_an_account_s_rows(session: AsyncSession) -> 
     assert isinstance(log, AccountLogScrub)
     one, two, three = await _ids(session, "s1@example.org", "s2@example.org", "s3@example.org")
     await check_account_log_scrub(log, actor_id=one, user_id=two, other_user_id=three)
+
+
+async def test_a_column_left_empty_is_sql_null_not_json_null(session: AsyncSession) -> None:
+    """keksdose's finding on 0.32.0.dev3: ``None`` was written as JSON ``null``, so an app's
+    ``scope IS NULL`` (an RLS policy, a filter) missed the kit's own rows."""
+    from sqlalchemy import text
+
+    one, _ = await _ids(session, "n1@example.org", "n2@example.org")
+    store = SqlInvitationStore(session, Invitation)
+    await store.add(
+        NewInvitation(
+            email="z@example.org",
+            role="MEMBER",
+            locale="en",
+            token_hash="d" * 64,
+            expires_at=NOW + timedelta(days=1),
+            invited_by_user_id=one,
+            scope=None,
+        )
+    )
+    found = await session.scalar(text("SELECT count(*) FROM invitations WHERE scope IS NULL"))
+    assert found == 1
+    reviewers = await session.scalar(text("SELECT count(*) FROM users WHERE translation_review_locales IS NULL"))
+    assert reviewers is not None and reviewers >= 1

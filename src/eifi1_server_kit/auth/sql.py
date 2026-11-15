@@ -165,7 +165,10 @@ _SID_WIDTH = 64
 
 #: JSON, stored as JSONB on PostgreSQL (indexable, compared by value) and as JSON anywhere
 #: else, so the same model runs the app's tests on SQLite.
-_JSON = JSON().with_variant(JSONB(), "postgresql")
+#: ``None`` is SQL ``NULL``, not JSON ``null`` (0.32, keksdose's finding on dev3): an app's
+#: ``scope IS NULL`` — an RLS policy, a filter — must find the kit's own rows. As
+#: :mod:`eifi1_server_kit.feedback.sql` has it.
+_JSON = JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
 
 
 class UtcDateTime(TypeDecorator[datetime]):

@@ -616,6 +616,12 @@ server-kit 0.24 section.
 
 ### Fixed
 
+* **auth.sql (keksdose's finding on 0.32.0.dev3):** a JSON column left empty (an invitation's or a
+  log row's `scope`, the review scope, the backup codes) is written as SQL `NULL`, not JSON `null`,
+  so an app's `scope IS NULL` (an RLS policy, a filter) finds the kit's rows. Existing JSON-`null`
+  values read back as `None` as before; an app that filters on `IS NULL` updates them once
+  (`UPDATE … SET scope = NULL WHERE scope = 'null'::jsonb`).
+
 * **feedback:** an erased crash report's body loses the person's diagnostics. `crash_body`
   writes them into the body as text, and `anonymise_feedback` replaced only the person's name
   and email there: the account number (`User: … (#id)`), the browser string (`User agent:`)
