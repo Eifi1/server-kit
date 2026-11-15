@@ -952,3 +952,21 @@ async def test_check_session_store_fails_on_a_session_that_starts_idle() -> None
 async def test_check_user_store_runs_with_one_role_only() -> None:
     """An app with a single role passes it as both; the role-change check then has nothing to say."""
     await check_user_store(InMemoryUserStore(), role="member", other_role="member")
+
+
+async def test_check_invitation_store_passes_a_store_on_0_31_s_signatures() -> None:
+    """A store written for 0.31 — ``listing()`` without ``accepted``, ``remint`` without the
+    re-used invitation's fields — still passes: the kit asks those only of a store that takes
+    them (``list_accepted_invitations``, ``reuse_open_invitations``)."""
+
+    class Old(InMemoryInvitationStore):
+        async def listing(self) -> Sequence[MemoryInvitationRow]:  # type: ignore[override]
+            return await super().listing()
+
+        async def remint(  # type: ignore[override]
+            self, invitation: MemoryInvitationRow, *, token_hash: str, expires_at: datetime
+        ) -> MemoryInvitationRow:
+            return await super().remint(invitation, token_hash=token_hash, expires_at=expires_at)
+
+    # The port's 0.32 signatures are wider; at run time the check asks only what Old takes.
+    await check_invitation_store(Old(), inviter_id=1, user_id=2)  # type: ignore[arg-type]
