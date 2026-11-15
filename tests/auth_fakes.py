@@ -270,8 +270,8 @@ class MemoryInvitationStore:
             if row.email == email and row.accepted_at is None and row.revoked_at is None
         ]
 
-    async def listing(self) -> Sequence[MemoryInvitation]:
-        rows = [row for row in self.rows.values() if row.accepted_at is None]
+    async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitation]:
+        rows = [row for row in self.rows.values() if accepted or row.accepted_at is None]
         return sorted(rows, key=lambda row: (row.created_at, row.id), reverse=True)
 
     async def add(self, new: NewInvitation) -> MemoryInvitation:

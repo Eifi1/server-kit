@@ -374,9 +374,12 @@ class InvitationStore[InvT: InvitationRow](Protocol):
         """The address's invitations that are neither accepted nor revoked, expired ones
         included: the kit decides on the expiry."""
 
-    async def listing(self) -> Sequence[InvT]:
+    async def listing(self, *, accepted: bool = False) -> Sequence[InvT]:
         """Every invitation that was not accepted (open, expired and revoked ones), newest
-        first, the higher id first on a tie: the admin's list."""
+        first, the higher id first on a tie: the admin's list. ``accepted`` (0.32): the
+        accepted ones too, in the same order; the kit asks for them only with
+        ``AccountPolicy.list_accepted_invitations``, so a store without the parameter keeps
+        working without it."""
 
     async def add(self, new: NewInvitation) -> InvT:
         """Insert and flush."""

@@ -45,6 +45,7 @@ import base64
 import dataclasses
 import hashlib
 import hmac
+import inspect
 import itertools
 import json
 import logging
@@ -428,8 +429,8 @@ class InMemoryInvitationStore:
             if row.email == email and row.accepted_at is None and row.revoked_at is None
         ]
 
-    async def listing(self) -> Sequence[MemoryInvitationRow]:
-        rows = [row for row in self.rows.values() if row.accepted_at is None]
+    async def listing(self, *, accepted: bool = False) -> Sequence[MemoryInvitationRow]:
+        rows = [row for row in self.rows.values() if accepted or row.accepted_at is None]
         return _newest_first(rows, lambda row: (row.created_at, row.id))
 
     async def add(self, new: NewInvitation) -> MemoryInvitationRow:
@@ -1196,7 +1197,8 @@ async def check_invitation_store(
     order is checked over every row it answers. ``role`` is one of the app's role values,
     by default the policy's ``default_role`` (upper case since 0.30).
     ``revoke`` may keep the row with its ``revoked_at`` or delete it, as the port allows; a
-    kept one is still listed, since ``listing`` leaves out only accepted ones.
+    kept one is still listed, since ``listing`` leaves out only accepted ones. A store whose
+    ``listing`` takes ``accepted`` (0.32) is asked for those too.
     """
     token = secrets.token_hex(8)
     now = utc_now()
@@ -1276,6 +1278,20 @@ async def check_invitation_store(
         _in_order([(row.created_at, row.id) for row in listing], newest_first=True),
         "listing: newest first, the higher id first on a tie",
     )
+
+    # 4b. listing(accepted=True) (0.32): the accepted ones too, in the same order — asked only
+    # of a store whose listing takes the parameter (the kit asks for it only with
+    # AccountPolicy.list_accepted_invitations).
+    if "accepted" in inspect.signature(store.listing).parameters:
+        every = list(await store.listing(accepted=True))
+        _check(
+            {first.id, expired.id, accepted.id, other.id} <= {row.id for row in every},
+            "listing(accepted=True): the accepted invitation beside the rest",
+        )
+        _check(
+            _in_order([(row.created_at, row.id) for row in every], newest_first=True),
+            "listing(accepted=True): newest first, the higher id first on a tie",
+        )
 
     # 5. remint: a new link for the same invitation, the old one dead.
     later = now + 2 * INVITE_TTL

@@ -461,6 +461,11 @@ class AccountPolicy:
     #: that one again — a new link, 14 more days, logged ``invite_resend`` — instead of adding
     #: a second row (0.31, G7; Kurvenschmiede's). Off: every invitation is a row, as in 0.29.
     reuse_open_invitations: bool = False
+    #: The admin's invitation list shows the accepted invitations too, status ``accepted``
+    #: (0.32, keksdose's: who came in by an invitation); the store's ``listing(accepted=True)``
+    #: answers them. Off: every invitation but the accepted ones, as in 0.29. Re-sending or
+    #: withdrawing an accepted one is ``invitation_closed`` either way.
+    list_accepted_invitations: bool = False
     #: The environment list that bootstraps the first admin (``parse_env_list``); ``None``:
     #: the first registration is open (``registration_decision``).
     bootstrap: frozenset[str] | None = None
@@ -1656,12 +1661,16 @@ class AccountService[UserT: AccountRow, SessionT: SessionRow, InvT: InvitationRo
             return invitation, extras if group is None else {**extras, "group": group.model_dump()}
 
     async def invitation_rows(self) -> list[dict[str, Any]]:
-        """``GET /admin/invitations`` (user-admin §5): every invitation not accepted, newest
+        """``GET /admin/invitations`` (user-admin §5): every invitation not accepted — and the
+        accepted ones too with ``AccountPolicy.list_accepted_invitations`` (0.32) — newest
         first, as ``InvitationRow`` fields — the inviter as a person, the status from the
         columns, never a link. A row never sent (an allow-list entry carried over) reads as
         expired, so the admin re-sends it."""
         now = self._now()
-        rows = await self._invitations.listing()
+        if self._policy.list_accepted_invitations:
+            rows = await self._invitations.listing(accepted=True)
+        else:
+            rows = await self._invitations.listing()
         people: dict[int, PersonRef | None] = {}
         for invitation in rows:
             inviter = invitation.invited_by_user_id

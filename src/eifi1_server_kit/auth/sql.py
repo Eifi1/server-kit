@@ -737,19 +737,19 @@ class SqlInvitationStore[InvT: InvitationColumns]:
         )
         return list(rows)
 
-    async def listing(self) -> Sequence[InvT]:
+    async def listing(self, *, accepted: bool = False) -> Sequence[InvT]:
         model = self._model
-        rows = await self._session.scalars(
-            select(model).where(model.accepted_at.is_(None)).order_by(model.created_at.desc(), model.id.desc())
-        )
+        query = select(model) if accepted else select(model).where(model.accepted_at.is_(None))
+        rows = await self._session.scalars(query.order_by(model.created_at.desc(), model.id.desc()))
         return list(rows)
 
     async def prune(self, *, before: datetime, now: datetime | None = None) -> int:
         """Delete the invitations that were never accepted and expired or were revoked before
         ``before``, and answer how many. They leave the admin's list (which shows expired and
         revoked ones, :meth:`listing`): one pruned cannot be re-sent, a new one is. An
-        accepted invitation stays, whatever its dates (it records how its account came in),
-        and so does an allow-list entry carried over, which has no expiry. Not on the port;
+        accepted invitation stays, whatever its dates (it records how its account came in, and
+        the list shows it with ``listing(accepted=True)``, 0.32), and so does an allow-list
+        entry carried over, which has no expiry. Not on the port;
         see :func:`prune_account_rows`. Flushes first, commits nothing; ``before`` must have
         passed by ``now`` (``utc_now()`` unless given)."""
         model = self._model

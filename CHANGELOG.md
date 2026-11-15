@@ -24,6 +24,15 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Added
 
+* **auth (keksdose's move onto the admin's invitation routes):**
+  `AccountPolicy.list_accepted_invitations` (default `False`): `GET /admin/invitations` lists the
+  accepted invitations too, status `accepted`, in the same order (newest first, the higher id
+  first on a tie). `InvitationStore.listing(*, accepted=False)` answers them with
+  `accepted=True`, which the kit asks only with the policy on, so a store without the parameter
+  keeps working; `SqlInvitationStore`, `InMemoryInvitationStore` and `check_invitation_store` (for
+  a store whose `listing` takes it) do. Re-sending or withdrawing a listed accepted one is still
+  `invitation_closed`.
+
 * **user_admin (keksdose's move onto the admin router): the roster's summary and filters are the
   app's too.** `UserAdminHooks.summary(admin)` answers the app's counts for `GET /admin/users`'
   `summary` (keksdose's install-wide `total`, `by_plan`, `by_privacy_mode`, …), merged under the

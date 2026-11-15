@@ -884,7 +884,8 @@ def invitations_admin_router(
 
     @router.get("", response_model=list[row_model], dependencies=guards)  # type: ignore[valid-type]
     async def list_invitations(accounts: Accounts) -> list[BaseModel]:
-        """Every invitation not accepted, newest first; never a link."""
+        """Every invitation not accepted (and the accepted ones with
+        ``AccountPolicy.list_accepted_invitations``), newest first; never a link."""
         return [row_model.model_validate(fields) for fields in await accounts.invitation_rows()]
 
     @router.post("", response_model=issued_model, status_code=status.HTTP_201_CREATED, dependencies=guards)

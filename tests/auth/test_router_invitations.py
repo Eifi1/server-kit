@@ -471,3 +471,41 @@ async def test_an_invitation_names_its_inviter_and_knows_an_existing_account() -
         new, known = world.mailer.of("invitation")
         assert "Grace Hopper invites you to register." in new.message.text
         assert "Grace Hopper invites you to join." in known.message.text
+
+
+# --- 0.32: keksdose's move onto the admin's invitation routes --------------------------------------
+
+
+async def test_the_admin_s_list_shows_accepted_invitations_where_the_app_asks() -> None:
+    """keksdose lists who came in by an invitation: ``AccountPolicy.list_accepted_invitations``
+    adds the accepted ones, in the same order; re-sending or withdrawing one is still refused."""
+    from dataclasses import replace
+
+    from tests.auth._world import POLICY
+
+    world = World(policy=replace(POLICY, list_accepted_invitations=True))
+    async with world.client:
+        _, token = await admin_token(world)
+        world.invitations.seed(email="old@example.com", role="MEMBER")
+        world.clock.advance(minutes=1)
+        accepted = world.invitations.seed(email="in@example.com", accepted_at=world.clock(), accepted_by_user_id=7)
+        tied = world.invitations.seed(email="new@example.com", role="MEMBER")
+        rows = (await world.call("GET", "/admin/invitations", token=token)).json()
+        assert [(row["id"], row["status"]) for row in rows] == [
+            (tied.id, "open"),
+            (accepted.id, "accepted"),
+            (1, "open"),
+        ], "newest first, the higher id first on a tie"
+        for method, path in (
+            ("POST", f"/admin/invitations/{accepted.id}/resend"),
+            ("DELETE", f"/admin/invitations/{accepted.id}"),
+        ):
+            refused = await world.call(method, path, token=token)
+            assert (refused.status_code, code(refused)) == (409, "invitation_closed"), method
+        assert world.log.rows == [] and accepted.accepted_at is not None and accepted.revoked_at is None
+
+    plain = World()
+    async with plain.client:
+        _, token = await admin_token(plain)
+        plain.invitations.seed(email="in@example.com", accepted_at=plain.clock())
+        assert (await plain.call("GET", "/admin/invitations", token=token)).json() == [], "off: 0.29's list"
