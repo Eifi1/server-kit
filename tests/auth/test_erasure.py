@@ -177,7 +177,7 @@ async def test_an_erasure_takes_the_app_s_own_identifiers_beside_the_kit_s(world
     feedback = FakeFeedback()
     hooks = AuthHooks(erasure_identifiers=erasure_identifiers)
     await world.service(hooks).erase(user, actor_id=None, feedback=feedback)  # type: ignore[arg-type]
-    (_id, identifiers) = feedback.asked[0]
+    identifiers = [str(i) for i in feedback.asked[0][1]]
     assert identifiers[0] == "Countess Ada Lovelace" and "Ada Lovelace" in identifiers
     assert [i.lower() for i in identifiers].count("ada@example.com") == 1
     assert identifiers == sorted(identifiers, key=len, reverse=True)
