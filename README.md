@@ -1203,8 +1203,9 @@ it uncoded), `team_name_taken`, `team_changed`, `manager_named_by_admin`,
 | Account layer (0.32, additive) | `AccountService.create_invitation(…, scope=, detail=)`; `user_admin.ports.DeletedGroupNames` (`deleted_group_names(ids)`), on `SqlAdminActionLog` and `InMemoryAdminActionLog` |
 
 **On `[sql]`:** `class Team(TeamColumns, Base)`, `class TeamMember(TeamMemberColumns, Base)` and
-`TeamInvitationColumns` beside `InvitationColumns` on the invitation model (table names
-`teams`, `team_members`; another name through `__teams_table__`). They are Kurvenschmiede's
+`TeamInvitationColumns` beside `InvitationColumns` on the invitation model. The app names the
+tables, as with every mixin: `__tablename__ = "teams"` and `"team_members"` for Kurvenschmiede's
+(the foreign keys point at `teams` unless `__teams_table__` says another name). They are Kurvenschmiede's
 tables as its migrations made them, so its autogenerate finds no change; a new app writes their
 migration with its own. Run `check_team_store(SqlTeamStore(…), SqlTeamInvitationStore(…), …)`
 beside the account layer's suites, on a database that enforces foreign keys.

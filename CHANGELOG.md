@@ -12,6 +12,10 @@ entry in the Conventional Commit; this file is assembled from them at release.
 
 ### Added
 
+* **auth (Kurvenschmiede's review of 0.32.0.dev3):** an app's `mail_texts` table for `invitation`
+  or `group_invitation` stands for `invitation_account` or `group_invitation_account` too, unless
+  the app names that kind itself; before, the existing account's invitation kept the kit's words.
+
 * **auth (keksdose's KG-1): two-factor sign-in**, keksdose's rules exactly. With
   `AuthDeps(two_factor=…, secret_seal=…)` (one without the other is a `ValueError`) the router
   mounts `POST /auth/login/2fa {challenge_token, code}` and `POST /auth/me/2fa/setup {password}`,

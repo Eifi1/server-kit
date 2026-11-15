@@ -933,8 +933,15 @@ def account_mail_texts(
     app's table needs a fallback row (``de-CH``, ``de`` or ``en``, as
     :func:`~eifi1_server_kit.mail.pick` falls back) and may use only the kind's
     :data:`ACCOUNT_MAIL_VALUES`; either fault is a :class:`ValueError`, raised when the
-    router is built. A kind the kit does not know is one too."""
+    router is built. A kind the kit does not know is one too.
+
+    The existing account's invitations take the app's words for the general ones (0.32,
+    Kurvenschmiede's review): a table for ``invitation`` or ``group_invitation`` stands for
+    ``invitation_account`` or ``group_invitation_account`` too, unless the app names that kind
+    itself — the kit's own words share one table for both, and an app that wrote the one
+    meant the other."""
     merged: dict[AccountMailText, Mapping[str, MailText]] = dict(ACCOUNT_MAIL_TEXTS)
+    named: set[AccountMailText] = set()
     for key, table in (overrides or {}).items():
         try:
             kind = AccountMailText(key)
@@ -942,7 +949,18 @@ def account_mail_texts(
             raise ValueError(f"no account mail is called {key!r}") from exc
         _check_table(kind, table)
         merged[kind] = table
+        named.add(kind)
+    for general, existing in _ACCOUNT_VARIANTS.items():
+        if general in named and existing not in named:
+            merged[existing] = merged[general]
     return merged
+
+
+#: The invitation a known address gets, by the general one whose words it takes by default.
+_ACCOUNT_VARIANTS: Mapping[AccountMailText, AccountMailText] = {
+    AccountMailText.INVITATION: AccountMailText.INVITATION_ACCOUNT,
+    AccountMailText.GROUP_INVITATION: AccountMailText.GROUP_INVITATION_ACCOUNT,
+}
 
 
 #: How each language writes a day in a mail's sentence: numeric, so no month name needs a

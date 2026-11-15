@@ -91,3 +91,19 @@ def test_an_aware_moment_is_read_on_its_utc_day() -> None:
     assert mail_date(late, "en") == "2026-12-14"
     assert mail_date(datetime(2026, 12, 13, 23, 30), "en") == "2026-12-13"
     assert mail_date(datetime(2026, 12, 13, 1, 0, tzinfo=UTC), "de") == "13.12.2026"
+
+
+def test_an_app_s_general_invitation_words_stand_for_the_existing_account_s_too() -> None:
+    """Kurvenschmiede's review of 0.32.0.dev3: overriding ``group_invitation`` left
+    ``group_invitation_account`` on the kit's words, which share one table by default."""
+    from eifi1_server_kit.auth.mails import ACCOUNT_MAIL_TEXTS, AccountMailText, account_mail_texts
+    from eifi1_server_kit.mail import MailText
+
+    own = {"en": MailText(subject="Join {group}", intro="Hi,", body="Come in.", cta="Join", outro="")}
+    mine = {"en": MailText(subject="Welcome back to {group}", intro="Hi,", body="Join.", cta="Join", outro="")}
+    merged = account_mail_texts({AccountMailText.GROUP_INVITATION: own})
+    assert merged[AccountMailText.GROUP_INVITATION_ACCOUNT] is own
+    assert merged[AccountMailText.INVITATION_ACCOUNT] is ACCOUNT_MAIL_TEXTS[AccountMailText.INVITATION_ACCOUNT]
+    both = account_mail_texts({"group_invitation": own, "group_invitation_account": mine, "invitation": own})
+    assert both[AccountMailText.GROUP_INVITATION_ACCOUNT] is mine
+    assert both[AccountMailText.INVITATION_ACCOUNT] is own
