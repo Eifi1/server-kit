@@ -198,6 +198,11 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
 
 ### Changed
 
+* **user_admin (keksdose's move onto the admin router):** `POST
+  /admin/users/{id}/password-change` refuses a deactivated account with `409 account_inactive`,
+  the admin mails' refusal, before anything else: nothing changes, no session ends, no row is
+  logged. It allowed it before (the requirement waited for the return); keksdose refuses it.
+
 * **user_admin (keksdose's move onto the admin router):** the `reviewer` row's detail is the
   account's scope before and after, `{"from": {"locales", "areas"}, "to": {"locales", "areas"}}`
   (`locales` a list, `[]` for none; `areas` a list or `None`), where it was `{"locales",

@@ -25,7 +25,8 @@ No FastAPI: :mod:`eifi1_server_kit.user_admin.router` builds one per request.
   deletion first (``deletion_cancel``, then ``reactivate``: Kurvenschmiede's and kastlan's
   two rows).
 * **A forced password change ends every session** (keksdose, Kurvenschmiede; §12.5 item 7),
-  is allowed on a deactivated account (it waits for the return) and on oneself.
+  is allowed on oneself, and refuses a deactivated account (``account_inactive``, 0.32,
+  keksdose's: the admin's mails' refusal).
 * **The admin's mail** refuses a deactivated account (``account_inactive``) and a verified
   address's verification (``email_already_verified``), is charged to the recipient's public
   window, commits its link before it mails it, and logs ``{sent}``; its link is answered only
@@ -469,9 +470,12 @@ class UserAdminService[UserT: AccountRow]:
     # --- the forced password change ------------------------------------------------------------
 
     async def require_password_change(self, admin: UserT, target: UserT, body: ActionConfirmation) -> UserT:
-        """``POST /admin/users/{id}/password-change`` (§4.1): the scope's account-wide refusal,
-        acknowledged; the next sign-in asks for a new password, and every session ends now
-        (§12.5 item 7)."""
+        """``POST /admin/users/{id}/password-change`` (§4.1): ``account_inactive`` for a
+        deactivated account (0.32, keksdose's; the admin's mails' refusal), the scope's
+        account-wide refusal, acknowledged; the next sign-in asks for a new password, and every
+        session ends now (§12.5 item 7)."""
+        if not target.is_active:
+            raise AccountError(AccountErrorCode.ACCOUNT_INACTIVE)
         if target.password_change_required_at is not None:
             return target
         await self.scope.refuse_account_wide(target, AdminAction.PASSWORD_CHANGE_REQUIRE)

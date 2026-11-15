@@ -912,7 +912,7 @@ under `prefix="/platform"`.
 | `GET /admin/users?limit&offset&sort&q&role&state` (and `roster_query_model`'s fields, 0.32) | `UserListResponse[row_model]` with `summary.active_admins` (and the `summary` hook's counts, typed by `summary_model`, 0.32) and `levels` | 422 (`RosterQueryError`, the app's filter model) | — |
 | `POST /admin/users/{id}/active {active, confirm_email?}` | the row | `user_not_found`, `demo_refused`, `self_action`, `other_companies` (a scope's), `last_admin`, `confirmation_required`, `confirmation_mismatch`, the `activating` hook's | — |
 | `POST /admin/users/{id}/role {role}` (`role_sets`: `PUT …/roles {roles}`) | the row | `role_not_grantable` (422), `self_action`, `last_admin`, `confirmation_*`, the `role_changing` hook's | — |
-| `POST` / `DELETE /admin/users/{id}/password-change` | the row | `other_companies`, `confirmation_*` (a body a proxy dropped fails closed) | — |
+| `POST` / `DELETE /admin/users/{id}/password-change` | the row | `account_inactive` (`POST`, 0.32), `other_companies`, `confirmation_*` (a body a proxy dropped fails closed) | — |
 | `POST /admin/users/{id}/mail {kind}` | `MailResult` (`link` on the console only) | `account_inactive`, `email_already_verified`, `confirmation_*` (an app's raised level) | `verification_resend` / `reset_address` (recipient) |
 | `PUT /admin/users/{id}/reviewer {locales, areas}` (with `review_locales`) | `ReviewerResult` | `reviewer_is_admin`, 422 (unknown locale or area) | — |
 | `POST /admin/users/{id}/erase {confirm_email}` (`operator` mode only) | `erasure_result_model` | `self_action`, `other_companies`, `deletion_not_requested`, `confirmation_*` | — |
@@ -943,8 +943,9 @@ the admin mail's answer.
   invitations), never takes your own admin role away nor the last active admin's, is
   acknowledged, logs `{from, to}` (`{added, removed}` for sets), clears the review scope with
   the role, and keeps the sessions.
-- **A forced password change** ends every session (`PASSWORD_CHANGE_REQUIRED`), also on a
-  deactivated account (it waits for the return) and on oneself; withdrawing it keeps them ended.
+- **A forced password change** ends every session (`PASSWORD_CHANGE_REQUIRED`), also on
+  oneself, and refuses a deactivated account with the admin mails' `account_inactive` (0.32,
+  keksdose's; nothing changed or logged); withdrawing it keeps them ended.
 - **The admin's mail** refuses a deactivated account and a verified address's verification,
   is charged to the recipient's public window, commits its link before mailing it, and logs
   `{sent}` after.

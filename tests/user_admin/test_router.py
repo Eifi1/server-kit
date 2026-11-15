@@ -395,13 +395,22 @@ async def test_a_forced_password_change_ends_every_session_and_is_withdrawn(worl
     assert world.log.actions() == ["password_change_require", "password_change_withdraw"]
 
 
-async def test_a_deactivated_account_may_be_required_a_new_password_for_its_return(world: AdminWorld) -> None:
+async def test_a_deactivated_account_is_refused_a_forced_password_change(world: AdminWorld) -> None:
+    """keksdose (0.32): the admin's mails' refusal, ``account_inactive``; nothing changed or
+    logged, no session ended."""
     _, token = await world.admin_token()
     user = world.account(is_active=False)
+    ended: list[str] = []
+
+    async def sessions_ended(account: MemoryUser, reason: SessionsEndedReason) -> None:
+        ended.append(reason)
+
+    world.hooks = AuthHooks(sessions_ended=sessions_ended)
     response = await world.call(
         "POST", f"/admin/users/{user.id}/password-change", token=token, json={"acknowledged": True}
     )
-    assert response.status_code == 200 and user.password_change_required_at is not None
+    assert (response.status_code, code(response)) == (409, "account_inactive")
+    assert user.password_change_required_at is None and world.log.rows == [] and ended == []
 
 
 async def test_an_app_raises_a_level_for_an_account(world: AdminWorld) -> None:
