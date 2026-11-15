@@ -721,9 +721,10 @@ demo itself. `auth.testing` has `InMemoryTwoFactorStore`, `check_two_factor_stor
 `totp_code`.
 
 **`AuthHooks`** — what differs between the apps (§12.2's six seams), every member an optional
-coroutine; the `hooks` dependency answers them per request, on the request's own session, so a
-hook writes in the request's transaction. Each may raise a kit refusal; a mapping it answers
-rides on the route's answer, which the app's answer model declares.
+coroutine but `observe`, a plain function (0.32); the `hooks` dependency answers them per
+request, on the request's own session, so a hook writes in the request's transaction. Each may
+raise a kit refusal; a mapping it answers rides on the route's answer, which the app's answer
+model declares.
 
 | Hook | Called | Seam |
 |---|---|---|
@@ -747,6 +748,40 @@ rides on the route's answer, which the app's answer model declares.
 | `erase(user, *, actor_id)` → extras | the erasure (0.30; the actor since 0.31: the admin, `None` for the job) | 5 |
 | `purge_files(keys)` | after an erasure's commit: the files nobody names any more (0.30); an app with feedback files sets it, since without it they stay in the store and the erasure logs a WARNING (0.32) | 5 |
 | `to_me(user)` → the app's `me_model` | `/auth/me` and every token answer's user | 6 |
+| `observe(event, outcome)`, synchronous | every decision of the signed-out flows and the refresh (0.32, keksdose's review of 0.32.0.dev4): an `AuthEvent` and a short stable outcome (the table below); an exception it raises is logged at WARNING and changes no answer | — |
+
+**What an app counts** (`AuthHooks.observe`, 0.32; keksdose's review of 0.32.0.dev4). The
+answers fold reasons into one code on purpose (`invalid_credentials` for an unknown address, a
+wrong password and a deactivated account), and the other hooks never see a refusal, so the
+service tells the observer each decision as `(event, outcome)`: an `AuthEvent` (a `StrEnum`,
+exported by `eifi1_server_kit.auth`) and a short stable string, never an address, an id or a
+token. The outcome is `ok` on success; the internal reason where the answer is one code for
+several (or a success with more to say); otherwise the refusal's own code. Every event may also
+be `throttled` (its `429`), and a kit refusal raised by one of the app's hooks (`claims` at a
+refresh, `invitation_accepting`, `on_register`) is told by its code. A fault, or an exception
+without a code (the app's own), is no decision and is told nothing. The observer runs at the
+end of the flow, once; the reset request tells it after its floor on every path, so it adds the
+same time account or not. Map the pairs onto the app's own counter:
+
+```python
+AuthHooks(observe=lambda event, outcome: AUTH_EVENTS.labels(event, outcome).inc())
+```
+
+| `AuthEvent` | Route | Outcomes besides `throttled` |
+|---|---|---|
+| `register` | `POST /auth/register` | `ok`; the invitation's `invalid` (unknown or spent), `expired`, `email_mismatch` (for another address) — all `invitation_invalid` but `expired`; `registration_closed`, `email_taken` |
+| `login` | `POST /auth/login` | `ok`; `totp_required` (the code's challenge), `password_change_required` (the forced change's challenge); `unknown_email`, `bad_password`, `inactive_user` (all `invalid_credentials`); `secret_unreadable` (`503 two_factor_unavailable`) |
+| `login_2fa` | `POST /auth/login/2fa` | `ok` (an authenticator's code), `backup_code` (a backup code), either way also when a forced change follows (`login_set_password` tells it); `invalid_code`, `replayed_code` (both `two_factor_invalid`); `secret_unreadable`; the dead challenge's `challenge_invalid`, `inactive_user`, `two_factor_off`, `challenge_spent` (all `token_invalid`) |
+| `login_set_password` | `POST /auth/login/set-password` | `ok`; `challenge_invalid`, `inactive_user` (both `token_invalid`); `password_change_not_required`, `password_unchanged` |
+| `passkey_login` | `POST /auth/passkey/login/finish` | `ok`, `password_change_required`; `challenge_invalid`, `unknown_passkey` (a malformed credential id too), `user_handle_mismatch`, `not_verified` (the assertion: signature, origin, user verification), `challenge_spent`, `inactive_user` (all `passkey_refused`) |
+| `refresh` | `POST /auth/refresh` | `ok`; `invalid_token` (not this app's refresh token), `session_ended` (the row ended, gone or someone else's), `session_expired`, `inactive_user`, `revoked` (the cut-off), `password_change_required` (all `session_ended`) |
+| `password_reset_request` | `POST /auth/password-reset/request` | `sent`, `send_failed` (the mail failed or was cut at the floor), `unknown_email`, `inactive_user`, `demo_user` — all `204` |
+| `password_reset_check` | `POST /auth/password-reset/check` | `ok`; `invalid` (`token_invalid`: unknown, spent, or its account gone), `expired` (`token_expired`); `inactive_user`, `email_changed` (both `token_invalid`) |
+| `password_reset_confirm` | `POST /auth/password-reset/confirm` | as the check |
+| `email_verify` | `POST /auth/verify-email` | `ok`; `invalid`, `expired`, `email_changed` |
+| `email_change_confirm` | `POST /auth/me/email/confirm` | `ok`; `invalid`, `expired`, `inactive_user`; `email_taken` |
+| `invitation_check` | `POST /auth/invitations/check` | `ok`; `invalid`, `expired` |
+| `invitation_accept` | `POST /auth/invitations/accept` | `ok`; `invalid`, `expired`, `email_mismatch`; `demo_refused` |
 
 **The work after the commit** (`AfterCommit`, §12.5 item 2): the kit never commits but where
 a route's answer says whether its mail went out (an address change and its re-send, the

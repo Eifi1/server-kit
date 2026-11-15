@@ -157,6 +157,22 @@ gains `TwoFactorColumns` (with `totp_backup_codes`) only where the app mixes it 
   yet would lose their content-addressed object; an app's `AuthHooks.purge_files` asks it
   before `purge_objects` (README, "Adopting the feedback and translation review tables").
 
+* **auth (keksdose's review of 0.32.0.dev4): `AuthHooks.observe(event, outcome)`**, so an app
+  counts its sign-in funnel again (keksdose's `keksdose_auth_events_total(event, outcome)` and
+  its Grafana panel): the answers fold reasons into one code on purpose, and the other hooks
+  never see a refusal. The service tells the observer every decision of the signed-out flows
+  and the refresh, once, at the flow's end: the new `AuthEvent` (`eifi1_server_kit.auth`, a
+  `StrEnum`: `register`, `login`, `login_2fa`, `login_set_password`, `passkey_login`,
+  `refresh`, `password_reset_request`, `password_reset_check`, `password_reset_confirm`,
+  `email_verify`, `email_change_confirm`, `invitation_check`, `invitation_accept`) and a short
+  stable outcome — `ok`, the internal reason where the answer is one code (`unknown_email`,
+  `bad_password`, `inactive_user`; `invalid_code`, `replayed_code`, `backup_code`; `sent`,
+  `send_failed`, the reset request's only trace of a failed mail), otherwise the refusal's code
+  (`throttled` for a 429) — never an address, an id or a token. Synchronous, as a metric
+  counter is; whatever it raises is logged at WARNING on `eifi1_server_kit.auth`, naming the
+  event, and changes no answer. The reset request tells it after its floor on every path. The
+  README's table lists every event's outcomes. Without it nothing changes.
+
 ### Changed
 
 * **auth (keksdose's KG-11):** `POST /auth/logout` carries the app's `demo_guard` ("signing out

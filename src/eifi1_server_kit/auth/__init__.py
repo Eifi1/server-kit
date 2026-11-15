@@ -24,7 +24,9 @@ the reference, cited ``file`` per rule.
   :func:`refresh_lifetime`, :func:`access_lifetime`, :func:`session_expires_at`);
 * :mod:`~eifi1_server_kit.auth.schemas` — the wire shapes, with the account's text size
   and contrast (``docs/text-size-harmonization.md`` §6);
-* :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes.
+* :mod:`~eifi1_server_kit.auth.errors` — :class:`AuthError` and its codes;
+* :mod:`~eifi1_server_kit.auth.events` — :class:`AuthEvent`, the flows whose decisions the
+  account service tells ``AuthHooks.observe`` (0.32), so an app counts its sign-in funnel.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ from eifi1_server_kit.auth.accounts import (
     verified_by_invitation,
 )
 from eifi1_server_kit.auth.errors import AUTH_ERROR_DETAIL, AUTH_ERROR_STATUS, AuthError, AuthErrorCode
+from eifi1_server_kit.auth.events import AuthEvent
 from eifi1_server_kit.auth.limits import (
     CHALLENGE_PER_IP,
     CHALLENGE_PER_SUBJECT,
@@ -261,6 +264,7 @@ __all__ = [
     "VERIFY_TTL",
     "AuthError",
     "AuthErrorCode",
+    "AuthEvent",
     "AuthLimiters",
     "Budget",
     "ChallengeKind",
